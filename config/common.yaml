@@ -1,119 +1,163 @@
-# config/common.yaml  (v1 defaults)
-version: 1
-universe: [BHP, RIO, FMG, CBA, CSL, WDS]
-index_etf: VAS
-proxies: {VAS: [XJT, STW], WDS: [WPL]}
-clusters: {MINERS: [BHP, RIO, FMG], BANKS: [CBA], HEALTH: [CSL], ENERGY: [WDS]}
-schedule:              # Australia/Sydney; post-close times do not shift on half-days
-  gateway_stop: "Sat 06:00"
-  cold_start: {a: "07:30", b: "07:40"}
-  twofa_window: ["07:30", "08:55"]
-  ingest_flows: ["08:30", "18:00"]
-  pre_open_check: "09:00"
-  veto_deadline: "09:10"
-  event_check: "09:15"
-  submit_shares: ["09:30:00", "09:50:00"]
-  close_auction_orders: "10:05"
-  escalate_exits: ["10:15", "10:30"]
-  vas_orders: ["10:45", "11:30"]
-  reconcile: ["11:35", "18:00"]
-  fetch_broker_bars: "16:45"
-  fetch_vendor_data: ["18:30", "18:55"]
-  quality_check: "19:00"
-  mark_to_market: "19:05"
-  decide: {first: "19:15", second: "19:20", alternate_daily: true}
-  evening_report: "19:30"
-  decision_cutoff: "19:00:00"
-  backup: "02:00"
+# config/common.yaml  (v2.10 defaults)
+version: 3
+spec_hash: "c7f02185b4e8d1ad3c07e992e8d2d8da791d1121785bd614ce8ccdbab4d5bba9"   # sha256 of FD v2.10 (this spec document)
+card_set_hash: null                # hash of the frozen hypothesis card set this config implements; null until cards are frozen (G0), see docs/DECISIONS.md
+rule: L1
+sleeves:
+  VAS: {base_weight: 0.40}
+  VGS: {base_weight: 0.60}
+benchmarks:
+  B1: {weights: {DHHF: 1.0}, reinvest_distributions: pay_date_close, flow_commission: true, min_order: false}
+  B2: {weights: {VAS: 0.40, VGS: 0.60}, rebalance: first_execution_date_of_july, order_rules: live}   # design value
+l1:
+  votes:
+    - {type: return_gt_zero, months: 6}
+    - {type: return_gt_zero, months: 12}
+    - {type: price_gt_sma, months: 10}
+  on_at_votes: 2
+  off_at_votes: 0                  # 1 vote keeps the prior state
+  bootstrap_state: "OFF"            # design value
+  tranches_max: 3                  # design value (H5)
+  tranche_min_order_mult: 1.25     # design value — operational (PRT-14)
+  tranche_offsets_by_n: {1: [last], 3: [last, 7, 14], 4: [last, 5, 10, 15]}  # design value (H5); 4 is backtest-only
+  band_relative: 0.20              # design value (H4)
+  min_order_value_aud: 1000        # design value (H4)
+  transition_buy_min_mult: 0.5     # design value (H5); a transition buy is skipped only below this × min_order_value_aud (PRT-14)
+  cash_reserve_aud: 50             # design value
+  cash_etf: null                   # off in v2.10
+  sentinel_unit: true              # floor of 1 unit when a sleeve's target is zero (DAT-20)
+venue:
+  XASX:
+    tz: Australia/Sydney
+    opening_auction: "09:59:00"    # randomised 15 s
+    closing_auction: ["16:10:00", "16:11:00"]
+    post_close_end: "16:21:30"
+    close_available_after: "16:25"
+    settlement_days: 2
+    early_close: "14:10"
+    library_calendar: XASX         # exchange_calendars, pinned; dates cross-check only
+schedule:                          # Australia/Sydney
+  fetch_vendor_data: ["19:30", "21:30", "07:00"]
+  daily_digest: "20:00"
+  heartbeat: "20:00"               # every calendar day (MON-01)
+  backup: "01:30"
+  full_redownload: "Sun 03:00"
+  flex_pull: "07:30"
+  flex_retry_min: 30
+  flex_retry_until: "11:00"
+  validate_data: "08:00"
+  mark_and_reconcile: "08:05"
+  decide: "08:10"
+  gateway_start: "08:15"
+  veto_deadline: "11:15"
+  submit_orders: "11:30"
+  retry_orders: "13:00"
+  last_new_order: "15:00"
+  cancel_unfilled: "15:30"
+  reconcile_broker: "15:45"
+  gateway_stop_latest: "16:12"     # design value — operational; the gateway stays up until then if an order of this system may be open
+  misfire: {decide_min_notice_min: 30, new_order_auth_until: "14:30", reconcile_until: "16:25"}   # design value — operational (OPS-02)
+  twofa_reprompt_min: 3
+  buy_carry_days: 5                # design value
+  evaluation_catchup_days: 5       # design value — operational (OPS-13)
+  connectivity_check_days: 35      # design value
+  deploy_freeze_hours: 2
 data:
-  min_bars_share: 300
-  min_bars_index: 1300
-  cross_source_tolerance: 0.005
-  max_unexplained_jump: 0.25
-  driver_stale_bdays: 3
-  fx_stale_bdays: 2
-  single_source_max_sessions: 3
-  futures_roll_bdays_before_expiry: 5
-signals:
-  trend:
-    momentum: [{lookback: 252, skip: 21, vs_cash: true}, {lookback: 126}, {lookback: 63}]
-    price_above_sma: [100, 150, 200, 250]
-    sma_cross: {fast: 50, slow: 200}
-    chandelier: {atr: 20, mult: 3.0, stop_days: 10, reentry_high: 50, reentry_min_tr: 0.5}
-  dip:
-    rsi_period: 2
-    rsi_min_bars: 250
-    entry_below: 10
-    exit: {above_sma: 5, rsi_above: 65, max_days: 5}
-    trend_filter_sma: 200
-    sleeve_switch: {on_mult: 1.15, off_mult: 0.90, evaluate: first_trading_day_of_month}
-  commodity:
-    lookbacks: [20, 60]
-    baskets:
-      BHP: [{from: 2026-02-18, weights: {copper: 0.58, iron_ore: 0.42}},
-            {from: 1900-01-01, weights: {copper: 0.35, iron_ore: 0.65}}]
-      RIO: [{from: 1900-01-01, weights: {iron_ore: 0.75, copper: 0.25}}]
-      FMG: [{from: 1900-01-01, weights: {iron_ore: 1.0}}]
-      WDS: [{from: 1900-01-01, weights: {brent: 1.0}}]
-  family_weights:
-    commodity_names: {dip_on: {trend: 0.60, dip: 0.25, commodity: 0.15}, dip_off: {trend: 0.85, dip: 0.0, commodity: 0.15}}
-    other:           {dip_on: {trend: 0.75, dip: 0.25}, dip_off: {trend: 1.00, dip: 0.0}}
-filters:
-  blackout: {default: [-1, 0], CSL: [-3, 0], estimate_widen: 2}   # execution-date offsets
-  news: {enabled: false, veto_days: 3}
-  insider_sell: {enabled: false, min_directors: 2, window_days: 30, block_days: 10}
-  downgrades: {enabled: false, min_count: 3, window_days: 5, block_days: 10}
-  regime:
-    sma: 200
-    off_below: 0.98
-    on_above: 1.02
-    on_confirm_closes: 3
-    vol_window: 20
-    vol_off_pctile: 0.90
-    vol_on_pctile: 0.80
-    vol_history: 1260
-    off_stock_cap: 0.50
-    off_vas_fraction: 0.50
-sizing:
-  n_names: 6
-  target_vol: 0.15
-  ewma_lambda: 0.94
-  ewma_seed_returns: 60
-  max_vol_scale: 1.5
-  vol_floors: {BHP: 0.18, RIO: 0.18, FMG: 0.25, CBA: 0.12, CSL: 0.20, WDS: 0.20}
-  per_name_cap: 0.25
-  cluster_caps: {MINERS: 0.45}
-  csl_gap_cap: {weight: 0.05, vol_window: 60, vol_on: 0.30, release_closes: 20}
-  portfolio_vol_cap: {cap: 0.15, engage: 0.165, cov_window: 60}
-  cash_target: 0.10
-  cash_buffer: 0.02
-  rebuild_sleeve_below: 0.05
-  min_weight_change: 0.025
-  min_order_value_aud: 4000
-  min_exit_value_aud: 500
+  cross_source: {ok: 0.001, block: 0.005}
+  spike: {mult_of_mean_abs_60d: 8, abs_return: 0.15}
+  stale_sessions: 3
+  restatement: {block_rows: 5, block_pct: 0.005}
+  tr_gap_bp: {non_ex: 5, ex: 25}
+  implied_dividend_tolerance: 0.01
+  yearly_tr_tolerance: 0.005
+  fx_move_warn: 0.03
+  snapshot_gap_hold: 0.02
+  snapshot_confirm_tolerance: 0.01 # design value — operational; second snapshot vs the 11:30 bid, exits only (DAT-13)
+  snapshot_gap_sell_max: 0.10      # design value — operational; widest gap below the reference for a confirmed exit (DAT-13, RSK-08)
+  min_evaluation_closes: 13
+  spread_warn: 0.0004
+  eodhd: {plan: free, calls_per_day: 20, calls_per_minute: 20, history_years: 1,
+          daily_requests: [eod, dividends], instruments: [VAS, VGS, DHHF], on_budget_exceeded: fail_closed}   # DAT-23
+  spread_exclude: 0.0007
 execution:
   exchange: ASX
-  collar: 0.01
-  exit_ladder: [0.03, 0.06, {continuous: true, at: "10:15", floor: 0.10}]
-  vas_band: 0.0015
-  commission: {min_aud_incl_gst: 6.60, rate_incl_gst: 0.00088, tolerance: 0.10}
+  tif: DAY                         # GTD to 15:30 only after open item I15 passes
+  max_quote_spread: 0.005          # design value — operational
+  no_quote_collar: 0.005           # design value
+  open_blackout_min: 15
+  cancel_confirm_timeout_s: 60     # design value — operational
+  manual_match_days: 2             # design value — operational
+  canary_units: {VAS: 1, VGS: 1}   # per sleeve; raised to the smallest count worth A$500 if I17 requires it (EXE-12)
+  snapshot_free_per_month: 33      # about; USD 1.00 waiver ÷ USD 0.03 (EXE-11)
+  commission: {model: asx_fixed, rate_ex_gst: 0.0008, min_ex_gst_aud: 6.00, gst_rate: 0.10,
+               budget_rate_incl_gst: 0.00088, budget_min_incl_gst_aud: 6.60, review_gap: 0.10}
 risk_defaults:
-  max_order_value_aud: 25000
-  max_order_value_pct: 0.10       # limit = max(aud, pct x sizing NAV)
-  backtest_max_drawdown: null     # from the Gate 1 report; RSK-22 base
+  max_buy_order_value_mult_of_sleeve: 1.05   # design value; buys only (RSK-06)
+  max_sleeve_weight_mult: 1.05               # design value; applied to target × (1 + band_relative) (RSK-13)
   adv_pct: 0.01
   adv_days: 20
-  max_orders_per_day: 10
-  daily_loss_pct: 0.03
-  soft_drawdown_pct: 0.15         # reset from the Gate 1 report
-  hard_drawdown_pct: 0.25         # also capped at 1.5 x backtest max drawdown
-  min_live_sharpe_12m: null       # from the Gate 1 report
-backtest:
-  periods: {design: [2010-01-01, 2018-12-31], validation: [2019-01-01, 2022-12-31], holdout: [2023-01-01, 2026-11-13]}
-  initial_navs: [50000, 150000, 500000]
-  costs: {exchange_clearing: 0.00003, slippage_bps: {shares: 2, vas: 5}, stress_bps: {shares: [5, 10], vas: [15]}}
-  tax_marginal_rate: 0.32        # default only; VAL-07 uses each user's tax.marginal_rate
-  random_entry: {runs: 1000, block_days: 20, seed: 20261113}
-shadow: {short_interest: true, analog: false, trend_health: true, meta_model: false}
-alerts: {warning_repeat_min: 30}
+  price_band: 0.02
+  max_orders_per_day: 6                      # design value — operational; counts placeOrder calls
+  max_daily_buy_turnover_mult: 1.05          # design value; buys only (RSK-12)
+  drawdown: {review_pctile: 0.95, review_abs: 0.25, halt_pctile: 0.99, halt_mult_of_backtest: 1.5,
+             frequency: month_end, min_horizon_months: 12,
+             static_review_abs: 0.25, static_review_step: 0.10,   # STATIC mode: review only, no halt (RSK-22)
+             rearm_step: 0.05}                                    # design value — operational; re-arm after a resume (RSK-22)
+  backtest_max_drawdown: null                # always null in a release; each user's own G2 run writes the value to limits in config/<user>.yaml (USR-05, OPS-12)
+  tracking_bp: {review_month: 25, review_cum: 50, halt: 100}
+  cost_vs_model: {review: 1.5, halt: 2.5, window_months: 6}
+  trading_cost_pct_nav: {review: 0.010, halt: 0.013, applies_from_nav_aud: 25000}
+  order_count_12m: {review: 8, halt: 12}     # design value — operational; used below applies_from_nav_aud; counts distinct transition and band events with at least one fill, drill orders excluded (RSK-26)
+  commission_warn: {pct_nav: 0.006, min_commissions: 6}
+  vote_flips_review: {count: 3, months: 6}
+  price_gap_no_trade: 0.20
+kill_criteria:
+  drawdown: 0.30
+  all_in_cost_pct: 0.03
+  all_in_cost_from_nav_aud: 25000
+  incidents_per_year: 2
+  overrides_per_year: 1
+  lag_review: {months: 36, lag_pp: 10, drawdown_saving_pp: 10}
+capital:
+  cap_rise_staging: {threshold: 0.25, first_step: 0.50, months: 3}   # design value — operational (G5)
+ops:
+  flex_pending_days: 2
+  flex_pending_deficit_max_aud: 50
+  flex_pending_fee_types: [snapshot_fee, withholding, commission_gst]
+  distribution_match_tolerance: {abs_aud: 1.00, pct: 0.02}   # the larger of the two; design value — operational (section 12)
+  withdrawal_lapse_days: 10        # trading days; design value — operational (PRT-28)
+  withdrawal_sell_buffer: 0.01     # design value — operational; margin on the amount a withdrawal sell must raise (PRT-28)
+  idle_cash_page: {after_cycles: 1, repeat_days: 7}   # design value — operational; page when cash stays uninvested for more than one evaluation cycle (PRT-19)
+  calendar_min_days_ahead: 60      # design value — operational (OPS-05)
+  flex_token_warn_days: 30
+  clock_skew_max_s: 2
+  deadman_grace_min: 30
+  nav_vs_netliq_tolerance: 0.001
+  recon_page_within_min: 5
+  server_cost_warn_aud_month: 25
+  dependency_min_age_days: 14
+  log_retention_days: 90
+tax_defaults:
+  medicare_levy: 0.02              # [R13 mention only; confirm with T2]
+  franking_exemption_aud: 5000
+  franking_warn_aud: 4000
+  holding_period_days: 45
+  rebuy_warn_days: 30              # design value — operational
+  record_retention_years: 7
+research:
+  development: [1990-01, 2023-12]
+  holdout_from: 2024-01
+  trial_cap_per_family: 50
+  families:
+    L1: [H1, H2, H3, H4, H5, H8, H9, H10, H11, H12]
+    P1: [H6, H7, H13]
+  family_a_alpha: 0.10
+  family_b: {t_min: 3.0, dsr_min: 0.95}
+  backtest_navs: [5000, 50000, 250000]
+  marginal_rates:                  # v2.10 + R37 correction: resident rates per income year (P9 answered); Medicare (tax_defaults.medicare_levy) is added on top
+    "2026-27": [0.00, 0.15, 0.30, 0.37, 0.45]
+    "2027-28": [0.00, 0.14, 0.30, 0.37, 0.45]
+  h1_after_tax_defaults: {nav_aud: 50000, marginal_rate: 0.37, regime: b, contributions: none}   # design value (RND-012)
+  bootstrap: {paths: 10000, mean_block_months: 12}
+alerts: {page_budget_per_month: 2}
 backup: {keep_daily: 30, keep_monthly: 24}

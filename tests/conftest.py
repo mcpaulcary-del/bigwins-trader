@@ -22,10 +22,13 @@ USER_EXAMPLE = REPO / "config" / "examples" / "user.example.yaml"
 FAKE_SHA = "1234567890abcdef1234567890abcdef12345678"
 
 
-def alembic_config(connection: object | None = None, x: list[str] | None = None) -> Config:
+def alembic_config(
+    connection: object | None = None, x: list[str] | None = None, db: str = "ledger"
+) -> Config:
     cfg = Config(str(REPO / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO / "migrations"))
     cfg.attributes["configure_logger"] = False
+    cfg.attributes["db"] = db
     if connection is not None:
         cfg.attributes["connection"] = connection
     import argparse
@@ -34,8 +37,25 @@ def alembic_config(connection: object | None = None, x: list[str] | None = None)
     return cfg
 
 
+def migrate(engine: Engine, db: str, x: list[str] | None = None) -> None:
+    with engine.begin() as conn:
+        command.upgrade(alembic_config(conn, x=x, db=db), f"{db}@head")
+
+
+def _no_floats(v: object) -> object:
+    # PyYAML's safe_load builds binary floats; config refuses them (SYS-13), so the
+    # test helper keeps them as their decimal text, exactly as the strict loader would.
+    if isinstance(v, float):
+        return repr(v)
+    if isinstance(v, dict):
+        return {k: _no_floats(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_no_floats(x) for x in v]
+    return v
+
+
 def user_dict(**overrides: object) -> dict[str, object]:
-    data: dict[str, object] = yaml.safe_load(USER_EXAMPLE.read_text())
+    data: dict[str, object] = _no_floats(yaml.safe_load(USER_EXAMPLE.read_text()))  # type: ignore[assignment]
     data["approved_git_sha"] = FAKE_SHA
     data["approved_common_hash"] = sha256_bytes(COMMON_PATH.read_bytes())
     data.update(overrides)
@@ -66,10 +86,18 @@ def config_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def sqlite_engine(tmp_path: Path) -> Iterator[Engine]:
-    """SQLite database migrated to head with the real Alembic migrations."""
+    """SQLite ledger database migrated to ledger@head with the real migrations."""
     engine = create_engine(f"sqlite:///{tmp_path / 'ledger.db'}")
-    with engine.begin() as conn:
-        command.upgrade(alembic_config(conn), "head")
+    migrate(engine, "ledger")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def market_engine(tmp_path: Path) -> Iterator[Engine]:
+    """SQLite market database migrated to market@head with the real migrations."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'market.db'}")
+    migrate(engine, "market")
     yield engine
     engine.dispose()
 

@@ -1,9 +1,10 @@
-"""Config schema and validation (spec §18, §14): OPS-10, OPS-11, OPS-12."""
+"""Config schema and validation (spec v2.10 §18): OPS-10, OPS-11, OPS-12."""
 
 from __future__ import annotations
 
 import io
 import re
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,24 +15,29 @@ from tests.conftest import COMMON_PATH, FAKE_SHA, REPO, user_dict, write_config_
 from trader import cli
 from trader.config import (
     ApprovalPinMismatchError,
+    CardEvidence,
     CommonConfig,
     ConfigPermissionError,
     ConfigValidationError,
-    Ops12Mode,
     SecretInConfigError,
+    UserConfig,
     check_approval_pins,
     compute_config_hash,
     default_sizing_nav,
     deployed_git_sha,
     enforce_ops12,
     find_secrets,
+    income_year,
     load_config,
     ops12_check,
-    ops12_mode,
     parse_common,
     sha256_bytes,
+    tranche_count,
 )
 from trader.secrets import SecretError, SecretValue, read_secret
+
+SPEC = Path("/nonexistent")  # the spec is not shipped with the repo
+TODAY = date(2026, 11, 13)
 
 
 def _common(text: str | None = None) -> CommonConfig:
@@ -44,6 +50,10 @@ def _common_with(old: str, new: str) -> bytes:
     return src.replace(old, new, 1).encode()
 
 
+def _user(**overrides: object) -> UserConfig:
+    return UserConfig.model_validate(user_dict(**overrides))
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -52,90 +62,136 @@ def _common_with(old: str, new: str) -> bytes:
 class TestCommonSchema:
     def test_repo_common_yaml_validates_with_spec_values(self) -> None:
         c = _common()
-        assert c.universe == ["BHP", "RIO", "FMG", "CBA", "CSL", "WDS"]
-        assert c.index_etf == "VAS"
-        assert c.sizing.min_order_value_aud == Decimal("4000")
-        assert c.execution.commission.min_aud_incl_gst == Decimal("6.60")
-        assert c.filters.blackout.offsets_for("CSL") == (-3, 0)
-        assert c.filters.blackout.offsets_for("BHP") == (-1, 0)
-        assert c.signals.commodity.baskets["BHP"][0].weights == {"copper": 0.58, "iron_ore": 0.42}
+        assert c.version == 3
+        assert c.rule == "L1"
+        assert {k: v.base_weight for k, v in c.sleeves.items()} == {
+            "VAS": Decimal("0.40"),
+            "VGS": Decimal("0.60"),
+        }
+        assert c.benchmarks.B1.weights == {"DHHF": Decimal("1.0")}
+        assert c.l1.min_order_value_aud == Decimal("1000")
+        assert c.l1.tranche_offsets_by_n[3] == ["last", 7, 14]
+        assert c.l1.cash_etf is None
+        assert c.venue.XASX.opening_auction == time(9, 59)
+        assert c.venue.XASX.closing_auction == (time(16, 10), time(16, 11))
+        assert c.venue.XASX.close_available_after == time(16, 25)
+        assert c.data.eodhd.calls_per_day == 20
+        assert c.data.eodhd.on_budget_exceeded == "fail_closed"
+        assert c.data.eodhd.instruments == ["VAS", "VGS", "DHHF"]
+        assert c.execution.commission.budget_min_incl_gst_aud == Decimal("6.60")
         assert c.risk_defaults.backtest_max_drawdown is None
+        assert c.benchmark_only_symbols == frozenset({"DHHF"})
+
+    def test_withdrawn_share_strategy_keys_rejected(self) -> None:
+        for block in (
+            "universe: [BHP, RIO]",
+            "small_account: {enabled: true}",
+            "signals: {}",
+            "filters: {}",
+        ):
+            with pytest.raises(ConfigValidationError, match="Extra inputs"):
+                parse_common(_common_with("version: 3", f"version: 3\n{block}"))
 
     def test_unknown_key_rejected(self) -> None:
         with pytest.raises(ConfigValidationError, match="Extra inputs"):
-            parse_common(_common_with("version: 1", "version: 1\nsurprise: true"))
+            parse_common(_common_with("version: 3", "version: 3\nsurprise: true"))
 
     def test_duplicate_key_rejected(self) -> None:
         with pytest.raises(ConfigValidationError, match="duplicate key"):
-            parse_common(_common_with("version: 1", "version: 1\nversion: 1"))
+            parse_common(_common_with("version: 3", "version: 3\nversion: 3"))
 
     def test_unquoted_time_not_read_as_base60_integer(self) -> None:
-        # Plain YAML 1.1 would read 19:30 as the integer 1170; the strict loader keeps
-        # it a string, so it parses as the clock time.
-        from datetime import time
-
-        c = parse_common(_common_with('evening_report: "19:30"', "evening_report: 19:30"))
-        assert c.schedule.evening_report == time(19, 30)
+        c = parse_common(_common_with('daily_digest: "20:00"', "daily_digest: 20:00"))
+        assert c.schedule.daily_digest == time(20, 0)
 
     def test_numeric_time_rejected(self) -> None:
         with pytest.raises(ConfigValidationError, match="quoted"):
-            parse_common(_common_with('evening_report: "19:30"', "evening_report: 1170"))
+            parse_common(_common_with('daily_digest: "20:00"', "daily_digest: 1200"))
 
-    def test_news_filter_cannot_be_enabled_in_v1(self) -> None:
-        with pytest.raises(ConfigValidationError, match="D7"):
-            parse_common(_common_with("news: {enabled: false", "news: {enabled: true"))
+    def test_sleeve_weights_must_sum_to_one(self) -> None:
+        with pytest.raises(ConfigValidationError, match="sum to exactly 1"):
+            parse_common(_common_with("VGS: {base_weight: 0.60}", "VGS: {base_weight: 0.50}"))
 
-    def test_v13_optional_paper_universe_and_rule(self) -> None:
-        c = parse_common(
-            _common_with(
-                "version: 1",
-                "version: 1\npaper_universe: [BHP, CBA, WES]\n"
-                "universe_rule: {source: ASX20, max_per_sector: 2, max_iron_ore_majors: 1}",
-            )
-        )
-        assert c.paper_universe == ["BHP", "CBA", "WES"]
-        assert c.universe_rule is not None
-        assert c.universe_rule.max_iron_ore_majors == 1
-        assert _common().paper_universe is None
+    def test_cash_etf_cannot_be_enabled(self) -> None:
         with pytest.raises(ConfigValidationError):
+            parse_common(_common_with("cash_etf: null", "cash_etf: AAA"))
+
+    def test_eodhd_must_fail_closed_and_cover_every_instrument(self) -> None:
+        with pytest.raises(ConfigValidationError):
+            parse_common(_common_with("on_budget_exceeded: fail_closed", "on_budget_exceeded: x"))
+        with pytest.raises(ConfigValidationError, match="DHHF"):
+            parse_common(_common_with("instruments: [VAS, VGS, DHHF]", "instruments: [VAS, VGS]"))
+
+    def test_release_backtest_max_drawdown_must_be_null(self) -> None:
+        with pytest.raises(ConfigValidationError):
+            parse_common(_common_with("backtest_max_drawdown: null", "backtest_max_drawdown: 0.30"))
+
+    def test_venue_auction_order_checked(self) -> None:
+        with pytest.raises(ConfigValidationError, match="venue"):
             parse_common(
                 _common_with(
-                    "version: 1",
-                    "version: 1\nuniverse_rule: {source: ASX50, "
-                    "max_per_sector: 2, max_iron_ore_majors: 1}",
+                    'closing_auction: ["16:10:00", "16:11:00"]',
+                    'closing_auction: ["16:11:00", "16:10:00"]',
                 )
             )
 
-    def test_family_weights_must_sum_to_one(self) -> None:
-        with pytest.raises(ConfigValidationError, match="sum to 1"):
-            parse_common(_common_with("{trend: 0.75, dip: 0.25}", "{trend: 0.70, dip: 0.25}"))
+    def test_schedule_order_checked(self) -> None:
+        with pytest.raises(ConfigValidationError, match="increasing"):
+            parse_common(_common_with('decide: "08:10"', 'decide: "07:10"'))
 
-    def test_vol_floors_must_cover_universe(self) -> None:
-        with pytest.raises(ConfigValidationError, match="vol_floors"):
-            parse_common(_common_with("WDS: 0.20}", "VAS: 0.20}"))
+    def test_marginal_rates_year_keyed_r37(self) -> None:
+        r = _common().research
+        assert r.rates_for(date(2026, 11, 13)) == [
+            Decimal(x) for x in ("0.00", "0.15", "0.30", "0.37", "0.45")
+        ]
+        assert r.rates_for(date(2027, 7, 1))[1] == Decimal("0.14")  # type: ignore[index]
+        assert r.rates_for(date(2030, 1, 1)) is None
+        assert income_year(date(2027, 6, 30)) == "2026-27"
+        assert income_year(date(2027, 7, 1)) == "2027-28"
 
 
 class TestUserSchema:
     def test_example_user_config_loads(self, config_dir: Path) -> None:
         loaded = load_config(config_dir, "a", deployed_sha=FAKE_SHA)
-        assert loaded.user.ibkr.port == 4004
-        assert loaded.user.small_account.enabled is True
-        assert loaded.user.small_account.universe == ["VAS", "VGS", "CASH"]
-        assert loaded.user.capital_cap_aud == Decimal("5000")
+        u = loaded.user
+        assert u.ibkr.active().port == 4004
+        assert u.mode == "STATIC"
+        assert u.hosting == "owner_host"
+        assert u.capital_cap_aud == Decimal("5000")
+        assert u.tranche_offsets == ["last"]
+        assert loaded.limits.max_orders_per_day == 6
 
-    def test_port_must_match_mode(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("path", "value", "match"),
+        [
+            (("ibkr", "live", "port"), 4004, "4003"),
+            (("ibkr", "paper", "client_id"), 12, "client_id"),
+            (("ibkr", "paper", "gateway_host"), "gw-b-paper", "gw-a-paper"),
+            (("ibkr", "live", "account_id"), "DU1234567", "live account"),
+            (("eodhd", "licensee"), "b", "licence"),
+            (("tax", "entity"), "company", "individual"),
+            (("tax", "residency"), "foreign", "resident"),
+            (("hosting",), "shared_host", "owner_host"),
+            (("mode",), "FULL", "STATIC"),
+            (("tranche_offsets",), ["last", 7], "at most 1"),
+        ],
+    )
+    def test_user_field_rules(
+        self, tmp_path: Path, path: tuple[str, ...], value: object, match: str
+    ) -> None:
         u = user_dict()
-        u["ibkr"] = {**u["ibkr"], "mode": "live"}  # type: ignore[dict-item]
-        d = write_config_dir(tmp_path, user=u)
-        with pytest.raises(ConfigValidationError, match="does not match mode"):
-            load_config(d, "a", deployed_sha=FAKE_SHA)
+        node: dict[str, object] = u
+        for k in path[:-1]:
+            node = node[k]  # type: ignore[assignment]
+        node[path[-1]] = value
+        with pytest.raises(ConfigValidationError, match=match):
+            load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
 
-    def test_gateway_must_be_own_user(self, tmp_path: Path) -> None:
-        u = user_dict()
-        u["ibkr"] = {**u["ibkr"], "gateway_host": "gw-b"}  # type: ignore[dict-item]
-        d = write_config_dir(tmp_path, user=u)
-        with pytest.raises(ConfigValidationError, match="gw-a"):
-            load_config(d, "a", deployed_sha=FAKE_SHA)
+    def test_withdrawn_user_keys_rejected(self, tmp_path: Path) -> None:
+        for key, value in (("small_account", {"enabled": True}), ("backtest", {"initial_nav": 1})):
+            u = user_dict(**{key: value})
+            with pytest.raises(ConfigValidationError, match="Extra inputs"):
+                load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
 
     def test_user_name_must_match_file(self, tmp_path: Path) -> None:
         d = write_config_dir(tmp_path, name="b")
@@ -147,85 +203,19 @@ class TestUserSchema:
         with pytest.raises(ConfigPermissionError, match="owner-only"):
             load_config(d, "a", deployed_sha=FAKE_SHA)
 
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("max_order_value_aud", 30000),
-            ("max_orders_per_day", 11),
-            ("daily_loss_pct", 0.05),
-            ("hard_drawdown_pct", 0.30),
-        ],
-    )
-    def test_personal_limits_may_only_be_tighter(
-        self, tmp_path: Path, field: str, value: object
-    ) -> None:
-        u = user_dict()
-        u["limits"] = {**u["limits"], field: value}  # type: ignore[dict-item]
-        d = write_config_dir(tmp_path, user=u)
+    def test_personal_limits_may_only_be_tighter(self, tmp_path: Path) -> None:
+        u = user_dict(limits={"max_orders_per_day": 7, "backtest_max_drawdown": None})
         with pytest.raises(ConfigValidationError, match="only be tighter"):
-            load_config(d, "a", deployed_sha=FAKE_SHA)
-
-    def test_tighter_personal_limits_accepted(self, tmp_path: Path) -> None:
-        u = user_dict(
-            limits={
-                "max_order_value_aud": 10000,
-                "max_orders_per_day": 4,
-                "daily_loss_pct": 0.02,
-                "hard_drawdown_pct": 0.20,
-            }
-        )
-        loaded = load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
-        assert loaded.limits.max_order_value_aud == Decimal("10000")
-        assert loaded.limits.max_orders_per_day == 4
-
-    def test_exclude_symbols_must_be_universe(self, tmp_path: Path) -> None:
-        d = write_config_dir(tmp_path, user=user_dict(exclude_symbols=["ANZ"]))
-        with pytest.raises(ConfigValidationError, match="not in universe"):
-            load_config(d, "a", deployed_sha=FAKE_SHA)
-
-    @pytest.mark.parametrize(
-        "bad",
-        [
-            {"universe": ["VAS", "CBA"]},  # only VAS, VGS, PMGOLD, CASH allowed
-            {"universe": []},
-            {"universe": ["VAS", "VAS"]},
-            {"switch_buffer": 0.11},
-            {"switch_buffer": -0.01},
-            {"momentum_months": [0, 6]},
-            {"asset": "VAS"},  # v1.2-amendment field removed in v1.3
-        ],
-    )
-    def test_small_account_v13_validation(self, tmp_path: Path, bad: dict[str, object]) -> None:
-        u = user_dict(small_account={"enabled": True, **bad})
-        with pytest.raises(ConfigValidationError):
             load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
-
-    def test_small_account_v13_full_block_accepted(self, tmp_path: Path) -> None:
-        u = user_dict(
-            small_account={
-                "enabled": True,
-                "universe": ["VGS", "PMGOLD", "CASH"],
-                "switch_buffer": 0.1,
-                "momentum_months": [3, 12],
-                "cash_proxy": "AAA",
-            }
-        )
-        sa = load_config(
-            write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA
-        ).user.small_account
-        assert sa.universe == ["VGS", "PMGOLD", "CASH"]
-        assert sa.switch_buffer == 0.1
-        assert sa.cash_proxy == "AAA"
-
-    def test_small_account_defaults_when_omitted(self, tmp_path: Path) -> None:
-        u = user_dict()
-        del u["small_account"]
+        u = user_dict(limits={"max_orders_per_day": 4, "backtest_max_drawdown": "0.31"})
         loaded = load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
-        assert loaded.user.small_account.enabled is True
-        assert loaded.user.small_account.universe == ["VAS", "VGS", "CASH"]
-        assert loaded.user.small_account.switch_buffer == 0.02
-        assert loaded.user.small_account.momentum_months == [6, 9, 12]
-        assert loaded.user.small_account.cash_proxy is None
+        assert loaded.limits.max_orders_per_day == 4
+        assert loaded.limits.backtest_max_drawdown == Decimal("0.31")
+
+    def test_exclude_symbols_must_be_sleeves(self, tmp_path: Path) -> None:
+        d = write_config_dir(tmp_path, user=user_dict(exclude_symbols=["DHHF"]))
+        with pytest.raises(ConfigValidationError, match="not live sleeves"):
+            load_config(d, "a", deployed_sha=FAKE_SHA)
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +263,26 @@ class TestOPS10ApprovalPins:
         assert h != compute_config_hash(u, c)
         assert h == compute_config_hash(c, u)
 
-    def test_OPS_10_config_hash_is_stored_on_runs(self) -> None:
+    def test_OPS_10_config_spec_and_card_hashes_are_stored_on_runs(self) -> None:
         from trader.ledger import Run
 
-        col = Run.__table__.c.config_hash
-        assert not col.nullable
-        assert Run.__table__.c.git_sha is not None
+        cols = Run.__table__.c
+        assert not cols.config_hash.nullable
+        assert not cols.spec_hash.nullable
+        assert not cols.git_sha.nullable
+        assert cols.card_set_hash.nullable  # null until the card set is frozen (C-12)
+
+    def test_OPS_10_run_hashes_carry_spec_and_card_set_hash(self, config_dir: Path) -> None:
+        loaded = load_config(config_dir, "a", deployed_sha=FAKE_SHA)
+        rh = loaded.run_hashes
+        assert rh.config_hash == loaded.config_hash
+        assert rh.spec_hash == loaded.common.spec_hash
+        assert re.fullmatch(r"[0-9a-f]{64}", rh.spec_hash)
+        assert rh.card_set_hash is None
+
+    def test_OPS_10_spec_hash_must_be_a_real_hash(self) -> None:
+        with pytest.raises(ConfigValidationError, match="SHA-256"):
+            parse_common(_common_with('spec_hash: "c7f0', 'spec_hash: "…'))
 
     def test_OPS_10_check_pins_both_problems_reported(self) -> None:
         from trader.config import UserConfig
@@ -350,6 +354,7 @@ class TestOPS11Secrets:
             "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
             "-----BEGIN OPENSSH PRIVATE KEY-----",
             "postgresql://trader:hunter2@postgres/ledger_a",
+            "https://eodhd.com/api/eod/VAS.AU?api_token=abcdef0123456789",
         ],
     )
     def test_OPS_11_secret_like_value_refused(self, tmp_path: Path, value: str) -> None:
@@ -402,108 +407,125 @@ class TestOPS11Secrets:
 
 
 # ---------------------------------------------------------------------------
-# OPS-12: account size vs minimum order
+# OPS-12 (v2.10)
 # ---------------------------------------------------------------------------
 
 
-class TestOPS12AccountSize:
-    """OPS-12: at trader init and on any config change, validation fails (otherwise a
-    warning in the evening report) if median full-trend position x sizing NAV is below
-    min_order_value_aud (§9)."""
+H1_OK = CardEvidence(h1_passed_with_approval=True, h11_passed_rates=frozenset({Decimal("0.37")}))
 
-    def test_OPS_12_default_config_passes_at_50k(self) -> None:
-        r = ops12_check(_common(), Decimal("50000"))
-        assert r.ok
-        # dip-ON trend weights, vol at floors: median of the six full-trend weights = 1/12.
-        assert r.median_position_aud == Decimal("4166.67")
-        assert r.dip_sleeve_assumed_on is True
 
-    def test_OPS_12_fails_below_threshold(self) -> None:
-        r = ops12_check(_common(), Decimal("45000"))
+class TestOPS12:
+    """OPS-12: validation fails at trader init and on any config change if a transition
+    order implied by the tranche count is below min_order_value_aud; the tax flags are
+    wrong; marginal_rate is unset for a live account or not a listed rate; hosting is
+    wrong; mode L1 lacks H1/H11 evidence; or backtest_max_drawdown is unset for a live
+    L1 account."""
+
+    def test_OPS_12_default_config_passes_at_5000_with_n1(self) -> None:
+        r = ops12_check(_common(), _user(), Decimal("5000"), as_of=TODAY)
+        assert r.ok, r.problems
+        assert r.tranche_count == 1
+        assert r.transition_orders == {"VAS": Decimal("2000.00"), "VGS": Decimal("3000.00")}
+
+    def test_OPS_12_tranche_count_threshold_is_9375(self) -> None:
+        c = _common()
+        assert tranche_count(c, Decimal("9374.99")) == 1
+        assert tranche_count(c, Decimal("9375")) == 3
+        r = ops12_check(c, _user(), Decimal("9375"), as_of=TODAY)
+        assert r.tranche_count == 3
+        assert r.ok  # smallest transition order 1250 >= 1000
+
+    def test_OPS_12_transition_order_below_minimum_fails(self) -> None:
+        r = ops12_check(_common(), _user(), Decimal("2400"), as_of=TODAY)
         assert not r.ok
-        assert r.median_position_aud < r.min_order_value_aud
-
-    def test_OPS_12_hard_mode_raises(self) -> None:
-        r = ops12_check(_common(), Decimal("10000"))
+        assert any("VAS transition order 960.00" in p for p in r.problems)
         with pytest.raises(ConfigValidationError, match="OPS-12"):
-            enforce_ops12(r, Ops12Mode.HARD)
+            enforce_ops12(r)
 
-    def test_OPS_12_warn_mode_returns_warning(self) -> None:
-        r = ops12_check(_common(), Decimal("10000"))
-        w = enforce_ops12(r, Ops12Mode.WARN)
-        assert w is not None
-        assert w.startswith("WARNING OPS-12")
+    def test_OPS_12_marginal_rate_required_for_live_and_must_be_listed(self) -> None:
+        live = user_dict()
+        live["ibkr"]["mode"] = "live"  # type: ignore[index]
+        r = ops12_check(_common(), UserConfig.model_validate(live), Decimal("5000"), as_of=TODAY)
+        assert any("must be set for a live account" in p for p in r.problems)
+        r = ops12_check(
+            _common(),
+            _user(tax={**user_dict()["tax"], "marginal_rate": "0.32"}),  # type: ignore[dict-item]
+            Decimal("5000"),
+            as_of=TODAY,
+        )
+        assert any("not one of research.marginal_rates[2026-27]" in p for p in r.problems)
+        ok = _user(tax={**user_dict()["tax"], "marginal_rate": "0.15"})  # type: ignore[dict-item]
+        assert ops12_check(_common(), ok, Decimal("5000"), as_of=TODAY).ok
+        # 0.15 is not a 2027-28 rate (R37: lowest rate 0.14 from 1 July 2027)
+        assert not ops12_check(_common(), ok, Decimal("5000"), as_of=date(2027, 7, 1)).ok
 
-    def test_OPS_12_pass_returns_nothing_in_either_mode(self) -> None:
-        r = ops12_check(_common(), Decimal("200000"))
-        assert enforce_ops12(r, Ops12Mode.HARD) is None
-        assert enforce_ops12(r, Ops12Mode.WARN) is None
+    def test_OPS_12_paper_account_may_leave_marginal_rate_unset(self) -> None:
+        assert ops12_check(_common(), _user(), Decimal("5000"), as_of=TODAY).ok
 
-    def test_OPS_12_mode_hard_at_init_and_on_config_change(self) -> None:
-        assert ops12_mode(is_init=True, config_hash="h", known_hashes=["h"]) is Ops12Mode.HARD
-        assert ops12_mode(is_init=False, config_hash="new", known_hashes=["h"]) is Ops12Mode.HARD
-        assert ops12_mode(is_init=False, config_hash="h", known_hashes=["h"]) is Ops12Mode.WARN
+    def test_OPS_12_mode_L1_needs_card_evidence(self) -> None:
+        u = _user(mode="L1", tax={**user_dict()["tax"], "marginal_rate": "0.37"})  # type: ignore[dict-item]
+        r = ops12_check(_common(), u, Decimal("5000"), None, as_of=TODAY)
+        assert any("card H1" in p for p in r.problems)
+        assert any("card_set_hash is null" in p for p in r.problems)
+        frozen = parse_common(
+            _common_with("card_set_hash: null", 'card_set_hash: "' + "a" * 64 + '"')
+        )
+        assert ops12_check(frozen, u, Decimal("5000"), H1_OK, as_of=TODAY).ok
+        h11_other = CardEvidence(True, frozenset({Decimal("0.45")}))
+        r = ops12_check(frozen, u, Decimal("5000"), h11_other, as_of=TODAY)
+        assert any("H11" in p for p in r.problems)
 
-    def test_OPS_12_small_account_mode_warns_only(self) -> None:
-        m = ops12_mode(is_init=True, config_hash="x", known_hashes=[], small_account_enabled=True)
-        assert m is Ops12Mode.WARN
+    def test_OPS_12_live_L1_needs_backtest_max_drawdown(self) -> None:
+        d = user_dict(mode="L1", tax={**user_dict()["tax"], "marginal_rate": "0.37"})  # type: ignore[dict-item]
+        d["ibkr"]["mode"] = "live"  # type: ignore[index]
+        frozen = parse_common(
+            _common_with("card_set_hash: null", 'card_set_hash: "' + "a" * 64 + '"')
+        )
+        r = ops12_check(frozen, UserConfig.model_validate(d), Decimal("5000"), H1_OK, as_of=TODAY)
+        assert r.problems == ("limits.backtest_max_drawdown must be set for a live account in L1",)
+        d["limits"] = {"max_orders_per_day": 6, "backtest_max_drawdown": "0.28"}
+        assert ops12_check(
+            frozen, UserConfig.model_validate(d), Decimal("5000"), H1_OK, as_of=TODAY
+        ).ok
 
-    def test_OPS_12_lower_min_order_makes_small_account_pass(self) -> None:
-        c = parse_common(_common_with("min_order_value_aud: 4000", "min_order_value_aud: 2000"))
-        assert ops12_check(c, Decimal("25000")).ok
-
-    def test_OPS_12_uses_vol_estimates_when_given(self) -> None:
-        c = _common()
-        high = dict.fromkeys(c.universe, 0.6)  # very volatile: scale shrinks
-        r = ops12_check(c, Decimal("50000"), vol_estimates=high)
-        assert r.vol_source == "estimate"
-        assert not r.ok
-
-    def test_OPS_12_dip_off_uses_larger_trend_weight(self) -> None:
-        c = _common()
-        on = ops12_check(c, Decimal("50000"), dip_sleeve_on=True)
-        off = ops12_check(c, Decimal("50000"), dip_sleeve_on=False)
-        assert off.median_position_aud > on.median_position_aud
+    def test_OPS_12_tax_and_hosting_values_refused_by_schema(self, tmp_path: Path) -> None:
+        tax = dict(user_dict()["tax"])  # type: ignore[call-overload]
+        patches: list[dict[str, object]] = [
+            {"hosting": "shared_host"},
+            {"tax": {**tax, "entity": "smsf"}},
+        ]
+        for patch in patches:
+            with pytest.raises(ConfigValidationError):
+                load_config(
+                    write_config_dir(tmp_path, user=user_dict(**patch)), "a", deployed_sha=FAKE_SHA
+                )
 
     def test_OPS_12_sizing_nav_must_be_decimal(self) -> None:
         with pytest.raises(TypeError):
-            ops12_check(_common(), 50000.0)  # type: ignore[arg-type]
+            ops12_check(_common(), _user(), 5000.0)  # type: ignore[arg-type]
 
-    def test_OPS_12_default_sizing_nav_is_capped(self, config_dir: Path) -> None:
+    def test_OPS_12_default_sizing_nav_is_the_capital_cap(self, config_dir: Path) -> None:
         loaded = load_config(config_dir, "a", deployed_sha=FAKE_SHA)
         assert default_sizing_nav(loaded.user) == Decimal("5000")
 
-    def test_OPS_12_cli_init_fails_hard_in_full_mode(
+    def test_OPS_12_cli_init_and_validate_config_fail_hard(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cli, "deployed_git_sha", lambda: FAKE_SHA)
-        u = user_dict(small_account={"enabled": False})
-        d = write_config_dir(tmp_path, user=u)
-        err = io.StringIO()
-        rc = cli.main(["init", "--user", "a", "--config-dir", str(d)], out=io.StringIO(), err=err)
-        assert rc == cli.EXIT_CONFIG_INVALID
-        assert "OPS-12" in err.getvalue()
-
-    def test_OPS_12_cli_validate_config_fails_hard_on_change(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(cli, "deployed_git_sha", lambda: FAKE_SHA)
-        u = user_dict(small_account={"enabled": False})
-        d = write_config_dir(tmp_path, user=u)
+        d = write_config_dir(tmp_path, user=user_dict(capital_cap_aud=2400))
+        for cmd in ("init", "validate-config"):
+            err = io.StringIO()
+            rc = cli.main([cmd, "--user", "a", "--config-dir", str(d)], out=io.StringIO(), err=err)
+            assert rc == cli.EXIT_CONFIG_INVALID
+            assert "OPS-12" in err.getvalue()
         rc = cli.main(
-            ["validate-config", "--user", "a", "--config-dir", str(d)],
-            out=io.StringIO(),
-            err=io.StringIO(),
-        )
-        assert rc == cli.EXIT_CONFIG_INVALID
-        rc = cli.main(
-            ["validate-config", "--user", "a", "--config-dir", str(d), "--sizing-nav", "60000"],
+            ["validate-config", "--user", "a", "--config-dir", str(d), "--sizing-nav", "5000"],
             out=io.StringIO(),
             err=io.StringIO(),
         )
         assert rc == cli.EXIT_OK
 
-    def test_OPS_12_cli_small_account_warns(
+    def test_OPS_12_cli_validate_config_passes_default(
         self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cli, "deployed_git_sha", lambda: FAKE_SHA)
@@ -514,7 +536,7 @@ class TestOPS12AccountSize:
             err=io.StringIO(),
         )
         assert rc == cli.EXIT_OK
-        assert "WARNING OPS-12" in out.getvalue()
+        assert "N=1" in out.getvalue()
 
 
 def test_example_yaml_is_valid_yaml_mapping() -> None:

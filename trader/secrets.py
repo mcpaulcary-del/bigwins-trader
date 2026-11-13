@@ -16,7 +16,7 @@ from trader.constants import SECRETS_DIR_DEFAULT
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
-# Secret names the system knows about (§14, §19). Unknown names are refused.
+# Secret names the system knows about (§15, §19). Unknown names are refused.
 KNOWN_SECRETS: frozenset[str] = frozenset(
     {
         "telegram_bot_token",
@@ -26,7 +26,8 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "db_password",
         "healthchecks_url",
         "object_store_token",
-        "onedrive_token",
+        "rclone_config",  # off-site backup remote (section 19)
+        "totp_seed",  # second factor (section 15)
         "tws_password",
     }
 )

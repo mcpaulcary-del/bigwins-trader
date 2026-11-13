@@ -1,16 +1,24 @@
-# config/<user>.yaml  (one per user; owner-only permissions: chmod 600)
+# config/<user>.yaml  (spec v2.10 §18; one per user; readable by that user only: chmod 600)
 # Copy to config/a.yaml (git-ignored), then fill in the placeholders.
 # Get the two pins with:  trader validate-config --user a --print-hashes
 user: a
 approved_git_sha: "0000000000000000000000000000000000000000"   # trader refuses to run if the deployed code differs
 approved_common_hash: "0000000000000000000000000000000000000000000000000000000000000000"  # same for common.yaml
-ibkr: {account_id: "U1234567", gateway_host: gw-a, port: 4004, client_id: 11, mode: paper}   # 4003 when live
-capital_cap_aud: 5000             # small-account default (§9.1); 50000 at Gate 3; null at Gate 4
-small_account: {enabled: true, universe: [VAS, VGS, CASH], switch_buffer: 0.02, momentum_months: [6, 9, 12], cash_proxy: null}   # v1.3 §9.1; leave with `trader mode full --confirm`
+ibkr:
+  mode: paper                      # paper or live; checked against the account id at connect (EXE-12)
+  live:  {account_id: "U1234567",  gateway_host: gw-a-live,  port: 4003, client_id: 11}
+  paper: {account_id: "DU1234567", gateway_host: gw-a-paper, port: 4004, client_id: 11}
+hosting: owner_host                # owner_host or self_hosted (USR-10)
+eodhd: {licensee: a}               # the key itself is a secret (Docker secret eodhd_api_token), not here
+capital_cap_aud: 5000              # the configured base; the cap = this + net contributions recorded since init (PRT-19)
+capital_cap_follows_contributions: true
+mode: STATIC                       # L1 only after H1 has passed and the owner has approved (OPS-12)
+tranche_offsets: [last]
 exclude_symbols: []
-limits: {max_order_value_aud: 25000, max_orders_per_day: 10, daily_loss_pct: 0.03, hard_drawdown_pct: 0.25}
-backtest: {initial_nav: 150000}
+limits: {max_orders_per_day: 6, backtest_max_drawdown: null}   # backtest_max_drawdown is written by this user's own G2 run (USR-05)
 alerts: {telegram_chat_id: "123456789", email: "user-a@example.invalid"}   # bot token is a secret, not here
-tax: {marginal_rate: 0.32, parcel_method: FIFO}
-backup: {onedrive_path: "Share Trading/user-a", age_public_key: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"}
-dashboard: {snapshot_key_id: "a-2026"}  # passphrase-derived key; never stored on the server
+tax: {entity: individual, residency: resident, regime: capital, marginal_rate: null,
+      parcel_method: FIFO, minimum_tax_exempt: false,
+      franking_realisable_rate: 1.0}
+backup: {remote_path: "trading/user-a", age_public_key: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"}
+dashboard: {snapshot_key_id: "a-2026"}
