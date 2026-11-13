@@ -1,0 +1,74 @@
+# CI for M0 (spec §20): lint, type-check, tests, requirement-coverage gate.
+# No network calls in tests; IBKR tests are @integration and never run here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci_owner
+          POSTGRES_PASSWORD: ci_only_not_a_secret
+          POSTGRES_DB: ledger_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci_owner"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PG_BASE: postgresql+psycopg://ci_owner:ci_only_not_a_secret@localhost:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+
+      - name: Install Python 3.12 and locked dependencies
+        run: uv sync --locked --python 3.12
+
+      - name: Lint (ruff)
+        run: |
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+
+      - name: Type-check (mypy --strict)
+        run: uv run --locked mypy
+
+      - name: validate-config (common.yaml)
+        run: uv run --locked trader validate-config --config-dir config
+
+      - name: Migrations (alembic upgrade head on Postgres 16)
+        env:
+          TRADER_DATABASE_URL: ${{ env.PG_BASE }}/ledger_ci
+          TRADER_DB_APP_ROLE: trader_ci_app
+        run: uv run --locked alembic upgrade head
+
+      - name: Tests
+        env:
+          TRADER_TEST_PG_URL: ${{ env.PG_BASE }}/postgres
+        run: >-
+          uv run --locked pytest -m "not integration"
+          --junitxml=junit.xml --cov=trader --cov-report=term
+
+      - name: Requirement coverage (fails if any M0 ID lacks a passing test)
+        if: always()
+        run: |
+          uv run --locked python scripts/req_coverage.py --milestone M0 --junit junit.xml \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
