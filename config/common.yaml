@@ -1,0 +1,119 @@
+# config/common.yaml  (v1 defaults)
+version: 1
+universe: [BHP, RIO, FMG, CBA, CSL, WDS]
+index_etf: VAS
+proxies: {VAS: [XJT, STW], WDS: [WPL]}
+clusters: {MINERS: [BHP, RIO, FMG], BANKS: [CBA], HEALTH: [CSL], ENERGY: [WDS]}
+schedule:              # Australia/Sydney; post-close times do not shift on half-days
+  gateway_stop: "Sat 06:00"
+  cold_start: {a: "07:30", b: "07:40"}
+  twofa_window: ["07:30", "08:55"]
+  ingest_flows: ["08:30", "18:00"]
+  pre_open_check: "09:00"
+  veto_deadline: "09:10"
+  event_check: "09:15"
+  submit_shares: ["09:30:00", "09:50:00"]
+  close_auction_orders: "10:05"
+  escalate_exits: ["10:15", "10:30"]
+  vas_orders: ["10:45", "11:30"]
+  reconcile: ["11:35", "18:00"]
+  fetch_broker_bars: "16:45"
+  fetch_vendor_data: ["18:30", "18:55"]
+  quality_check: "19:00"
+  mark_to_market: "19:05"
+  decide: {first: "19:15", second: "19:20", alternate_daily: true}
+  evening_report: "19:30"
+  decision_cutoff: "19:00:00"
+  backup: "02:00"
+data:
+  min_bars_share: 300
+  min_bars_index: 1300
+  cross_source_tolerance: 0.005
+  max_unexplained_jump: 0.25
+  driver_stale_bdays: 3
+  fx_stale_bdays: 2
+  single_source_max_sessions: 3
+  futures_roll_bdays_before_expiry: 5
+signals:
+  trend:
+    momentum: [{lookback: 252, skip: 21, vs_cash: true}, {lookback: 126}, {lookback: 63}]
+    price_above_sma: [100, 150, 200, 250]
+    sma_cross: {fast: 50, slow: 200}
+    chandelier: {atr: 20, mult: 3.0, stop_days: 10, reentry_high: 50, reentry_min_tr: 0.5}
+  dip:
+    rsi_period: 2
+    rsi_min_bars: 250
+    entry_below: 10
+    exit: {above_sma: 5, rsi_above: 65, max_days: 5}
+    trend_filter_sma: 200
+    sleeve_switch: {on_mult: 1.15, off_mult: 0.90, evaluate: first_trading_day_of_month}
+  commodity:
+    lookbacks: [20, 60]
+    baskets:
+      BHP: [{from: 2026-02-18, weights: {copper: 0.58, iron_ore: 0.42}},
+            {from: 1900-01-01, weights: {copper: 0.35, iron_ore: 0.65}}]
+      RIO: [{from: 1900-01-01, weights: {iron_ore: 0.75, copper: 0.25}}]
+      FMG: [{from: 1900-01-01, weights: {iron_ore: 1.0}}]
+      WDS: [{from: 1900-01-01, weights: {brent: 1.0}}]
+  family_weights:
+    commodity_names: {dip_on: {trend: 0.60, dip: 0.25, commodity: 0.15}, dip_off: {trend: 0.85, dip: 0.0, commodity: 0.15}}
+    other:           {dip_on: {trend: 0.75, dip: 0.25}, dip_off: {trend: 1.00, dip: 0.0}}
+filters:
+  blackout: {default: [-1, 0], CSL: [-3, 0], estimate_widen: 2}   # execution-date offsets
+  news: {enabled: false, veto_days: 3}
+  insider_sell: {enabled: false, min_directors: 2, window_days: 30, block_days: 10}
+  downgrades: {enabled: false, min_count: 3, window_days: 5, block_days: 10}
+  regime:
+    sma: 200
+    off_below: 0.98
+    on_above: 1.02
+    on_confirm_closes: 3
+    vol_window: 20
+    vol_off_pctile: 0.90
+    vol_on_pctile: 0.80
+    vol_history: 1260
+    off_stock_cap: 0.50
+    off_vas_fraction: 0.50
+sizing:
+  n_names: 6
+  target_vol: 0.15
+  ewma_lambda: 0.94
+  ewma_seed_returns: 60
+  max_vol_scale: 1.5
+  vol_floors: {BHP: 0.18, RIO: 0.18, FMG: 0.25, CBA: 0.12, CSL: 0.20, WDS: 0.20}
+  per_name_cap: 0.25
+  cluster_caps: {MINERS: 0.45}
+  csl_gap_cap: {weight: 0.05, vol_window: 60, vol_on: 0.30, release_closes: 20}
+  portfolio_vol_cap: {cap: 0.15, engage: 0.165, cov_window: 60}
+  cash_target: 0.10
+  cash_buffer: 0.02
+  rebuild_sleeve_below: 0.05
+  min_weight_change: 0.025
+  min_order_value_aud: 4000
+  min_exit_value_aud: 500
+execution:
+  exchange: ASX
+  collar: 0.01
+  exit_ladder: [0.03, 0.06, {continuous: true, at: "10:15", floor: 0.10}]
+  vas_band: 0.0015
+  commission: {min_aud_incl_gst: 6.60, rate_incl_gst: 0.00088, tolerance: 0.10}
+risk_defaults:
+  max_order_value_aud: 25000
+  max_order_value_pct: 0.10       # limit = max(aud, pct x sizing NAV)
+  backtest_max_drawdown: null     # from the Gate 1 report; RSK-22 base
+  adv_pct: 0.01
+  adv_days: 20
+  max_orders_per_day: 10
+  daily_loss_pct: 0.03
+  soft_drawdown_pct: 0.15         # reset from the Gate 1 report
+  hard_drawdown_pct: 0.25         # also capped at 1.5 x backtest max drawdown
+  min_live_sharpe_12m: null       # from the Gate 1 report
+backtest:
+  periods: {design: [2010-01-01, 2018-12-31], validation: [2019-01-01, 2022-12-31], holdout: [2023-01-01, 2026-11-13]}
+  initial_navs: [50000, 150000, 500000]
+  costs: {exchange_clearing: 0.00003, slippage_bps: {shares: 2, vas: 5}, stress_bps: {shares: [5, 10], vas: [15]}}
+  tax_marginal_rate: 0.32        # default only; VAL-07 uses each user's tax.marginal_rate
+  random_entry: {runs: 1000, block_days: 20, seed: 20261113}
+shadow: {short_interest: true, analog: false, trend_health: true, meta_model: false}
+alerts: {warning_repeat_min: 30}
+backup: {keep_daily: 30, keep_monthly: 24}

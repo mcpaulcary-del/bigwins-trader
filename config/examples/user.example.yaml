@@ -1,0 +1,15 @@
+# config/<user>.yaml  (one per user; owner-only permissions: chmod 600)
+# Copy to config/a.yaml (git-ignored), then fill in the placeholders.
+# Get the two pins with:  trader validate-config --user a --print-hashes
+user: a
+approved_git_sha: "0000000000000000000000000000000000000000"   # trader refuses to run if the deployed code differs
+approved_common_hash: "0000000000000000000000000000000000000000000000000000000000000000"  # same for common.yaml
+ibkr: {account_id: "U1234567", gateway_host: gw-a, port: 4004, client_id: 11, mode: paper}   # 4003 when live
+capital_cap_aud: 50000            # Gate 3; null at Gate 4
+exclude_symbols: []
+limits: {max_order_value_aud: 25000, max_orders_per_day: 10, daily_loss_pct: 0.03, hard_drawdown_pct: 0.25}
+backtest: {initial_nav: 150000}
+alerts: {telegram_chat_id: "123456789", email: "user-a@example.invalid"}   # bot token is a secret, not here
+tax: {marginal_rate: 0.32, parcel_method: FIFO}
+backup: {onedrive_path: "Share Trading/user-a", age_public_key: "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"}
+dashboard: {snapshot_key_id: "a-2026"}  # passphrase-derived key; never stored on the server
