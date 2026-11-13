@@ -1,12 +1,15 @@
-"""Requirement coverage table (spec §20).
+"""Requirement coverage table (spec v2.10 §20).
 
 Every CI-tested requirement ID of the milestones reached so far must appear in
 at least one test name or docstring, and (with ``--junit``) at least one of
 those tests must have passed. Prints a Markdown table; exits 1 on any gap.
 
+It also fails if any code or test refers to a withdrawn requirement ID
+(§20; withdrawn IDs are listed in change log CL-C and CL-F).
+
 Usage::
 
-    python scripts/req_coverage.py --milestone M0 [--junit report.xml] [--tests tests]
+    python scripts/req_coverage.py --milestone M1 [--junit report.xml] [--tests tests]
 """
 
 from __future__ import annotations
@@ -19,14 +22,44 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
+
+def _ids_range(prefix: str, lo: int, hi: int) -> tuple[str, ...]:
+    return tuple(f"{prefix}-{i:02d}" for i in range(lo, hi + 1))
+
+
 MILESTONES: dict[str, tuple[str, ...]] = {
     "M0": ("OPS-05", "OPS-10", "OPS-11", "OPS-12", "SYS-13", "SYS-14", "MON-03"),
+    "M1": (
+        *_ids_range("DAT", 1, 23),
+        "SYS-12",
+        "SYS-20",
+        *_ids_range("SYS", 29, 32),
+    ),
 }
-ORDER = ("M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7")
+ORDER = ("M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10")
+PREFIXES = "SYS|DAT|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF|RND|SIZ|MKT|ENG|USE|BP|STR|ADP|FUT"
 # "_" is a word character, so test_OPS_10_x has no \b before OPS: use lookarounds.
-ID_RE = re.compile(
-    r"(?<![A-Za-z])(SYS|DAT|STR|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF)[-_](\d{2})(?!\d)"
+ID_RE = re.compile(rf"(?<![A-Za-z])({PREFIXES})[-_](\d{{2}})(?!\d)")
+
+# Withdrawn requirement IDs (v2.10 change log CL-C and CL-F). Built from ranges so that
+# this file itself contains no withdrawn ID literal.
+WITHDRAWN: frozenset[str] = frozenset(
+    {
+        *_ids_range("STR", 1, 5),
+        *_ids_range("STR", 10, 12),
+        *_ids_range("PRT", 1, 5),
+        *_ids_range("SYS", 21, 22),
+        *_ids_range("SYS", 25, 28),
+        *(f"RSK-{n:02d}" for n in (5, 20, 21, 23)),
+        *_ids_range("VAL", 1, 13),
+        *(f"USR-{n:02d}" for n in (2, 6, 12)),
+        *_ids_range("ADP", 1, 4),
+        *_ids_range("FUT", 1, 7),
+    }
 )
+# Directories scanned for withdrawn IDs. The v1.x migrations 0001-0004 are history
+# and are not rewritten (they contain no requirement IDs).
+CODE_DIRS = ("trader", "tests", "scripts", "migrations")
 
 
 def required_ids(milestone: str) -> list[str]:
@@ -92,9 +125,20 @@ def junit_results(path: Path) -> dict[str, str]:
     return out
 
 
+def withdrawn_refs(root: Path) -> list[str]:
+    """Every ``path:line: ID`` where code or tests refer to a withdrawn requirement ID."""
+    hits: list[str] = []
+    for d in CODE_DIRS:
+        for path in sorted((root / d).rglob("*.py")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                for rid in _ids(line) & WITHDRAWN:
+                    hits.append(f"{path.relative_to(root)}:{n}: {rid}")
+    return hits
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--milestone", default="M0", choices=ORDER)
+    ap.add_argument("--milestone", default="M1", choices=ORDER)
     ap.add_argument("--tests", type=Path, default=Path("tests"))
     ap.add_argument("--junit", type=Path)
     args = ap.parse_args(argv)
@@ -117,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
             good = n_pass > 0 and n_fail == 0
         ok &= good
         print(f"| {rid} | {len(tests)} | {passed} | {'OK' if good else 'MISSING/FAILED'} |")
+    refs = withdrawn_refs(args.tests.resolve().parent)
+    if refs:
+        ok = False
+        print("\nWithdrawn requirement IDs referenced (spec §20 forbids this):")
+        for r in refs:
+            print(f"- {r}")
     if not ok:
         print("\nRequirement coverage FAILED", file=sys.stderr)
         return 1

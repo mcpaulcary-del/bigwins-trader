@@ -1,4 +1,4 @@
-"""CLI skeleton (§3): every subcommand registered; unimplemented ones say so."""
+"""CLI (spec v2.10 §3): every command registered; unimplemented ones say so."""
 
 from __future__ import annotations
 
@@ -12,28 +12,36 @@ from tests.conftest import REPO
 from trader import cli
 
 SPEC_COMMANDS = {
-    "run", "backtest", "validate", "replay", "status", "plan", "veto", "kill", "resume",
-    "fallback", "reconcile", "init", "cashflow", "corp-action", "secret", "migrate",
-    "validate-config", "report", "mode",
+    "run", "backtest", "replay", "status", "plan", "veto", "kill", "resume", "mode", "stage",
+    "reconcile", "init", "cashflow", "corp-action", "distribution", "qc", "fetch", "recover",
+    "drill", "canary", "golive", "expectations", "secret", "migrate", "validate-config",
+    "report", "hypothesis", "holdout",
+    "import",  # builder-named import sub-command for hand-entered reference data (§3)
 }  # fmt: skip
 
 ARGS = {
     "run": ["--user", "a"],
     "backtest": [],
-    "validate": [],
     "replay": ["2026-11-13", "--user", "a"],
     "status": ["--user", "a"],
     "plan": ["--user", "a"],
-    "veto": ["BHP", "--user", "a"],
+    "veto": ["VAS", "--user", "a"],
     "kill": ["--user", "a"],
-    "resume": ["--reason", "checked", "--user", "a"],
-    "fallback": ["--confirm", "--user", "a"],
+    "resume": ["--clear", "kill", "--reason", "checked", "--user", "a"],
+    "mode": ["static", "--confirm", "--user", "a"],
+    "stage": ["2", "--confirm", "--user", "a"],
     "reconcile": ["--accept", "--note", "n", "--user", "a"],
-    "cashflow": ["--expect", "+5000", "--user", "a"],
-    "corp-action": ["apply", "BHP", "--user", "a"],
+    "cashflow": ["--expect", "-500", "--user", "a"],
+    "corp-action": ["apply", "VAS", "--user", "a"],
+    "recover": ["--from-flex", "--user", "a"],
+    "drill": ["--sleeve", "VAS", "--to", "OFF", "--user", "a"],
+    "canary": ["--confirm", "--user", "a"],
+    "golive": ["--user", "a"],
+    "expectations": ["accept", "--user", "a"],
     "secret": ["set", "telegram_bot_token", "--user", "a"],
     "report": [],
-    "mode": ["full", "--confirm", "--user", "a"],
+    "hypothesis": ["register"],
+    "holdout": ["open", "--family", "L1", "--confirm"],
 }
 
 
@@ -44,17 +52,34 @@ def test_all_spec_subcommands_registered() -> None:
     assert set(cli.ALL_COMMANDS) == SPEC_COMMANDS
 
 
+def test_withdrawn_v1_commands_are_gone() -> None:
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if a.dest == "command")
+    for gone in ("fallback", "validate"):
+        assert gone not in sub.choices  # type: ignore[operator]
+
+
 @pytest.mark.parametrize("command", sorted(ARGS))
 def test_unimplemented_commands_exit_clearly(command: str) -> None:
     err = io.StringIO()
     rc = cli.main([command, *ARGS[command]], out=io.StringIO(), err=err)
     assert rc == cli.EXIT_NOT_IMPLEMENTED
-    assert f"trader {command}: not implemented in M0" in err.getvalue()
+    assert f"trader {command}: not implemented yet" in err.getvalue()
 
 
-def test_mode_full_requires_confirm() -> None:
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["mode", "static", "--user", "a"],
+        ["resume", "--reason", "x", "--user", "a"],
+        ["resume", "--clear", "everything", "--reason", "x", "--user", "a"],
+        ["holdout", "open", "--family", "L2", "--confirm"],
+        ["migrate"],
+    ],
+)
+def test_required_confirmations_and_choices(argv: list[str]) -> None:
     with pytest.raises(SystemExit):
-        cli.main(["mode", "full", "--user", "a"], out=io.StringIO(), err=io.StringIO())
+        cli.main(argv, out=io.StringIO(), err=io.StringIO())
 
 
 def test_validate_config_common_only() -> None:
@@ -83,4 +108,4 @@ def test_console_script_entry_point() -> None:
         check=False,
     )
     assert r.returncode == cli.EXIT_NOT_IMPLEMENTED
-    assert "not implemented in M0" in r.stderr
+    assert "not implemented yet" in r.stderr
