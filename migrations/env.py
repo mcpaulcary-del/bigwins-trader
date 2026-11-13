@@ -1,5 +1,15 @@
 """Alembic environment. Forward-only migrations (spec §12).
 
+Two databases per instance (§12), two branches in this script directory:
+
+* ``ledger`` (revisions 0001..): ``ledger_<user>_paper`` / ``ledger_<user>_live``
+  -> ``alembic -x db=ledger upgrade ledger@head``
+* ``market`` (revisions m0001..): ``market_<user>``
+  -> ``alembic -x db=market upgrade market@head``
+
+``-x db=`` is required: it selects the target metadata and every v2.10
+revision checks it, so a branch can never be applied to the wrong database.
+
 URL: ``-x url=...``, else ``trader.db.database_url()`` (``TRADER_DATABASE_URL`` for
 dev, or ``TRADER_DB_*`` settings plus the ``db_password`` Docker secret).
 App role for grants (Postgres only): ``-x app_role=...`` or
@@ -11,15 +21,26 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import MetaData, engine_from_config, pool
 
-from trader.ledger import Base
+from trader.data.models import MarketBase
+from trader.ledger import LedgerBase
 
 config = context.config
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-target_metadata = Base.metadata
+_TARGETS: dict[str, MetaData] = {"ledger": LedgerBase.metadata, "market": MarketBase.metadata}
+
+
+def _db() -> str:
+    db = context.get_x_argument(as_dictionary=True).get("db") or config.attributes.get("db")
+    if db not in _TARGETS:
+        raise RuntimeError("pass -x db=ledger or -x db=market (spec §12: two databases)")
+    return str(db)
+
+
+target_metadata = _TARGETS[_db()]
 
 
 def _url() -> str:

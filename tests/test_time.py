@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from tests.conftest import COMMON_PATH
 from trader.config import parse_common
 from trader.constants import ASX_TZ
-from trader.ledger import Base, ConfigVersion, UTCDateTime
+from trader.data.models import MarketBase
+from trader.dbtypes import UTCDateTime
+from trader.ledger import ConfigVersion, LedgerBase
 from trader.timeutil import (
     NaiveDatetimeError,
     asx_date,
@@ -57,11 +59,12 @@ def test_SYS_14_sydney_dst_offsets() -> None:
 
 def test_SYS_14_schedule_times_are_sydney_wall_clock() -> None:
     c = parse_common(COMMON_PATH.read_bytes())
-    assert c.schedule.submit_shares == (time(9, 30), time(9, 50))
-    assert c.schedule.decision_cutoff == time(19, 0)
-    assert c.schedule.gateway_stop == ("Sat", time(6, 0))
+    assert c.schedule.submit_orders == time(11, 30)
+    assert c.schedule.fetch_vendor_data == (time(19, 30), time(21, 30), time(7, 0))
+    assert c.schedule.full_redownload == ("Sun", time(3, 0))
+    assert c.venue.XASX.tz == "Australia/Sydney"
     # Times carry no tzinfo: the zone is always Australia/Sydney.
-    assert c.schedule.decision_cutoff.tzinfo is None
+    assert c.schedule.decide.tzinfo is None
     assert str(ASX_TZ) == "Australia/Sydney"
 
 
@@ -74,13 +77,14 @@ def test_SYS_14_parse_hhmm() -> None:
 
 def test_SYS_14_every_timestamp_column_is_utc_aware() -> None:
     n = 0
-    for table in Base.metadata.tables.values():
-        for col in table.columns:
-            if isinstance(col.type, DateTime | UTCDateTime):
-                n += 1
-                assert isinstance(col.type, UTCDateTime), f"{table.name}.{col.name}"
-                assert col.type.impl.timezone is True
-    assert n >= 15
+    for base in (LedgerBase, MarketBase):
+        for table in base.metadata.tables.values():
+            for col in table.columns:
+                if isinstance(col.type, DateTime | UTCDateTime):
+                    n += 1
+                    assert isinstance(col.type, UTCDateTime), f"{table.name}.{col.name}"
+                    assert col.type.impl.timezone is True
+    assert n >= 30
 
 
 def test_SYS_14_db_stores_utc_and_refuses_naive(sqlite_engine: Engine) -> None:

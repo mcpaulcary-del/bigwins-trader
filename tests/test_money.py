@@ -13,18 +13,21 @@ from sqlalchemy.orm import Session
 
 from tests.conftest import COMMON_PATH
 from trader.config import parse_common
-from trader.ledger import Base, CashLedger, MoneyType
+from trader.data.models import MarketBase
+from trader.dbtypes import MoneyType, RateType
+from trader.ledger import CashLedger, LedgerBase
 from trader.money import MoneyTypeError, require_decimal, to_money
 from trader.yamlio import load_yaml
 
 # Column names that carry AUD amounts or prices in the §12 tables.
 MONEY_COLUMN_NAMES = {
-    "amount", "cash_amount", "cash_aud", "franking_credit_aud", "withholding", "proceeds",
-    "cost_base", "gain", "commission", "gst", "price", "ref_price", "limit_price", "close",
-    "value", "nav", "cash_total", "cash_settled", "net_flow", "value_30jun2027",
+    "amount", "cash_aud", "franking_credit_aud", "withholding", "proceeds", "cost_base",
+    "indexed_cost_base", "commission", "gst", "price", "ref_price", "limit_price", "close",
+    "nav", "cash_total", "cash_settled", "net_flow", "sizing_nav", "committed_capital",
+    "open", "high", "low", "close_30jun2027", "eodhd_close", "flex_mark",
 }  # fmt: skip
-# signal scores are floats in [0, 1] (signal maths), not money; flags.value is a bool.
-NOT_MONEY_TABLES = {"signals", "shadow_signals", "flags"}  # flags.value is a bool
+# Per-unit rates (distribution amounts, FX) are exact NUMERIC(24,10) (DECISIONS L-09).
+RATE_COLUMNS = {("distribution", "cash_amount"), ("distribution", "franking_credit")}
 
 
 def test_SYS_13_to_money_rejects_float() -> None:
@@ -59,39 +62,41 @@ def test_SYS_13_yaml_numbers_parse_as_exact_decimal() -> None:
 def test_SYS_13_config_money_fields_are_decimal() -> None:
     c = parse_common(COMMON_PATH.read_bytes())
     for v in (
-        c.sizing.min_order_value_aud,
-        c.sizing.min_exit_value_aud,
-        c.execution.commission.min_aud_incl_gst,
-        c.execution.commission.rate_incl_gst,
-        c.execution.collar,
-        c.risk_defaults.max_order_value_aud,
-        c.risk_defaults.max_order_value_pct,
-        *c.backtest.initial_navs,
+        c.l1.min_order_value_aud,
+        c.l1.cash_reserve_aud,
+        c.execution.commission.min_ex_gst_aud,
+        c.execution.commission.budget_min_incl_gst_aud,
+        c.execution.commission.rate_ex_gst,
+        c.data.cross_source.ok,
+        c.sleeves["VAS"].base_weight,
+        *c.research.backtest_navs,
     ):
         assert isinstance(v, Decimal), v
-    assert c.execution.commission.min_aud_incl_gst == Decimal("6.60")
+    assert c.execution.commission.budget_min_incl_gst_aud == Decimal("6.60")
 
 
 def test_SYS_13_config_money_rejects_python_float() -> None:
-    from trader.config import Commission
+    from trader.config import DistributionMatchTolerance
 
-    with pytest.raises(ValueError, match="decimal literal"):
-        Commission.model_validate(
-            {"min_aud_incl_gst": 6.6, "rate_incl_gst": "0.00088", "tolerance": 0.1}
-        )
+    with pytest.raises(ValueError, match="decimal literals"):
+        DistributionMatchTolerance.model_validate({"abs_aud": 1.0, "pct": "0.02"})
 
 
 def test_SYS_13_every_money_column_is_numeric_18_4_decimal() -> None:
     seen = 0
-    for table in Base.metadata.tables.values():
-        for col in table.columns:
-            if col.name in MONEY_COLUMN_NAMES and table.name not in NOT_MONEY_TABLES:
-                seen += 1
-                assert isinstance(col.type, MoneyType), f"{table.name}.{col.name}"
-                impl = col.type.impl
-                assert isinstance(impl, Numeric)
-                assert (impl.precision, impl.scale, impl.asdecimal) == (18, 4, True)
-    assert seen >= 20
+    for base in (LedgerBase, MarketBase):
+        for table in base.metadata.tables.values():
+            for col in table.columns:
+                if (table.name, col.name) in RATE_COLUMNS:
+                    assert isinstance(col.type, RateType)
+                    continue
+                if col.name in MONEY_COLUMN_NAMES:
+                    seen += 1
+                    assert isinstance(col.type, MoneyType), f"{table.name}.{col.name}"
+                    impl = col.type.impl
+                    assert isinstance(impl, Numeric)
+                    assert (impl.precision, impl.scale, impl.asdecimal) == (18, 4, True)
+    assert seen >= 25
 
 
 def test_SYS_13_money_column_refuses_float_and_roundtrips_decimal(sqlite_engine: Engine) -> None:
@@ -103,6 +108,7 @@ def test_SYS_13_money_column_refuses_float_and_roundtrips_decimal(sqlite_engine:
                 ts=ts,
                 type="deposit",
                 amount=0.1,
+                currency="AUD",
                 settle_date=date(2026, 11, 13),
             )
         )
@@ -115,6 +121,7 @@ def test_SYS_13_money_column_refuses_float_and_roundtrips_decimal(sqlite_engine:
                 ts=ts,
                 type="deposit",
                 amount=Decimal("1234.5678"),
+                currency="AUD",
                 settle_date=date(2026, 11, 13),
             )
         )
@@ -140,6 +147,7 @@ def test_SYS_13_floats_only_in_signal_modules() -> None:
         "money.py",
         "execution.py",
         "broker",
+        "data",
     ]
     for name in money_layers:
         p = root / name
