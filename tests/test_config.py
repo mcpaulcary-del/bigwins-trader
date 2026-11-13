@@ -85,6 +85,27 @@ class TestCommonSchema:
         with pytest.raises(ConfigValidationError, match="D7"):
             parse_common(_common_with("news: {enabled: false", "news: {enabled: true"))
 
+    def test_v13_optional_paper_universe_and_rule(self) -> None:
+        c = parse_common(
+            _common_with(
+                "version: 1",
+                "version: 1\npaper_universe: [BHP, CBA, WES]\n"
+                "universe_rule: {source: ASX20, max_per_sector: 2, max_iron_ore_majors: 1}",
+            )
+        )
+        assert c.paper_universe == ["BHP", "CBA", "WES"]
+        assert c.universe_rule is not None
+        assert c.universe_rule.max_iron_ore_majors == 1
+        assert _common().paper_universe is None
+        with pytest.raises(ConfigValidationError):
+            parse_common(
+                _common_with(
+                    "version: 1",
+                    "version: 1\nuniverse_rule: {source: ASX50, "
+                    "max_per_sector: 2, max_iron_ore_majors: 1}",
+                )
+            )
+
     def test_family_weights_must_sum_to_one(self) -> None:
         with pytest.raises(ConfigValidationError, match="sum to 1"):
             parse_common(_common_with("{trend: 0.75, dip: 0.25}", "{trend: 0.70, dip: 0.25}"))
@@ -99,7 +120,7 @@ class TestUserSchema:
         loaded = load_config(config_dir, "a", deployed_sha=FAKE_SHA)
         assert loaded.user.ibkr.port == 4004
         assert loaded.user.small_account.enabled is True
-        assert loaded.user.small_account.asset == "VAS"
+        assert loaded.user.small_account.universe == ["VAS", "VGS", "CASH"]
         assert loaded.user.capital_cap_aud == Decimal("5000")
 
     def test_port_must_match_mode(self, tmp_path: Path) -> None:
@@ -162,22 +183,49 @@ class TestUserSchema:
         with pytest.raises(ConfigValidationError, match="not in universe"):
             load_config(d, "a", deployed_sha=FAKE_SHA)
 
-    def test_small_account_asset_must_not_be_excluded(self, tmp_path: Path) -> None:
-        u = user_dict(exclude_symbols=["BHP"], small_account={"enabled": True, "asset": "BHP"})
-        with pytest.raises(ConfigValidationError, match="small_account.asset"):
-            load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
-
-    def test_small_account_asset_restricted_to_vas_or_bhp(self, tmp_path: Path) -> None:
-        u = user_dict(small_account={"enabled": True, "asset": "CBA"})
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"universe": ["VAS", "CBA"]},  # only VAS, VGS, PMGOLD, CASH allowed
+            {"universe": []},
+            {"universe": ["VAS", "VAS"]},
+            {"switch_buffer": 0.11},
+            {"switch_buffer": -0.01},
+            {"momentum_months": [0, 6]},
+            {"asset": "VAS"},  # v1.2-amendment field removed in v1.3
+        ],
+    )
+    def test_small_account_v13_validation(self, tmp_path: Path, bad: dict[str, object]) -> None:
+        u = user_dict(small_account={"enabled": True, **bad})
         with pytest.raises(ConfigValidationError):
             load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
+
+    def test_small_account_v13_full_block_accepted(self, tmp_path: Path) -> None:
+        u = user_dict(
+            small_account={
+                "enabled": True,
+                "universe": ["VGS", "PMGOLD", "CASH"],
+                "switch_buffer": 0.1,
+                "momentum_months": [3, 12],
+                "cash_proxy": "AAA",
+            }
+        )
+        sa = load_config(
+            write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA
+        ).user.small_account
+        assert sa.universe == ["VGS", "PMGOLD", "CASH"]
+        assert sa.switch_buffer == 0.1
+        assert sa.cash_proxy == "AAA"
 
     def test_small_account_defaults_when_omitted(self, tmp_path: Path) -> None:
         u = user_dict()
         del u["small_account"]
         loaded = load_config(write_config_dir(tmp_path, user=u), "a", deployed_sha=FAKE_SHA)
         assert loaded.user.small_account.enabled is True
-        assert loaded.user.small_account.asset == "VAS"
+        assert loaded.user.small_account.universe == ["VAS", "VGS", "CASH"]
+        assert loaded.user.small_account.switch_buffer == 0.02
+        assert loaded.user.small_account.momentum_months == [6, 9, 12]
+        assert loaded.user.small_account.cash_proxy is None
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +477,7 @@ class TestOPS12AccountSize:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cli, "deployed_git_sha", lambda: FAKE_SHA)
-        u = user_dict(small_account={"enabled": False, "asset": "VAS"})
+        u = user_dict(small_account={"enabled": False})
         d = write_config_dir(tmp_path, user=u)
         err = io.StringIO()
         rc = cli.main(["init", "--user", "a", "--config-dir", str(d)], out=io.StringIO(), err=err)
@@ -440,7 +488,7 @@ class TestOPS12AccountSize:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(cli, "deployed_git_sha", lambda: FAKE_SHA)
-        u = user_dict(small_account={"enabled": False, "asset": "VAS"})
+        u = user_dict(small_account={"enabled": False})
         d = write_config_dir(tmp_path, user=u)
         rc = cli.main(
             ["validate-config", "--user", "a", "--config-dir", str(d)],

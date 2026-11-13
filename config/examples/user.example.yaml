@@ -6,7 +6,7 @@ approved_git_sha: "0000000000000000000000000000000000000000"   # trader refuses 
 approved_common_hash: "0000000000000000000000000000000000000000000000000000000000000000"  # same for common.yaml
 ibkr: {account_id: "U1234567", gateway_host: gw-a, port: 4004, client_id: 11, mode: paper}   # 4003 when live
 capital_cap_aud: 5000             # small-account default (§9.1); 50000 at Gate 3; null at Gate 4
-small_account: {enabled: true, asset: VAS}   # §9.1 amendment; leave with `trader mode full --confirm`
+small_account: {enabled: true, universe: [VAS, VGS, CASH], switch_buffer: 0.02, momentum_months: [6, 9, 12], cash_proxy: null}   # v1.3 §9.1; leave with `trader mode full --confirm`
 exclude_symbols: []
 limits: {max_order_value_aud: 25000, max_orders_per_day: 10, daily_loss_pct: 0.03, hard_drawdown_pct: 0.25}
 backtest: {initial_nav: 150000}

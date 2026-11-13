@@ -594,6 +594,14 @@ class BackupCommon(_Model):
     keep_monthly: PosInt
 
 
+class UniverseRule(_Model):
+    """v1.3 amendment: rule for choosing a paper universe. Schema only in M0."""
+
+    source: Literal["ASX20"]
+    max_per_sector: PosInt
+    max_iron_ore_majors: NonNegInt
+
+
 class CommonConfig(_Model):
     version: Literal[1]
     universe: Annotated[list[Symbol], Field(min_length=1)]
@@ -611,6 +619,9 @@ class CommonConfig(_Model):
     shadow: ShadowConfig
     alerts: AlertsCommon
     backup: BackupCommon
+    # v1.3 amendment: schema only, no behaviour in M0.
+    paper_universe: list[Symbol] | None = None
+    universe_rule: UniverseRule | None = None
 
     @model_validator(mode="after")
     def _cross(self) -> Self:
@@ -634,6 +645,10 @@ class CommonConfig(_Model):
             raise ValueError("proxies refer to an unknown symbol")
         if not set(self.filters.blackout.overrides) <= set(uni):
             raise ValueError("blackout overrides refer to a symbol outside the universe")
+        if self.paper_universe is not None and len(set(self.paper_universe)) != len(
+            self.paper_universe
+        ):
+            raise ValueError("paper_universe has duplicates")
         if self.sizing.per_name_cap + self.sizing.cash_target > 1:
             raise ValueError("per_name_cap + cash_target must not exceed 1")
         return self
@@ -717,11 +732,34 @@ class UserDashboard(_Model):
     snapshot_key_id: StrictStr
 
 
+SmallAccountAsset = Literal["VAS", "VGS", "PMGOLD", "CASH"]
+
+
+def _default_small_universe() -> list[SmallAccountAsset]:
+    return ["VAS", "VGS", "CASH"]
+
+
 class SmallAccount(_Model):
-    """Small-account mode (spec v1.2 + §9.1 amendment). Behaviour (PRT-10..PRT-17) is M2."""
+    """Small-account mode (spec v1.3 amendment, §9.1). Schema only in M0;
+    behaviour (PRT-10..PRT-17) is M2."""
 
     enabled: StrictBool = True
-    asset: Literal["VAS", "BHP"] = "VAS"
+    universe: Annotated[list[SmallAccountAsset], Field(min_length=1)] = Field(
+        default_factory=_default_small_universe
+    )
+    switch_buffer: Annotated[float, Field(ge=0, le=0.1)] = 0.02
+    momentum_months: Annotated[list[PosInt], Field(min_length=1)] = Field(
+        default_factory=lambda: [6, 9, 12]
+    )
+    cash_proxy: Symbol | None = None
+
+    @model_validator(mode="after")
+    def _distinct(self) -> Self:
+        if len(set(self.universe)) != len(self.universe):
+            raise ValueError("small_account.universe has duplicates")
+        if len(set(self.momentum_months)) != len(self.momentum_months):
+            raise ValueError("small_account.momentum_months has duplicates")
+        return self
 
 
 class UserConfig(_Model):
@@ -787,12 +825,6 @@ def check_user_against_common(common: CommonConfig, user: UserConfig) -> Effecti
     unknown = set(user.exclude_symbols) - set(common.universe)
     if unknown:
         errors.append(f"exclude_symbols not in universe: {sorted(unknown)}")
-    sa = user.small_account
-    if sa.enabled:
-        if sa.asset not in {*common.universe, common.index_etf}:
-            errors.append(f"small_account.asset {sa.asset} is not in the universe or index_etf")
-        if sa.asset in user.exclude_symbols:
-            errors.append(f"small_account.asset {sa.asset} is in exclude_symbols")
     if errors:
         raise ConfigValidationError("; ".join(errors))
     return EffectiveLimits(
