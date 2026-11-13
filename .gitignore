@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+# Secrets and per-user live configs never enter git (OPS-11, D11)
+.env
+.env.*
+secrets/
+config/a.yaml
+config/b.yaml
+logs/
+trader/_build_sha.txt
