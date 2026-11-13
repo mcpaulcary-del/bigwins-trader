@@ -44,11 +44,12 @@ ignore = [
     "PLR0913",  # many-argument functions are fine for explicit interfaces
     "PLR2004",  # magic values in comparisons (tests/constants)
     "S101",     # assert is used in tests
+    "PLC0415",  # deliberate lazy imports (alembic, avoid cycles)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "DTZ001"]
-"migrations/**" = ["E501", "N999"]
+"migrations/**" = ["E501", "N999", "S608"]  # role names validated by regex
 
 [tool.ruff.format]
 quote-style = "double"
@@ -59,6 +60,7 @@ strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
 files = ["trader", "tests", "scripts", "migrations"]
+explicit_package_bases = true
 
 # Decision core (§3/§20): strict, no relaxations ever.
 [[tool.mypy.overrides]]

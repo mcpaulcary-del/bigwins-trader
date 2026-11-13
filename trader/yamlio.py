@@ -41,24 +41,22 @@ def _construct_mapping(loader: yaml.SafeLoader, node: yaml.Node) -> dict[Any, An
     loader.flatten_mapping(node)
     result: dict[Any, Any] = {}
     for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=True)
+        key = loader.construct_object(key_node, deep=True)  # type: ignore[no-untyped-call]
         if key in result:
             raise YamlDuplicateKeyError(f"duplicate key {key!r} at {key_node.start_mark}")
-        result[key] = loader.construct_object(value_node, deep=True)
+        result[key] = loader.construct_object(value_node, deep=True)  # type: ignore[no-untyped-call]
     return result
 
 
 _StrictLoader.add_constructor("tag:yaml.org,2002:float", _construct_decimal)
-_StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
-)
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
 
 # Drop the YAML 1.1 implicit int resolver and re-add one without base-60.
 _StrictLoader.yaml_implicit_resolvers = {
     k: [(tag, rx) for tag, rx in v if tag != "tag:yaml.org,2002:int"]
     for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()
 }
-_StrictLoader.add_implicit_resolver(
+_StrictLoader.add_implicit_resolver(  # type: ignore[no-untyped-call]
     "tag:yaml.org,2002:int",
     re.compile(
         r"""^(?:[-+]?0b[0-1_]+

@@ -24,7 +24,7 @@ def to_money(value: Decimal | int | str) -> AUD:
 
     ``float`` is rejected (SYS-13). ``bool`` is rejected (it is an ``int``).
     """
-    if isinstance(value, bool) or isinstance(value, float):
+    if isinstance(value, bool | float):
         raise MoneyTypeError(f"money must not be built from {type(value).__name__}: {value!r}")
     if not isinstance(value, Decimal | int | str):
         raise MoneyTypeError(f"unsupported money type {type(value).__name__}")

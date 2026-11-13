@@ -27,14 +27,56 @@ depends_on: str | Sequence[str] | None = None
 
 SRC = "spec v1.2 section 5 (2026-11-13)"
 EVENTS = [
-    ("BHP", "QUARTERLY_REVIEW", date(2027, 1, 19), True, f"{SRC}: Dec-quarter operational review, about Tue 19 Jan 2027"),
+    (
+        "BHP",
+        "QUARTERLY_REVIEW",
+        date(2027, 1, 19),
+        True,
+        f"{SRC}: Dec-quarter operational review, about Tue 19 Jan 2027",
+    ),
     ("BHP", "RESULTS", date(2027, 2, 16), True, f"{SRC}: half-year results, about Tue 16 Feb 2027"),
-    ("BHP", "RESULTS", date(2027, 2, 23), True, f"{SRC}: half-year results, alternative date 23 Feb 2027 (some sources)"),
-    ("BHP", "EX_DIVIDEND", date(2027, 3, 4), True, f"{SRC}: interim ex-dividend, about Thu 4 Mar 2027 (no blackout)"),
-    ("CBA", "RESULTS", date(2027, 2, 10), True, f"{SRC}: half-year results 10 Feb 2027 (spec: not estimate, but marked verify)"),
-    (None, "RBA_DECISION", date(2027, 2, 9), True, f"{SRC}: RBA decision day 2 of 8-9 Feb 2027 (flag only)"),
-    (None, "RBA_DECISION", date(2027, 3, 23), True, f"{SRC}: RBA decision day 2 of 22-23 Mar 2027 (flag only)"),
-    (None, "RBA_DECISION", date(2027, 5, 4), True, f"{SRC}: RBA decision day 2 of 3-4 May 2027 (flag only)"),
+    (
+        "BHP",
+        "RESULTS",
+        date(2027, 2, 23),
+        True,
+        f"{SRC}: half-year results, alternative date 23 Feb 2027 (some sources)",
+    ),
+    (
+        "BHP",
+        "EX_DIVIDEND",
+        date(2027, 3, 4),
+        True,
+        f"{SRC}: interim ex-dividend, about Thu 4 Mar 2027 (no blackout)",
+    ),
+    (
+        "CBA",
+        "RESULTS",
+        date(2027, 2, 10),
+        True,
+        f"{SRC}: half-year results 10 Feb 2027 (spec: not estimate, but marked verify)",
+    ),
+    (
+        None,
+        "RBA_DECISION",
+        date(2027, 2, 9),
+        True,
+        f"{SRC}: RBA decision day 2 of 8-9 Feb 2027 (flag only)",
+    ),
+    (
+        None,
+        "RBA_DECISION",
+        date(2027, 3, 23),
+        True,
+        f"{SRC}: RBA decision day 2 of 22-23 Mar 2027 (flag only)",
+    ),
+    (
+        None,
+        "RBA_DECISION",
+        date(2027, 5, 4),
+        True,
+        f"{SRC}: RBA decision day 2 of 3-4 May 2027 (flag only)",
+    ),
 ]
 
 

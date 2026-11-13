@@ -59,7 +59,9 @@ def read_secret(name: str, secrets_dir: Path = SECRETS_DIR_DEFAULT) -> SecretVal
         raise SecretError(f"unknown secret name {name!r}")
     path = secrets_dir / name
     if not path.is_file():
-        raise SecretError(f"secret {name!r} not found in {secrets_dir} (set it with `trader secret set`)")
+        raise SecretError(
+            f"secret {name!r} not found in {secrets_dir} (set it with `trader secret set`)"
+        )
     value = path.read_text(encoding="utf-8").strip()
     if not value:
         raise SecretError(f"secret {name!r} is empty")

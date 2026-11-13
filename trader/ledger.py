@@ -501,8 +501,9 @@ class AuditLog(Base):
     """Permanent, append-only. The app role has INSERT only (migration 0002)."""
 
     __tablename__ = "audit_log"
-    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True,
-                                    autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
     ts: Mapped[datetime] = mapped_column(UTCDateTime())
     actor: Mapped[str] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(64))
@@ -523,9 +524,7 @@ MUTABLE_COLUMNS: Final[dict[str, frozenset[str]]] = {
     "parcels": frozenset({"qty_open"}),
     "flags": frozenset({ALL_COLUMNS}),
 }
-INSERT_ONLY_TABLES: Final = frozenset(
-    t for t in Base.metadata.tables if t not in MUTABLE_COLUMNS
-)
+INSERT_ONLY_TABLES: Final = frozenset(t for t in Base.metadata.tables if t not in MUTABLE_COLUMNS)
 
 
 class ImmutableRowError(Exception):
@@ -574,7 +573,11 @@ def update_mutable(
         raise ImmutableRowError(f"{table}.{column} is insert-only (§12)")
     old = getattr(obj, column)
     setattr(obj, column, value)
-    pk = {c.key: getattr(obj, c.key) for c in obj.__mapper__.primary_key}
+    mapper = obj.__mapper__
+    pk = {
+        str(c.name): v
+        for c, v in zip(mapper.primary_key, mapper.primary_key_from_instance(obj), strict=True)
+    }
     write_audit(
         session,
         actor=actor,

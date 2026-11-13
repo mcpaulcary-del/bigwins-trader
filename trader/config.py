@@ -20,6 +20,7 @@ Rules implemented here:
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 import statistics
 import subprocess
@@ -109,8 +110,12 @@ def _symbol(v: str) -> str:
     return v
 
 
-Money = Annotated[Decimal, BeforeValidator(_reject_float), Field(ge=0, max_digits=18, decimal_places=4)]
-PositiveMoney = Annotated[Decimal, BeforeValidator(_reject_float), Field(gt=0, max_digits=18, decimal_places=4)]
+Money = Annotated[
+    Decimal, BeforeValidator(_reject_float), Field(ge=0, max_digits=18, decimal_places=4)
+]
+PositiveMoney = Annotated[
+    Decimal, BeforeValidator(_reject_float), Field(gt=0, max_digits=18, decimal_places=4)
+]
 DecRatio = Annotated[Decimal, BeforeValidator(_reject_float), Field(ge=0, le=1)]
 Ratio = Annotated[float, Field(ge=0, le=1)]
 PosFloat = Annotated[float, Field(gt=0)]
@@ -285,7 +290,9 @@ class CommodityConfig(_Model):
         for sym, entries in self.baskets.items():
             froms = [e.from_ for e in entries]
             if froms != sorted(froms, reverse=True) or len(set(froms)) != len(froms):
-                raise ValueError(f"{sym} basket entries must be in strictly descending 'from' order")
+                raise ValueError(
+                    f"{sym} basket entries must be in strictly descending 'from' order"
+                )
         return self
 
 
@@ -535,7 +542,7 @@ class BacktestPeriods(_Model):
         for start, end in seq:
             if start > end:
                 raise ValueError("backtest period start after end")
-        for (_, e1), (s2, _) in zip(seq, seq[1:], strict=False):
+        for (_, e1), (s2, _) in itertools.pairwise(seq):
             if not e1 < s2:
                 raise ValueError("backtest periods must be ordered and non-overlapping")
         return self
@@ -710,12 +717,20 @@ class UserDashboard(_Model):
     snapshot_key_id: StrictStr
 
 
+class SmallAccount(_Model):
+    """Small-account mode (spec v1.2 + §9.1 amendment). Behaviour (PRT-10..PRT-17) is M2."""
+
+    enabled: StrictBool = True
+    asset: Literal["VAS", "BHP"] = "VAS"
+
+
 class UserConfig(_Model):
     user: Annotated[StrictStr, Field(pattern=r"^[a-z][a-z0-9_]{0,15}$")]
     approved_git_sha: Annotated[StrictStr, AfterValidator(_git_sha)]
     approved_common_hash: Annotated[StrictStr, AfterValidator(_sha256)]
     ibkr: IbkrConfig
     capital_cap_aud: PositiveMoney | None
+    small_account: SmallAccount = Field(default_factory=SmallAccount)
     exclude_symbols: list[Symbol]
     limits: UserLimits
     backtest: UserBacktest
@@ -772,6 +787,12 @@ def check_user_against_common(common: CommonConfig, user: UserConfig) -> Effecti
     unknown = set(user.exclude_symbols) - set(common.universe)
     if unknown:
         errors.append(f"exclude_symbols not in universe: {sorted(unknown)}")
+    sa = user.small_account
+    if sa.enabled:
+        if sa.asset not in {*common.universe, common.index_etf}:
+            errors.append(f"small_account.asset {sa.asset} is not in the universe or index_etf")
+        if sa.asset in user.exclude_symbols:
+            errors.append(f"small_account.asset {sa.asset} is in exclude_symbols")
     if errors:
         raise ConfigValidationError("; ".join(errors))
     return EffectiveLimits(
@@ -820,9 +841,8 @@ def find_secrets(data: object, path: str = "") -> list[str]:
     elif isinstance(data, list | tuple):
         for i, v in enumerate(data):
             hits.extend(find_secrets(v, f"{path}[{i}]"))
-    elif isinstance(data, str):
-        if any(rx.search(data) for rx in _SECRET_VALUE_RES):
-            hits.append(f"{path} (secret-like value)")
+    elif isinstance(data, str) and any(rx.search(data) for rx in _SECRET_VALUE_RES):
+        hits.append(f"{path} (secret-like value)")
     return hits
 
 
@@ -852,7 +872,9 @@ def compute_config_hash(common_bytes: bytes, user_bytes: bytes) -> str:
     return h.hexdigest()
 
 
-def deployed_git_sha(repo_root: Path | None = None, build_sha_file: Path = BUILD_SHA_FILE) -> str | None:
+def deployed_git_sha(
+    repo_root: Path | None = None, build_sha_file: Path = BUILD_SHA_FILE
+) -> str | None:
     """SHA of the deployed code.
 
     In the container image (no ``.git``) the SHA is baked into
@@ -865,13 +887,21 @@ def deployed_git_sha(repo_root: Path | None = None, build_sha_file: Path = BUILD
         return build_sha_file.read_text(encoding="ascii").strip()
     root = repo_root or Path(__file__).resolve().parent.parent
     try:
-        sha = subprocess.run(  # noqa: S603
+        sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],  # noqa: S607
-            cwd=root, capture_output=True, text=True, check=True, timeout=10,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
         ).stdout.strip()
-        dirty = subprocess.run(  # noqa: S603
+        dirty = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=no"],  # noqa: S607
-            cwd=root, capture_output=True, text=True, check=True, timeout=10,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
@@ -884,9 +914,7 @@ def check_approval_pins(user: UserConfig, common_hash: str, deployed_sha: str | 
     if deployed_sha is None:
         problems.append("deployed git SHA could not be determined")
     elif deployed_sha != user.approved_git_sha:
-        problems.append(
-            f"deployed code {deployed_sha} != approved_git_sha {user.approved_git_sha}"
-        )
+        problems.append(f"deployed code {deployed_sha} != approved_git_sha {user.approved_git_sha}")
     if common_hash != user.approved_common_hash:
         problems.append(
             f"common.yaml sha256 {common_hash} != approved_common_hash {user.approved_common_hash}"
@@ -979,8 +1007,22 @@ def enforce_ops12(result: Ops12Result, mode: Ops12Mode) -> str | None:
     return "WARNING " + result.message
 
 
-def ops12_mode(*, is_init: bool, config_hash: str, known_hashes: Iterable[str]) -> Ops12Mode:
-    """HARD at ``trader init`` and whenever the config hash has not been seen before."""
+def ops12_mode(
+    *,
+    is_init: bool,
+    config_hash: str,
+    known_hashes: Iterable[str],
+    small_account_enabled: bool = False,
+) -> Ops12Mode:
+    """HARD at ``trader init`` and whenever the config hash has not been seen before.
+
+    In small-account mode (§9.1 amendment) the full-trend sleeve is not traded,
+    so OPS-12 is reported as a warning only; leaving small-account mode
+    (``trader mode full --confirm``) is a config change and makes it HARD again.
+    See docs/DECISIONS.md.
+    """
+    if small_account_enabled:
+        return Ops12Mode.WARN
     if is_init or config_hash not in set(known_hashes):
         return Ops12Mode.HARD
     return Ops12Mode.WARN
@@ -1071,7 +1113,9 @@ def load_config(
     common = parse_common(common_bytes, str(common_path))
     user_cfg = parse_user(user_bytes, str(user_path))
     if user_cfg.user != user:
-        raise ConfigValidationError(f"{user_path}: 'user: {user_cfg.user}' does not match file name")
+        raise ConfigValidationError(
+            f"{user_path}: 'user: {user_cfg.user}' does not match file name"
+        )
     limits = check_user_against_common(common, user_cfg)
     common_hash = sha256_bytes(common_bytes)
     if check_pins:

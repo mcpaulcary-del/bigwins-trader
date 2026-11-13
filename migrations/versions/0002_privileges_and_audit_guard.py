@@ -29,11 +29,34 @@ depends_on: str | Sequence[str] | None = None
 
 # Snapshot of the schema as of 0001 (migrations never import app code).
 TABLES = (
-    "alerts", "audit_log", "broker_orders", "calendar", "cash_ledger", "classifier_outputs",
-    "config_versions", "corporate_actions", "disposals", "dividends", "events", "fills",
-    "flags", "instruments", "nav_eod", "order_intents", "parcels", "plan_lines", "plans",
-    "positions_eod", "recon", "runs", "shadow_signals", "signals", "strategy_state",
-    "trials", "valuations_2027", "vetoes",
+    "alerts",
+    "audit_log",
+    "broker_orders",
+    "calendar",
+    "cash_ledger",
+    "classifier_outputs",
+    "config_versions",
+    "corporate_actions",
+    "disposals",
+    "dividends",
+    "events",
+    "fills",
+    "flags",
+    "instruments",
+    "nav_eod",
+    "order_intents",
+    "parcels",
+    "plan_lines",
+    "plans",
+    "positions_eod",
+    "recon",
+    "runs",
+    "shadow_signals",
+    "signals",
+    "strategy_state",
+    "trials",
+    "valuations_2027",
+    "vetoes",
 )
 # §12: only these columns may be updated ("*" = every column).
 MUTABLE = {
@@ -49,8 +72,10 @@ _ROLE_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 
 def _app_role() -> str:
-    role = context.get_x_argument(as_dictionary=True).get("app_role") or os.environ.get(
-        "TRADER_DB_APP_ROLE", "trader_app"
+    role: str = (
+        context.get_x_argument(as_dictionary=True).get("app_role")
+        or os.environ.get("TRADER_DB_APP_ROLE")
+        or "trader_app"
     )
     if not _ROLE_RE.fullmatch(role):
         raise ValueError(f"invalid app role name {role!r}")

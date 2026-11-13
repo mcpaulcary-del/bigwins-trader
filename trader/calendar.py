@@ -61,7 +61,7 @@ class AsxCalendar:
             raise CalendarGapError("calendar table has gaps between its first and last date")
         self._trading = [d for d in self._dates if self._by_date[d].is_trading]
         self._normal_close = max(
-            (e.close_time for e in self._by_date.values() if e.close_time is not None)
+            e.close_time for e in self._by_date.values() if e.close_time is not None
         )
 
     # -- construction -------------------------------------------------------

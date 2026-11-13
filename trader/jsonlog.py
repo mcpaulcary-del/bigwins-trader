@@ -40,10 +40,18 @@ LOG_FIELDS: Final = (
     "msg",
     "data",
 )
-_CONTEXT_FIELDS: Final = ("user", "run_id", "job", "event", "symbol", "client_order_id", "reason_code")
+_CONTEXT_FIELDS: Final = (
+    "user",
+    "run_id",
+    "job",
+    "event",
+    "symbol",
+    "client_order_id",
+    "reason_code",
+)
 
 # IBKR account ids: U1234567 / DU1234567.
-_ACCOUNT_RE = re.compile(r"\b(D?U)(\d+)(\d{%d})\b" % ACCOUNT_VISIBLE_DIGITS)
+_ACCOUNT_RE = re.compile(rf"\b(D?U)(\d+)(\d{{{ACCOUNT_VISIBLE_DIGITS}}})\b")
 _SECRET_KEY_RE = re.compile(
     r"(?i)(pass(word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|credential|"
     r"authorization|bearer|cookie)"
@@ -74,7 +82,7 @@ def _scrub_str(text: str) -> str:
     return mask_account(text)
 
 
-def scrub(value: Any, _depth: int = 0) -> Any:
+def scrub(value: Any, _depth: int = 0) -> Any:  # noqa: PLR0911, PLR0912
     """Make a value JSON-safe and free of secrets and full account numbers."""
     if _depth > 20:
         return "<max depth>"
