@@ -1,7 +1,7 @@
 [project]
 name = "asx-trader"
 version = "0.0.1"
-description = "Automated long-only end-of-day ASX share trading system (spec v1.2). M0: foundations."
+description = "Automated long-only monthly ASX ETF trading system (spec v2.10). M0 foundations and M1 data pipeline."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 # Exact pins (INF-04); uv.lock pins the full transitive set with hashes.
@@ -12,6 +12,9 @@ dependencies = [
     "alembic==1.16.5",
     "psycopg[binary]==3.2.9",
     "tzdata==2025.2",
+    "pandas==2.3.3",
+    "numpy==2.3.4",
+    "exchange_calendars==4.11.2",  # OPS-05: XASX session-date cross-check only
 ]
 
 [project.scripts]
@@ -24,6 +27,7 @@ dev = [
     "ruff==0.12.11",
     "mypy==1.17.1",
     "types-PyYAML==6.0.12.20250822",
+    "pandas-stubs==2.3.2.250926",
 ]
 
 [build-system]
@@ -64,13 +68,17 @@ explicit_package_bases = true
 
 # Decision core (§3/§20): strict, no relaxations ever.
 [[tool.mypy.overrides]]
-module = ["trader.signals.*", "trader.strategy", "trader.orders", "trader.risk", "trader.config", "trader.money", "trader.timeutil", "trader.calendar"]
+module = ["trader.rules.*", "trader.strategy", "trader.orders", "trader.risk", "trader.config", "trader.money", "trader.timeutil", "trader.calendar", "trader.data.*"]
 strict = true
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
 module = ["tests.*", "migrations.*"]
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["exchange_calendars", "exchange_calendars.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -85,3 +93,8 @@ markers = [
     "postgres: needs a reachable PostgreSQL 16 (TRADER_TEST_PG_URL); skipped if unset",
 ]
 filterwarnings = ["error"]
+
+[tool.uv]
+# BP-10 / ops.dependency_min_age_days: no package version younger than 14 days.
+# Move this date forward deliberately when re-locking.
+exclude-newer = "2026-10-29T00:00:00Z"
