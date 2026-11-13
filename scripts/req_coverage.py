@@ -23,7 +23,10 @@ MILESTONES: dict[str, tuple[str, ...]] = {
     "M0": ("OPS-05", "OPS-10", "OPS-11", "OPS-12", "SYS-13", "SYS-14", "MON-03"),
 }
 ORDER = ("M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7")
-ID_RE = re.compile(r"\b(SYS|DAT|STR|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF)[-_](\d{2})\b")
+# "_" is a word character, so test_OPS_10_x has no \b before OPS: use lookarounds.
+ID_RE = re.compile(
+    r"(?<![A-Za-z])(SYS|DAT|STR|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF)[-_](\d{2})(?!\d)"
+)
 
 
 def required_ids(milestone: str) -> list[str]:

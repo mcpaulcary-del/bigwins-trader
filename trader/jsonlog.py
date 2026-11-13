@@ -63,6 +63,11 @@ _SECRET_VALUE_RES: Final = (
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
     re.compile(r"(?i)((?:postgres(?:ql)?|mysql|redis|amqp)://[^:/@\s]+:)[^@\s]+(@)"),
     re.compile(r"(?i)([?&](?:api_token|api_key|token|key|password)=)[^&\s]+"),
+    # key: value / key=value pairs in free text, e.g. a dict repr in a message
+    re.compile(
+        r"(?i)((?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|credential)"
+        r"\w*['\"]?\s*[:=]\s*['\"]?)[^'\"\s,}&]+"
+    ),
 )
 
 
