@@ -72,6 +72,6 @@ jobs:
       - name: Requirement coverage (fails if an ID lacks a passing test or a withdrawn ID is used)
         if: always()
         run: |
-          uv run --locked python scripts/req_coverage.py --milestone M0 --junit junit.xml \
+          uv run --locked python scripts/req_coverage.py --milestone M1 --junit junit.xml \
             | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${PIPESTATUS[0]}"
