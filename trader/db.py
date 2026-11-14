@@ -18,11 +18,16 @@ from trader.constants import SECRETS_DIR_DEFAULT
 from trader.secrets import read_secret
 
 
-def database_url(secrets_dir: Path = SECRETS_DIR_DEFAULT) -> str | URL:
-    dev = os.environ.get("TRADER_DATABASE_URL")
+def database_url(
+    secrets_dir: Path = SECRETS_DIR_DEFAULT,
+    *,
+    db_name: str | None = None,
+    dev_env: str = "TRADER_DATABASE_URL",
+) -> str | URL:
+    dev = os.environ.get(dev_env)
     if dev:
         return dev
-    name = os.environ.get("TRADER_DB_NAME")
+    name = db_name or os.environ.get("TRADER_DB_NAME")
     user = os.environ.get("TRADER_DB_USER")
     if not name or not user:
         raise RuntimeError(
@@ -40,3 +45,8 @@ def database_url(secrets_dir: Path = SECRETS_DIR_DEFAULT) -> str | URL:
 
 def make_engine(url: str | URL) -> Engine:
     return create_engine(url, future=True, pool_pre_ping=True)
+
+
+def market_database_url(user: str, secrets_dir: Path = SECRETS_DIR_DEFAULT) -> str | URL:
+    """``market_<user>`` (§12). ``TRADER_MARKET_DATABASE_URL`` for development only."""
+    return database_url(secrets_dir, db_name=f"market_{user}", dev_env="TRADER_MARKET_DATABASE_URL")

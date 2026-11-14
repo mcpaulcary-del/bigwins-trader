@@ -23,6 +23,7 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "smtp_password",
         "eodhd_api_token",
         "ibkr_flex_token",
+        "ibkr_flex_query_id",  # not sensitive, but no §18 key exists for it (D-07)
         "db_password",
         "healthchecks_url",
         "object_store_token",
