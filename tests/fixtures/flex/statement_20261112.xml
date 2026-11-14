@@ -1,0 +1,20 @@
+<FlexQueryResponse queryName="asx-trader daily" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DU1234567" fromDate="20261112" toDate="20261112" period="" whenGenerated="20261113;151200">
+      <OpenPositions>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="VAS" conid="900001" reportDate="20261112" position="10" markPrice="100.88" positionValue="1008.8" levelOfDetail="SUMMARY"/>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="VGS" conid="900002" reportDate="20261112" position="5" markPrice="150.95" positionValue="754.75" levelOfDetail="SUMMARY"/>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="VGS" conid="900002" reportDate="20261112" position="5" markPrice="150.95" positionValue="754.75" levelOfDetail="LOT"/>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="CBA" conid="900099" reportDate="20261112" position="3" markPrice="150.00" positionValue="450" levelOfDetail="SUMMARY"/>
+      </OpenPositions>
+      <CashTransactions>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="" transactionID="5550001" type="Deposits/Withdrawals" amount="500.00" dateTime="20261112;101500" settleDate="20261112" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS"/>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="VAS" transactionID="5550002" type="Dividends" amount="9.12" dateTime="20261112" settleDate="20261112" description="VAS CASH DIVIDEND AUD 0.9123 PER SHARE"/>
+      </CashTransactions>
+      <Trades>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="VAS" conid="900001" ibExecID="0000e1a2.0001.01" tradeID="77001" buySell="BUY" quantity="1" tradePrice="100.80" ibCommission="-6.00" tradeDate="20261112" dateTime="20261112;113005" settleDateTarget="20261116"/>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="VGS" conid="900002" ibExecID="0000e1a2.0002.01" tradeID="77002" buySell="SELL" quantity="-2" tradePrice="150.90" ibCommission="-6.00" tradeDate="20261112" dateTime="20261112;113105" settleDateTarget="20261116" orderReference="atr-a-20261112-VGS-S-1"/>
+      </Trades>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

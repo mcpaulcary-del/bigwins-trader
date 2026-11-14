@@ -1,0 +1,14 @@
+F1.1  INTEREST RATES AND YIELDS - MONEY MARKET,,
+Title,Cash Rate Target,Interbank Overnight Cash Rate
+Description,Cash Rate Target; synthetic test data,x
+Frequency,Daily,Daily
+Type,Original,Original
+Units,Per cent,Per cent
+,,
+,,
+Source,Synthetic,Synthetic
+Publication date,13-Nov-2026,13-Nov-2026
+Series ID,FIRMMCRTD,FIRMMCRID
+02-Nov-2026,3.60,3.60
+03-Nov-2026,3.60,3.60
+04-Nov-2026,3.85,3.85
