@@ -234,7 +234,14 @@ class BfApp:
         self.ex = Executor(
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
         )
-        self.ex_sim = Executor(journal, sim, s.sim_book, limits=s.limits, approval_deadline="23:59")
+        self.ex_sim = Executor(
+            journal,
+            sim,
+            s.sim_book,
+            limits=s.limits,
+            approval_deadline="23:59",
+            safety_scope=s.sim_book,  # BF-D16: the owner's halts of the paper book stay there
+        )
         self.bot = ApprovalBot(
             journal, transport, verifier, s.chats, self._kill, s.approval_deadline
         )

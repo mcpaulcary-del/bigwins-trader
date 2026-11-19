@@ -624,6 +624,40 @@ def test_L11_owner_resume_stops_a_wind_down() -> None:
     assert app._l11_episode() is None and app.j.safety_level() is SafetyLevel.NORMAL
 
 
+# ---------------------------------------------------------------- per-book safety (BF-D16)
+
+
+@pytest.mark.parametrize("cmd", ["/pause", "/kill", "/stop"])
+def test_BF_D16_paused_or_killed_paper_book_leaves_the_twin_buying(cmd: str) -> None:
+    """The owner's /pause, /kill, /stop (and the paper book's L11 halts) latch the broker
+    book only; the simulated twin (L13) follows the registered rules and keeps buying."""
+    app, gw, tr = _app(D0)
+    first = owner_approves_all(app, SEED)
+
+    def owner(d: date, hhmm: str) -> list[str]:
+        return ([cmd] if (d, hhmm) == (D0, "10:30") else []) + list(first(d, hhmm))
+
+    summ = dry_run(app, DAYS[:3], {}, owner, mock_auction(gw, _closes))
+    assert app.j.safety_level() is not SafetyLevel.NORMAL
+    assert app.j.safety_level(app.s.sim_book) is SafetyLevel.NORMAL
+    assert summ.positions == {} and not gw.placed  # the canary buy was never sent
+    sim_s = app.j.intents_of(f"EMG2_18_SIM-{D0}-S")
+    assert len(sim_s) == 18 and {st for _, st in sim_s} == {Status.FILLED}
+    assert len(summ.sim_positions) == 18
+    # no L13 integrity break: the paper book's unsent orders explain the difference
+    assert not any("L13" in p for p in summ.pages)
+
+
+def test_BF_D16_twin_latch_does_not_reach_the_broker_book() -> None:
+    j = Journal.sqlite()
+    j.set_safety(SafetyLevel.HALTED_BUYS, "twin breaker latch", "risk", scope="EMG2_18_SIM")
+    assert j.safety_level() is SafetyLevel.NORMAL
+    assert j.safety_level("EMG2_18_SIM") is SafetyLevel.HALTED_BUYS
+    j.set_safety(SafetyLevel.KILLED, "owner /kill", "telegram:1")
+    assert j.safety_level("EMG2_18_SIM") is SafetyLevel.HALTED_BUYS
+    assert j.safety_level() is SafetyLevel.KILLED
+
+
 # ---------------------------------------------------------------- scheduler (piece 1c)
 
 

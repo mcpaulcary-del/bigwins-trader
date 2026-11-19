@@ -139,6 +139,9 @@ safety = Table(
     Column("reason", String(200), nullable=False),
     Column("actor", String(64), nullable=False),
     Column("at", DateTime(timezone=True), nullable=False),
+    # "" = the broker book and the owner's commands; a book name = that book's own latch
+    # (the simulated twin: it follows the registered rules only, BF-D16)
+    Column("scope", String(40), nullable=False, server_default=""),
 )
 
 events = Table(
@@ -564,23 +567,31 @@ class Journal:
         return sum(cost.values(), Decimal(0)).quantize(Decimal("0.01"))
 
     # ------------------------------------------------------------ safety
-    def safety_level(self) -> SafetyLevel:
+    def safety_level(self, scope: str = "") -> SafetyLevel:
+        """The latched level of ``scope`` ("" = the broker book; BF-D16)."""
         with self.engine.connect() as c:
-            r = c.execute(select(safety.c.level).order_by(safety.c.id.desc()).limit(1)).first()
+            q = select(safety.c.level).where(safety.c.scope == scope)
+            r = c.execute(q.order_by(safety.c.id.desc()).limit(1)).first()
         return SafetyLevel(r[0]) if r else SafetyLevel.NORMAL
 
     def set_safety(
-        self, level: SafetyLevel, reason: str, actor: str, at: datetime | None = None
+        self,
+        level: SafetyLevel,
+        reason: str,
+        actor: str,
+        at: datetime | None = None,
+        scope: str = "",
     ) -> None:
         with self.engine.begin() as c:
             c.execute(
                 insert(safety).values(
-                    level=level.value, reason=reason, actor=actor, at=at or utcnow()
+                    level=level.value, reason=reason, actor=actor, at=at or utcnow(), scope=scope
                 )
             )
             self._event(
-                c, "safety", "book", None, level.value, {"reason": reason, "actor": actor}, at
-            )
+                c, "safety", scope or "book", None, level.value,
+                {"reason": reason, "actor": actor}, at,
+            )  # fmt: skip
 
     def digest_of(self, obj: Any) -> str:
         return canonical_json(obj)

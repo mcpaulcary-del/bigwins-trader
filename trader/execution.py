@@ -55,6 +55,9 @@ class Executor:
     crash: CrashHook = _no_crash
     approval_deadline: str = "15:20"
     plan_pages: list[str] = field(default_factory=list)  # pages of the last plan() (BF-D3)
+    # Which safety latch this book obeys and writes: "" = the broker book's (owner
+    # /pause, /kill, L11, integrity); the simulated twin uses its own (BF-D16)
+    safety_scope: str = ""
 
     # ------------------------------------------------------------ plan time
     def plan(
@@ -84,9 +87,8 @@ class Executor:
                 self.journal.set_status(coid, Status.RISK_REJECTED, {"reasons": list(r.reasons)})
             out.append((coid, r.verdict, r.reasons))
         if rep.latch is not None:
-            self.journal.set_safety(
-                worst(self.journal.safety_level(), rep.latch), "breaker latch", "risk"
-            )
+            lvl = worst(self.journal.safety_level(self.safety_scope), rep.latch)
+            self.journal.set_safety(lvl, "breaker latch", "risk", scope=self.safety_scope)
         return out
 
     # ------------------------------------------------------------ send time
@@ -102,7 +104,7 @@ class Executor:
         b = self.journal.batch(batch_id)
         if b is None:
             raise ValueError(f"unknown batch {batch_id}")
-        level = self.journal.safety_level()
+        level = self.journal.safety_level(self.safety_scope)
         ctx = RiskContext(**{**ctx.__dict__, "safety": worst(level, ctx.safety)})
         cut = deadline(b["execution_date"], self.approval_deadline) if b["execution_date"] else None
         ok = approved_seqs(self.journal, batch_id, cut)
@@ -127,7 +129,9 @@ class Executor:
         risk = check_intents(to_send, ctx, self.limits)  # send-time breaker
         rep.pages.extend(risk.pages)
         if risk.latch is not None:
-            self.journal.set_safety(worst(level, risk.latch), "breaker latch at send", "risk", now)
+            self.journal.set_safety(
+                worst(level, risk.latch), "breaker latch at send", "risk", now, self.safety_scope
+            )
         for r in risk.results:
             coid = r.intent.client_order_id
             if not r.sendable:
@@ -244,7 +248,7 @@ class Executor:
     # ------------------------------------------------------------ kill switch
     def kill(self, now: datetime, actor: str = "owner") -> int:
         """/kill: latch KILLED and cancel every open order this book sent (BW-RSK-30)."""
-        self.journal.set_safety(SafetyLevel.KILLED, "kill", actor, now)
+        self.journal.set_safety(SafetyLevel.KILLED, "kill", actor, now, self.safety_scope)
         n = 0
         for o in self.broker.open_orders():
             try:
