@@ -51,16 +51,26 @@ def _panel(day: date) -> PricePanel:
                       tv=p.tv * 50, sec_class=p.sec_class)  # fmt: skip
 
 
-def _app(start: date | None) -> tuple[BfApp, MockGateway, FakeTransport]:
-    gw = MockGateway(cash=10000.0)
+def _app(
+    start: date | None,
+    random_twins: int = 0,
+    journal: Journal | None = None,
+    gw: MockGateway | None = None,
+) -> tuple[BfApp, MockGateway, FakeTransport]:
+    """A fresh app; with ``journal`` and ``gw`` of an earlier app, a restart."""
+    restart = journal is not None
+    gw = gw or MockGateway(cash=10000.0)
     broker = IbkrPaperBroker(IbkrSettings("gw-paper", 4004, 21, "DU1234567"), ib_factory=lambda: gw)
     broker.connect()
-    j = Journal.sqlite()
+    j = journal or Journal.sqlite()
     s = AppSettings(chats=frozenset({CHAT}), start_date=start,
-                    params=Emg2_20Params(skip_lottery=False))  # fmt: skip
-    for book in (s.book, s.sim_book):
-        j.add_cash(book, "DEPOSIT", Decimal(10000), "paper deposit")
-    sim = SimBroker(cash=Decimal(10000), half_spread=s.sim_half_spread)
+                    params=Emg2_20Params(skip_lottery=False), random_twins=random_twins)  # fmt: skip
+    if restart:
+        sim = SimBroker.from_journal(j, s.sim_book, s.sim_half_spread)
+    else:
+        for book in (s.book, s.sim_book):
+            j.add_cash(book, "DEPOSIT", Decimal(10000), "paper deposit")
+        sim = SimBroker(cash=Decimal(10000), half_spread=s.sim_half_spread)
     tr = FakeTransport()
     app = BfApp(
         s, j, broker, sim, tr, TotpVerifier(SecretValue(SEED)), PANEL.dates, _panel, _closes

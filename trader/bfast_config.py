@@ -110,6 +110,10 @@ class DataCfg(_M):
     forward_store: Path
     sim_book: str
     sim_half_spread: Decimal = Field(ge=0, le=Decimal("0.02"))
+    # L13 / L11 (b): the registered 100 random twins of the simulated book (BF-D18)
+    random_twins: int = Field(default=100, ge=100, le=100)
+    random_prefix: str = Field(default="EMG2_18_RND", pattern=r"^[A-Z0-9_]{1,30}$")
+    random_seed_base: int = Field(default=8550000, ge=8550000, le=8550000)
     etp_list: Path
     lic_list: Path
     lic_list_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

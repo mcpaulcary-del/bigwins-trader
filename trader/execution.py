@@ -58,6 +58,7 @@ class Executor:
     # Which safety latch this book obeys and writes: "" = the broker book's (owner
     # /pause, /kill, L11, integrity); the simulated twin uses its own (BF-D16)
     safety_scope: str = ""
+    _booked: set[str] = field(default_factory=set, repr=False)  # exec ids booked (cache)
 
     # ------------------------------------------------------------ plan time
     def plan(
@@ -211,6 +212,8 @@ class Executor:
         for ex in self.broker.executions():
             if ex.client_order_id is None:
                 continue  # a foreign order (BP-02): reported by reconciliation, never booked here
+            if ex.exec_id in self._booked:
+                continue  # booked by this process already (add_fill is idempotent anyway)
             try:
                 it, _ = self.journal.intent(ex.client_order_id)
             except JournalError:
@@ -229,9 +232,8 @@ class Executor:
                 )
             ):
                 new += 1
-        for it, st in self.journal.intents_in([Status.SENT, Status.PARTIAL]):
-            if it.book != self.book:
-                continue
+            self._booked.add(ex.exec_id)
+        for it, st in self.journal.intents_in([Status.SENT, Status.PARTIAL], self.book):
             done = sum(f.qty for f in self.journal.fills(coid=it.client_order_id))
             if done >= it.qty:
                 self.journal.set_status(it.client_order_id, Status.FILLED, {"filled": done}, now)

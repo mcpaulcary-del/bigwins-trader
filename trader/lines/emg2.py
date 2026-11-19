@@ -19,7 +19,7 @@ Both are deterministic: same panel, book and params give the same canonical JSON
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
@@ -192,6 +192,9 @@ def emg2_list(panel: PricePanel, params: Emg2Params | None = None) -> Emg2List:
 
 
 # ---------------------------------------------------------------- EMG2-20 (§7.9)
+
+
+TargetOrder = Callable[[Emg2List, frozenset[str]], Sequence[str]]
 
 
 @dataclass(frozen=True)
@@ -367,12 +370,19 @@ def decide_emg2_20(
     book: BookState,
     params: Emg2_20Params | None = None,
     list_params: Emg2Params | None = None,
+    *,
+    lst: Emg2List | None = None,
+    target_order: TargetOrder | None = None,
 ) -> Emg2_20Decision:
-    """One EMG2-20 decision (rules L2-L5) for ``book`` at the panel's session D."""
+    """One EMG2-20 decision (rules L2-L5) for ``book`` at the panel's session D.
+
+    ``lst``: the EMG2 list of this panel, if already computed (one list serves the
+    simulated twin and its random twins). ``target_order(lst, pegged)``: replaces the
+    order of rule 3 (T) for a random twin (``trader.random_twins``); None = T."""
     p = params or Emg2_20Params()
     if any(q <= 0 for q in book.holdings.values()):
         raise ValueError("holdings must be positive whole shares (long only)")
-    lst = emg2_list(panel, list_params)
+    lst = lst or emg2_list(panel, list_params)
     ctx = _Ctx(
         panel=panel, p=p, col={e: j for j, e in enumerate(panel.entities)},
         last_any=recent_close(panel, p.payout_after_sessions - 1), peg=bid_peg(panel),
@@ -388,8 +398,12 @@ def decide_emg2_20(
             book.book, lst.as_of, lst.digest, lst.data_block, account_value, n, parcel,
             (), (), (), tuple(sorted(book.holdings)),
         )  # fmt: skip
-    sells, kept, proceeds = _plan_sells(ctx, book, frozenset(lst.targets))
-    cands, skipped = _pick_buys(ctx, book, lst.targets, n - len(kept))
+    targets = lst.targets
+    if target_order is not None:
+        pegged = frozenset(e for e, j in ctx.col.items() if bool(ctx.peg[j]))
+        targets = tuple(target_order(lst, pegged))
+    sells, kept, proceeds = _plan_sells(ctx, book, frozenset(targets))
+    cands, skipped = _pick_buys(ctx, book, targets, n - len(kept))
     kept_value = sum(((ctx.px(e) or Decimal(0)) * book.holdings[e] for e in kept), Decimal(0))
     available = min(
         book.cash + proceeds - p.cash_reserve_aud,  # L5 reserve

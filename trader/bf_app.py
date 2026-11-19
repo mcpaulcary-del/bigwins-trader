@@ -63,13 +63,22 @@ from trader.canonical import sha256_json
 from trader.constants import ASX_TZ
 from trader.execution import Executor
 from trader.journal import TERMINAL, Journal, Status
-from trader.lines.emg2 import BookState, BuyPlan, Emg2_20Decision, Emg2_20Params, decide_emg2_20
+from trader.lines.emg2 import (
+    BookState,
+    BuyPlan,
+    Emg2_20Decision,
+    Emg2_20Params,
+    TargetOrder,
+    decide_emg2_20,
+    emg2_list,
+)
 from trader.loss_rule import (
     ModelledFill,
     Outcome,
     StagedTest,
     at_decision,
     integrity_breaks,
+    percentile_rank,
     wind_down_qty,
 )
 from trader.orders import (
@@ -83,6 +92,7 @@ from trader.orders import (
     round_to_step,
 )
 from trader.panel import PricePanel
+from trader.random_twins import SEED_BASE, RandomOrder, month_index, twin_books
 from trader.reconcile import compare_books
 from trader.report import DailyInputs, daily_report
 from trader.risk import (
@@ -140,6 +150,10 @@ class AppSettings:
     chats: frozenset[int] = frozenset()
     start_date: date | None = None  # L6 start decision (canary); None = month-ends only
     lic_note: str = ""  # which LIC list the panel used (BF-D6), shown with each decision
+    # L13 / L11 test (b): random twins of the simulated book (BF-D18); 0 = not running
+    random_twins: int = 0
+    random_prefix: str = "EMG2_18_RND"
+    random_seed_base: int = SEED_BASE
 
 
 def data_ready(panel: PricePanel, min_share: float = 0.5) -> bool:
@@ -228,7 +242,6 @@ class BfApp:
         self.panels = panels
         self.closes = closes
         self.marks = marks or marks_from_panels(panels)
-        self.twin_rank = twin_rank or (lambda d: None)
         self.l12_stop = l12_stop or (lambda d: None)
         self.now = datetime.now(UTC)
         self.ex = Executor(
@@ -242,6 +255,20 @@ class BfApp:
             approval_deadline="23:59",
             safety_scope=s.sim_book,  # BF-D16: the owner's halts of the paper book stay there
         )
+        # BF-D18: the random twins of the simulated book, each a simulated book of its own
+        # in the journal (own latch, auto-approved, the sim's costs and code path).
+        self.rnd: list[tuple[str, int, Executor, SimBroker]] = []
+        for name, seed in twin_books(s.random_prefix, s.random_twins, s.random_seed_base):
+            if not journal.has_cash_moves(name):
+                journal.add_cash(name, "DEPOSIT", s.capital_aud, "random twin (simulated)")
+            rb = SimBroker.from_journal(journal, name, s.sim_half_spread, exec_prefix=f"RND{seed}")
+            ex = Executor(
+                journal, rb, name, limits=s.limits, approval_deadline="23:59", safety_scope=name
+            )
+            self.rnd.append((name, seed, ex, rb))
+        if twin_rank is None and self.rnd:
+            twin_rank = self.twin_percentile
+        self.twin_rank = twin_rank or (lambda d: None)
         self.bot = ApprovalBot(
             journal, transport, verifier, s.chats, self._kill, s.approval_deadline
         )
@@ -322,10 +349,11 @@ class BfApp:
         return (
             (self.s.book, self.ex, self.broker, self.s.approval_mode),
             (self.s.sim_book, self.ex_sim, self.sim, "auto"),
+            *((name, ex, rb, "auto") for name, _, ex, rb in self.rnd),
         )
 
     def _all_intents(self, book: str) -> list[tuple[OrderIntent, str]]:
-        return [x for bid, _ in self.j.batches_of(book) for x in self.j.intents_of(bid)]
+        return self.j.intents_of_book(book)
 
     # ------------------------------------------------------------ jobs
     def run_job(self, name: str, day: date, now: datetime) -> bool:
@@ -370,6 +398,8 @@ class BfApp:
         }
         x = self.next_session(day)
         acted: dict[str, set[tuple[str, str]]] = {}
+        lst = emg2_list(panel) if data_ready(panel) else None  # one list for every book
+        seeds = {name: seed for name, seed, _, _ in self.rnd}
         for book, ex, broker, mode in self._books():
             k = kinds[book]
             key = f"decide:{book}:{day}"
@@ -379,7 +409,8 @@ class BfApp:
             block = None if data_ready(panel) else "the day's closes are missing"
             if block is None:
                 state = BookState(book, self.j.cash(book), self.j.positions(book))
-                dec = decide_emg2_20(panel, state, self.s.params)
+                order = self._random_order(seeds.get(book), day, now)
+                dec = decide_emg2_20(panel, state, self.s.params, lst=lst, target_order=order)
                 block = dec.data_block
             if block is not None or dec is None:
                 if now < at(day, RETRY_UNTIL):
@@ -402,11 +433,13 @@ class BfApp:
             )
             ctx = self._ctx(book, broker, x, day, now, k == "S", data_as_of=panel.as_of)
             ex.plan(batch, mode, x, ctx)
+            self.j.mark_job(key, {"digest": dec.digest, "batch": batch.batch_id}, now)
+            if book in seeds:
+                continue  # random twins: not part of the L13 comparison
             acted[book] = {(i.entity, i.side.value) for i in batch.intents}
             if canary:  # the other start buys follow the canary: count the whole list
                 acted[book] |= {(b.entity, Side.BUY.value) for b in dec.buys}
                 self.j.mark_job(f"start:{book}:{day}", _decision_record(dec, tv20), now)
-            self.j.mark_job(key, {"digest": dec.digest, "batch": batch.batch_id}, now)
             if book == self.s.book:
                 self._announce(day, canary, dec.list_digest, batch.batch_id, ex.plan_pages)
         if acted:
@@ -512,7 +545,7 @@ class BfApp:
         """L7: an order unfilled at the close is carried to the next session at a new
         reference (the day's close) inside the band: buys once, sells up to three
         times, then a sell is paged. A carried order needs approval again (L8)."""
-        closes = self.closes(day)
+        closes: Mapping[str, Decimal] | None = None  # read only when an order is carried
         band = self.s.order_params.limit_band
         new: list[OrderIntent] = []
         keys: list[str] = []
@@ -531,6 +564,8 @@ class BfApp:
                         "(L7); review"
                     )
                 continue
+            if closes is None:
+                closes = self.closes(day)
             ref = closes.get(it.entity) or it.ref_price
             if sell:
                 lim, qty = round_to_step(ref * (1 - band), Side.SELL), rest
@@ -629,6 +664,10 @@ class BfApp:
         self.sim.advance(day, closes)
         self.ex_sim.collect_fills(now, session_closed=True)
         self._carry(self.s.sim_book, self.ex_sim, self.sim, "auto", day, now)
+        for name, _, ex, rb in self.rnd:  # BF-D18: the random twins, same auction and costs
+            rb.advance(day, closes)
+            ex.collect_fills(now, session_closed=True)
+            self._carry(name, ex, rb, "auto", day, now)
         r = compare_books(
             self.j.positions(self.s.sim_book), self.j.positions(self.s.book), self._explained()
         )
@@ -658,6 +697,75 @@ class BfApp:
             if key.split(":", 1)[1] not in planned:  # L6: the other start buys wait for the
                 out.update(str(b[0]) for b in rec["buys"])  # canary (or the start stopped)
         return out
+
+    # ------------------------------------------------------------ random twins (BF-D18)
+    def _rnd_origin(self, day: date, now: datetime) -> int:
+        """Month index of the random twins' first decision (the origin of their scores),
+        recorded once in the journal so a restart keeps the same scores."""
+        rec = self.j.job_records("rnd-origin")
+        if rec:
+            return int(rec[0][1]["month"])
+        self.j.mark_job("rnd-origin", {"month": month_index(day), "day": str(day)}, now)
+        return month_index(day)
+
+    def _random_order(self, seed: int | None, day: date, now: datetime) -> TargetOrder | None:
+        if seed is None:
+            return None  # the paper book and the simulated twin: T in score order
+        return RandomOrder(seed, self._rnd_origin(day, now), month_index(day))
+
+    def _book_value(self, book: str, px: Mapping[str, Decimal]) -> Decimal:
+        pos = self.j.positions(book)
+        return self.j.cash(book) + sum(
+            (px.get(e, Decimal(0)) * q for e, q in pos.items()), Decimal(0)
+        )
+
+    def twin_values(self, day: date) -> tuple[Decimal, list[Decimal]] | None:
+        """Values at ``day`` of the simulated twin and of its random twins (marks of the
+        day; a held name with no mark at its last recorded mark). None without twins."""
+        if not self.rnd:
+            return None
+        px = dict(self.marks(day))
+        last = self._last_marks()
+        for e, (_, v) in last.items():
+            px.setdefault(e, Decimal(v))
+        sim = self._book_value(self.s.sim_book, px)
+        return sim, [self._book_value(name, px) for name, *_ in self.rnd]
+
+    def twin_percentile(self, day: date) -> Decimal | None:
+        """L11 test (b): the simulated twin's percentile (0-100, ties half) among its
+        random twins by value since the common start (all start with the same capital,
+        so value order is return order). None while the twins are not running."""
+        v = self.twin_values(day)
+        if v is None:
+            return None
+        return percentile_rank(v[0], v[1])
+
+    def _rnd_line(self, day: date, now: datetime) -> str | None:
+        """The report's random-twin line (L13); the values go to the journal (``rnd:``)."""
+        v = self.twin_values(day)
+        if v is None:
+            return None
+        sim, vals = v
+        pct = percentile_rank(sim, vals)
+        q = sorted(vals)
+        med = (q[(len(q) - 1) // 2] + q[len(q) // 2]) / 2
+        if not self.j.job_done(f"rnd:{day}"):
+            self.j.mark_job(
+                f"rnd:{day}",
+                {"sim": str(sim), "percentile": str(pct), "values": [str(x) for x in vals]},
+                now,
+            )
+        return (
+            f"Simulated twin at the {pct} percentile of {len(vals)} random twins "
+            f"(their median A${med.quantize(Decimal('0.01'))}; L11 test (b) needs >= 10)"
+        )
+
+    def _last_marks(self) -> dict[str, tuple[str, str]]:
+        last: dict[str, tuple[str, str]] = {}
+        for key, rec in self.j.job_records("marks:"):
+            for e, v in rec.items():
+                last[e] = (key.split(":", 1)[1], v)
+        return last
 
     def job_report(self, day: date, now: datetime) -> None:
         px = dict(self.marks(day))
@@ -719,6 +827,7 @@ class BfApp:
             safety=self.j.safety_level().value,
             flags=[*stale, *reading.alerts],
             sim_value=sim_value,
+            random_twins=self._rnd_line(day, now),
         )
         self.say(daily_report(x))
 
@@ -727,22 +836,21 @@ class BfApp:
         identity change) is valued at its last recorded mark, never at zero, so a data
         gap cannot fake an L11 stage; the report flags it. Marks of held names are kept
         in the journal (``marks:<day>``) for this."""
-        held = set(self.j.positions(self.s.book)) | set(self.j.positions(self.s.sim_book))
+        shown = set(self.j.positions(self.s.book)) | set(self.j.positions(self.s.sim_book))
+        held = shown | {e for name, *_ in self.rnd for e in self.j.positions(name)}
         flags: list[str] = []
         missing = sorted(e for e in held if e not in px)
         if missing:
-            last: dict[str, tuple[str, str]] = {}
-            for key, rec in self.j.job_records("marks:"):
-                for e, v in rec.items():
-                    last[e] = (key.split(":", 1)[1], v)
+            last = self._last_marks()
             for e in missing:
                 if e in last:
                     px[e] = Decimal(last[e][1])
-                    flags.append(
-                        f"WARN: no mark for {e} on {day}; valued at its last mark "
-                        f"{last[e][1]} of {last[e][0]}"
-                    )
-                else:
+                    if e in shown:  # random twins' names are carried without a flag
+                        flags.append(
+                            f"WARN: no mark for {e} on {day}; valued at its last mark "
+                            f"{last[e][1]} of {last[e][0]}"
+                        )
+                elif e in shown:
                     flags.append(f"PAGE: no mark ever recorded for held {e}; valued at zero")
         if not self.j.job_done(f"marks:{day}"):
             fresh = {e: str(px[e]) for e in sorted(held) if e in px and e not in missing}

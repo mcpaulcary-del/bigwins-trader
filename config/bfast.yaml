@@ -46,6 +46,9 @@ data:
   forward_store: /data/forward/eodhd        # read-only mount of $B/bigwins_forward/data/eodhd
   sim_book: EMG2_18_SIM                     # simulated twin (L13)
   sim_half_spread: 0.005                    # L9 start spread, a side
+  random_twins: 100                         # EMG2_18_RND_s001...s100 (L13; L11 test (b))
+  random_prefix: EMG2_18_RND
+  random_seed_base: 8550000                 # seed = base + i (AMENDMENT_live_EMG2_20)
   etp_list: /data/ref/etp_list.txt
   lic_list: config/lic_list.csv             # verbatim copy of the record's LIC_list_frozen.csv
                                             # (BF-D6; ledger seq 39); $TRADER_BF_LIC_LIST

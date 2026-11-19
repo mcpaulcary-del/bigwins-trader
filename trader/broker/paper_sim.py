@@ -48,6 +48,7 @@ class SimBroker:
     fills_: list[Execution] = field(default_factory=list)
     last_close: dict[str, Decimal] = field(default_factory=dict)
     place_calls: int = 0
+    exec_prefix: str = "SIM"  # execution ids are "<prefix>-<day>-<oid>": unique per book
 
     def __post_init__(self) -> None:
         assert_paper(mode="paper", account_id=self.account_id, port=None)
@@ -103,6 +104,7 @@ class SimBroker:
         book: str,
         half_spread: Decimal = Decimal(0),
         account_id: str = "DUSIM0001",
+        exec_prefix: str = "SIM",
     ) -> SimBroker:
         """Rebuild the simulated book after a restart: cash and positions from the journal,
         and the orders the journal says were sent but not yet settled."""
@@ -111,8 +113,9 @@ class SimBroker:
             cash=journal.cash(book),
             half_spread=half_spread,
             holdings=dict(journal.positions(book)),
+            exec_prefix=exec_prefix,
         )
-        for it, _ in journal.intents_in(["SENT", "PARTIAL"]):
+        for it, _ in journal.intents_in(["SENT", "PARTIAL"], book):
             if it.book == book:
                 sb.place(
                     OrderRequest(
@@ -164,7 +167,7 @@ class SimBroker:
                 self.cash += px * r.qty - comm
             p.status, p.filled = "Filled", r.qty
             ex = Execution(
-                f"SIM-{day.isoformat()}-{p.oid}",
+                f"{self.exec_prefix}-{day.isoformat()}-{p.oid}",
                 r.client_order_id,
                 r.symbol,
                 r.side,

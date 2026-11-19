@@ -360,6 +360,16 @@ class Journal:
             )
             return [(_intent_from(r._mapping), r.status) for r in rows]
 
+    def intents_of_book(self, book: str) -> list[tuple[OrderIntent, str]]:
+        """Every intent of a book in one query, by batch then seq (as ``batches_of``)."""
+        with self.engine.connect() as c:
+            rows = c.execute(
+                select(intents)
+                .where(intents.c.book == book)
+                .order_by(intents.c.batch_id, intents.c.seq)
+            )
+            return [(_intent_from(r._mapping), r.status) for r in rows]
+
     def intent(self, coid: str) -> tuple[OrderIntent, str]:
         with self.engine.connect() as c:
             r = c.execute(select(intents).where(intents.c.client_order_id == coid)).first()
@@ -367,10 +377,14 @@ class Journal:
             raise JournalError(f"unknown intent {coid}")
         return _intent_from(r._mapping), r.status
 
-    def intents_in(self, statuses: Iterable[str]) -> list[tuple[OrderIntent, str]]:
+    def intents_in(
+        self, statuses: Iterable[str], book: str | None = None
+    ) -> list[tuple[OrderIntent, str]]:
+        q = select(intents).where(intents.c.status.in_(list(statuses)))
+        if book is not None:
+            q = q.where(intents.c.book == book)
         with self.engine.connect() as c:
-            rows = c.execute(select(intents).where(intents.c.status.in_(list(statuses))))
-            return [(_intent_from(r._mapping), r.status) for r in rows]
+            return [(_intent_from(r._mapping), r.status) for r in c.execute(q)]
 
     def set_status(
         self,
@@ -537,6 +551,12 @@ class Journal:
         for f in self.fills(book):
             pos[f.entity] = pos.get(f.entity, 0) + (f.qty if f.side is Side.BUY else -f.qty)
         return {e: q for e, q in sorted(pos.items()) if q != 0}
+
+    def has_cash_moves(self, book: str) -> bool:
+        """Whether the book has any deposit or other cash record (it has been set up)."""
+        with self.engine.connect() as c:
+            q = select(cash_moves.c.book).where(cash_moves.c.book == book).limit(1)
+            return c.execute(q).first() is not None
 
     def cash(self, book: str) -> Decimal:
         total = Decimal(0)

@@ -44,8 +44,13 @@ from trader.secrets import SecretValue
 
 
 def settings_from(
-    cfg: BfastConfig, chats: frozenset[int], start: date | None, lic_note: str = ""
+    cfg: BfastConfig,
+    chats: frozenset[int],
+    start: date | None,
+    lic_note: str = "",
+    random_twins: int | None = None,
 ) -> AppSettings:
+    """``random_twins`` overrides the configured count (tests and short replays only)."""
     return AppSettings(
         book=cfg.book,
         sim_book=cfg.data.sim_book,
@@ -61,6 +66,9 @@ def settings_from(
         chats=chats,
         start_date=start,
         lic_note=lic_note,
+        random_twins=cfg.data.random_twins if random_twins is None else random_twins,
+        random_prefix=cfg.data.random_prefix,
+        random_seed_base=cfg.data.random_seed_base,
     )
 
 
@@ -115,6 +123,7 @@ def mock_app(
     journal_path: str = ":memory:",
     gw: MockGateway | None = None,
     seed: str | None = None,
+    random_twins: int | None = None,
 ) -> tuple[BfApp, MockGateway, str]:
     """A ``BfApp`` on the mock gateway with a simulated owner's authenticator. Passing
     the same ``gw``, ``journal_path`` and ``seed`` again is a restart: the new app has
@@ -130,7 +139,7 @@ def mock_app(
     )
     broker.connect()
     j = Journal.sqlite(journal_path)
-    s = settings_from(cfg, frozenset({chat}), start, note)
+    s = settings_from(cfg, frozenset({chat}), start, note, random_twins)
     sim = SimBroker(cash=s.capital_aud, half_spread=s.sim_half_spread)
     if fresh:
         for book in (s.book, s.sim_book):
@@ -152,10 +161,13 @@ def forward_store_dry_run(
     decisions: Mapping[date, str],
     journal_path: str = ":memory:",
     providers: Providers | None = None,
+    random_twins: int | None = None,
 ) -> tuple[DryRunSummary, BfApp, FakeTransport]:
     providers = providers or store_providers(cfg, store, sessions)
     start = min((d for d, k in decisions.items() if k == "S"), default=None)
-    app, gw, seed = mock_app(cfg, providers, sessions, start, journal_path)
+    app, gw, seed = mock_app(
+        cfg, providers, sessions, start, journal_path, random_twins=random_twins
+    )
     tr = app.transport
     assert isinstance(tr, FakeTransport)
     summ = dry_run(

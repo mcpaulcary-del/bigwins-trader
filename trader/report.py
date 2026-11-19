@@ -41,6 +41,7 @@ class DailyInputs:
     recon_breaks: Sequence[str] = ()
     sim_value: Decimal | None = None  # EMG2_20_SIM twin (L13)
     a200_value: Decimal | None = None  # the same money in A200 (L14 monthly)
+    random_twins: str | None = None  # the twin's percentile among its random twins (BF-D18)
 
 
 def value_of(positions: Mapping[str, int], prices: Mapping[str, Decimal], cash: Decimal) -> Decimal:
@@ -67,6 +68,8 @@ def daily_report(x: DailyInputs) -> str:
             f"Simulated twin A${x.sim_value.quantize(CENT)} "
             f"(difference A${(value - x.sim_value).quantize(CENT)})"
         )
+    if x.random_twins is not None:
+        lines.append(x.random_twins)
     if x.a200_value is not None:
         lines.append(f"Same money in A200: A${x.a200_value.quantize(CENT)}")
     lines.append(f"Holdings ({len([q for q in x.positions.values() if q])}):")
