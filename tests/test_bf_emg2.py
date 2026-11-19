@@ -64,12 +64,14 @@ def test_BW_SYS_12_truncation_invariance_20_dates(panel: PricePanel) -> None:
         d = panel.dates[k]
         base = panel.truncate(d)
         noisy = PricePanel(
-            as_of=panel.as_of, dates=panel.dates, entities=panel.entities,
+            as_of=panel.as_of,
+            dates=panel.dates,
+            entities=panel.entities,
             close=np.vstack([panel.close[: k + 1], panel.close[k + 1 :] * 3.0]),
             ret=np.vstack([panel.ret[: k + 1], panel.ret[k + 1 :] + 0.5]),
             tv=np.vstack([panel.tv[: k + 1], panel.tv[k + 1 :] * 9.0]),
             sec_class=panel.sec_class,
-        ).truncate(d)  # fmt: skip
+        ).truncate(d)
         assert emg2_list(base).digest == emg2_list(noisy).digest
         book = BookState("B", Decimal(10000))
         assert decide_emg2_20(base, book).digest == decide_emg2_20(noisy, book).digest
@@ -81,8 +83,14 @@ def test_BW_SYS_12_panel_refuses_rows_after_as_of() -> None:
     with pytest.raises(PanelError, match="BW-SYS-12"):
         PricePanel(as_of=d[1], dates=d, entities=("X",), close=a, ret=a, tv=a)
     with pytest.raises(PanelError):
-        PricePanel(as_of=d[2], dates=d, entities=("X", "X"), close=np.ones((3, 2)),
-                   ret=np.ones((3, 2)), tv=np.ones((3, 2)))  # fmt: skip
+        PricePanel(
+            as_of=d[2],
+            dates=d,
+            entities=("X", "X"),
+            close=np.ones((3, 2)),
+            ret=np.ones((3, 2)),
+            tv=np.ones((3, 2)),
+        )
 
 
 def test_BW_UNI_11_rank_population_and_bands(panel: PricePanel) -> None:
@@ -102,8 +110,15 @@ def test_BW_UNI_03_class_filter_excludes_lic_and_funds() -> None:
     cls[victims[0]] = "LIC"
     cls[victims[1]] = "FUND"
     cls[victims[2]] = "REIT"  # REIT stays in (EMG2 amendment §2)
-    p2 = PricePanel(as_of=p.as_of, dates=p.dates, entities=p.entities, close=p.close,
-                    ret=p.ret, tv=p.tv, sec_class=cls)  # fmt: skip
+    p2 = PricePanel(
+        as_of=p.as_of,
+        dates=p.dates,
+        entities=p.entities,
+        close=p.close,
+        ret=p.ret,
+        tv=p.tv,
+        sec_class=cls,
+    )
     t2 = emg2_list(p2).targets
     assert victims[0] not in t2 and victims[1] not in t2 and victims[2] in t2
 
@@ -212,8 +227,15 @@ class TestGoldenT6:
         z = np.load(Path(GOLDEN) / f"slab_{d}.npz")
         dts = tuple(date.fromisoformat(str(x)) for x in z["dates"])
         syms = tuple(str(s) for s in z["symbols"])
-        return PricePanel(as_of=dts[-1], dates=dts, entities=syms, close=z["close"], ret=z["r"],
-                          tv=z["tv"], sec_class=dict.fromkeys(syms, "ORD"))  # fmt: skip
+        return PricePanel(
+            as_of=dts[-1],
+            dates=dts,
+            entities=syms,
+            close=z["close"],
+            ret=z["r"],
+            tv=z["tv"],
+            sec_class=dict.fromkeys(syms, "ORD"),
+        )
 
     def test_BW_STR_10_selection_step_exact_on_t6_inputs(self) -> None:
         """Rule 3 on T6's own inputs gives T6's T: same names, same order up to exact ties."""

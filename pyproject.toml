@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 trader = "trader.cli:main"
+trader-bf = "trader.bfast_cli:main"
 
 [dependency-groups]
 dev = [

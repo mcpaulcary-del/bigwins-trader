@@ -53,6 +53,9 @@ jobs:
       - name: validate-config (common.yaml)
         run: uv run --locked trader validate-config --config-dir config
 
+      - name: validate-config (B-fast, paper only)
+        run: uv run --locked trader-bf validate-config --config config/bfast.yaml
+
       - name: Migrations (both databases, Postgres 16; spec §12)
         env:
           TRADER_DB_APP_ROLE: trader_ci_app
@@ -72,6 +75,6 @@ jobs:
       - name: Requirement coverage (fails if an ID lacks a passing test or a withdrawn ID is used)
         if: always()
         run: |
-          uv run --locked python scripts/req_coverage.py --milestone M1 --junit junit.xml \
+          uv run --locked python scripts/req_coverage.py --milestone BF --junit junit.xml \
             | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${PIPESTATUS[0]}"

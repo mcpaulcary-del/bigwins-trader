@@ -36,7 +36,15 @@ MILESTONES: dict[str, tuple[str, ...]] = {
         *_ids_range("SYS", 29, 32),
     ),
 }
-ORDER = ("M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10")
+# B-fast (FD v3.0 §21.1): the BW-* requirements BF1-BF4 build and test.
+MILESTONES["BF"] = (
+    "BW-SYS-03", "BW-SYS-04", "BW-SYS-10", "BW-SYS-12", "BW-STR-10", "BW-UNI-01",
+    "BW-UNI-02", "BW-UNI-03", "BW-UNI-11", "BW-RSK-01", "BW-RSK-02", "BW-RSK-03",
+    "BW-RSK-06", "BW-RSK-07", "BW-RSK-08", "BW-RSK-11", "BW-RSK-20", "BW-RSK-22",
+    "BW-RSK-27", "BW-RSK-29", "BW-RSK-30", "BW-EXE-06", "BW-EXE-09", "BW-APR-03",
+    "BW-APR-04", "BW-APR-05",
+)  # fmt: skip
+ORDER = ("M0", "M1", "BF", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10")
 PREFIXES = "SYS|DAT|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF|RND|SIZ|MKT|ENG|USE|BP|STR|ADP|FUT"
 # "_" is a word character, so test_OPS_10_x has no \b before OPS: use lookarounds.
 # FD v3.0 IDs are "BW-<AREA>-<nn>", a separate namespace that may reuse v2.10 numbers
@@ -73,7 +81,8 @@ def required_ids(milestone: str) -> list[str]:
 
 
 def _ids(text: str | None) -> set[str]:
-    return {f"{a}-{b}" for a, b in ID_RE.findall(text or "")}
+    old = {f"{a}-{b}" for a, b in ID_RE.findall(text or "")}
+    return old | {f"BW-{a}-{b}" for a, b in BW_RE.findall(text or "")}
 
 
 def scan_tests(test_dir: Path) -> dict[str, set[str]]:

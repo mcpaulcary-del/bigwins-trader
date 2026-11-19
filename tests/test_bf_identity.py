@@ -91,8 +91,10 @@ def test_A3_split_reconciliation_nearest_row() -> None:
 
 
 def test_A3_total_return_with_dividend_and_split() -> None:
-    rows = [{"date": f"2026-01-0{k}", "close": c, "volume": 100} for k, c in
-            [(5, 10.0), (6, 10.0), (7, 5.0), (8, 4.9)]]  # fmt: skip
+    rows = [
+        {"date": f"2026-01-0{k}", "close": c, "volume": 100}
+        for k, c in [(5, 10.0), (6, 10.0), (7, 5.0), (8, 4.9)]
+    ]
     days, _, _, split, ret = symbol_returns(
         rows, [(date(2026, 1, 7), 2.0)], [(date(2026, 1, 8), 0.1)]
     )
@@ -121,8 +123,10 @@ def test_forward_store_builds_panel_read_only(tmp_path: Path) -> None:
         man.append(f"t\teod\t{code}.AU\t200\t1\t1\tx\t{f}\tx\tu")
         syms.append(f"{code},{name},Australia,AU,AUD,Common Stock,,0,{code}.AU,False")
     for d in sess[-2:]:  # two later days arrive as bulk files
-        _gz(tmp_path / f"raw/bulk_eod/AU_{d}__1.json.gz",
-            [{"code": "AAA", "date": str(d), "close": 2.0, "volume": 10}])  # fmt: skip
+        _gz(
+            tmp_path / f"raw/bulk_eod/AU_{d}__1.json.gz",
+            [{"code": "AAA", "date": str(d), "close": 2.0, "volume": 10}],
+        )
     (tmp_path / "manifest.tsv").write_text("\n".join(man) + "\n")
     (tmp_path / "symbols.csv").write_text("\n".join(syms) + "\n")
     before = sorted((p, p.stat().st_mtime_ns) for p in tmp_path.rglob("*"))

@@ -1,0 +1,53 @@
+# B-fast configuration for the EMG2-20 book (FD v3.0 §7.9, §20 live_emg2_20, §21.1).
+# PAPER ONLY in this build. Nothing secret lives here (tokens and seeds are Docker
+# secrets); unknown keys are rejected.
+version: 1
+book: EMG2_20_PAPER
+line: EMG2_20
+mode: paper                     # the only accepted value in this build
+broker:
+  host: gw-paper                # docker-compose service name of IB Gateway (paper)
+  port: 4004                    # gnzsnz/ib-gateway paper API relay; 4003 (live) is refused
+  client_id: 21
+  account_id: null              # the IBKR paper account (DU...), set at BF0; never a live id
+  allow_live: false             # schema: must be false. Live enablement is a later owner step
+execution:
+  order_type: LOC               # LOC | LMT  -- [unverified O-1] reality spike decides
+  limit_band: 0.03              # L7 band (buy ref x 1.03, sell ref x 0.97)
+  submit_at: "15:45"            # LOC submit; LMT fallback sends at 15:30 [unverified cut-off]
+  fallback_send_at: "15:30"
+  fallback_cancel_at: "15:58"
+  approval_mode: per_order      # L8 to the April 2027 decision; also used on paper dry runs
+  approval_deadline: "15:20"
+  buy_funds_wait_sessions: 4    # L7 / O-2
+live_emg2_20:
+  capital_cap_aud: 10000
+  slots: 20
+  min_parcel_aud: 500
+  cash_reserve_aud: 50
+  skip_lottery: true
+risk:
+  order_value_max_aud: 800
+  orders_per_day: {start: 24, normal: 16, hard: 80}
+  buys_per_day_aud: {start: 10500, normal: 4500}
+  price_band: 0.03
+  gap_hold: 0.15
+  absurd_move: 0.60
+  participation_max: 0.05
+  quote_stale_minutes: 40
+  value_review_aud: 7000
+  value_halt_buys_aud: 6000
+  value_line_halt_aud: 5000
+  drawdown: {review: 0.30, halt: 0.50}
+  day_move: {review: -0.07, halt: -0.12}
+  real_money_floor: 0.60
+data:
+  forward_store: /data/forward/eodhd        # read-only mount of $B/bigwins_forward/data/eodhd
+  etp_list: /data/ref/etp_list.txt
+  lic_list: config/lic_list.csv
+  history_sessions: 760
+telegram:
+  allowed_chat_ids: []          # the owner's chat id, set at BF0
+journal:
+  url_env: TRADER_BF_JOURNAL_URL  # name of the env var holding a password-free URL; the
+                                  # password comes from the db_password Docker secret

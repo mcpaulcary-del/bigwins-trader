@@ -50,11 +50,18 @@ def _decision(
     buys: list[tuple[str, str, str]], sells: tuple[tuple[str, int, str], ...] = ()
 ) -> Emg2_20Decision:
     return Emg2_20Decision(
-        "EMG2_20_PAPER", str(D), "x" * 64, None, Decimal(10000), 20, Decimal(500),
+        "EMG2_20_PAPER",
+        str(D),
+        "x" * 64,
+        None,
+        Decimal(10000),
+        20,
+        Decimal(500),
         tuple(SellPlan(e, q, Decimal(p), "EMG2_OFF_LIST") for e, q, p in sells),
         tuple(BuyPlan(e, k + 1, Decimal(v), Decimal(p)) for k, (e, v, p) in enumerate(buys)),
-        (), (),
-    )  # fmt: skip
+        (),
+        (),
+    )
 
 
 # ---------------------------------------------------------------- orders
@@ -124,9 +131,13 @@ def test_L7_fallback_limit() -> None:
 
 def test_build_orders_from_engine_decision() -> None:
     p = synthetic_panel()
-    dec = decide_emg2_20(p, BookState("EMG2_20_PAPER", Decimal(10600)),
-                         Emg2_20Params(skip_lottery=False, cash_reserve_aud=Decimal(0),
-                                       capital_cap_aud=Decimal(10600)))  # fmt: skip
+    dec = decide_emg2_20(
+        p,
+        BookState("EMG2_20_PAPER", Decimal(10600)),
+        Emg2_20Params(
+            skip_lottery=False, cash_reserve_aud=Decimal(0), capital_cap_aud=Decimal(10600)
+        ),
+    )
     b = build_orders(dec)
     assert b.intents and all(i.value_at_ref >= 500 for i in b.intents)
 
@@ -134,8 +145,15 @@ def test_build_orders_from_engine_decision() -> None:
 # ---------------------------------------------------------------- breaker
 
 
-def _it(entity: str = "AAA", side: Side = Side.BUY, qty: int = 500, ref: str = "1.00",
-        lim: str | None = None, tv20: str | None = "1000000", seq: int = 1) -> OrderIntent:  # fmt: skip
+def _it(
+    entity: str = "AAA",
+    side: Side = Side.BUY,
+    qty: int = 500,
+    ref: str = "1.00",
+    lim: str | None = None,
+    tv20: str | None = "1000000",
+    seq: int = 1,
+) -> OrderIntent:
     refd = Decimal(ref)
     limd = (
         Decimal(lim)
@@ -143,16 +161,35 @@ def _it(entity: str = "AAA", side: Side = Side.BUY, qty: int = 500, ref: str = "
         else round_to_step(refd * (Decimal("1.02") if side is Side.BUY else Decimal("0.98")), side)
     )
     return OrderIntent(
-        client_order_id("B", D, entity, side), "B-R", seq, "EMG2_20", "B", D, entity, side, qty,
-        OrderType.LOC, refd, limd, "T", tv_med20=Decimal(tv20) if tv20 else None, prev_close=refd,
-    )  # fmt: skip
+        client_order_id("B", D, entity, side),
+        "B-R",
+        seq,
+        "EMG2_20",
+        "B",
+        D,
+        entity,
+        side,
+        qty,
+        OrderType.LOC,
+        refd,
+        limd,
+        "T",
+        tv_med20=Decimal(tv20) if tv20 else None,
+        prev_close=refd,
+    )
 
 
 def _ctx(**kw: object) -> RiskContext:
     base: dict[str, object] = dict(
-        now=NOW, session=S, expected_data_date=D, data_as_of=D, safety=SafetyLevel.NORMAL,
-        start_day=False, positions={"SSS": 1000}, settled_cash=Decimal(10000),
-    )  # fmt: skip
+        now=NOW,
+        session=S,
+        expected_data_date=D,
+        data_as_of=D,
+        safety=SafetyLevel.NORMAL,
+        start_day=False,
+        positions={"SSS": 1000},
+        settled_cash=Decimal(10000),
+    )
     base.update(kw)
     return RiskContext(**base)  # type: ignore[arg-type]
 
@@ -235,8 +272,11 @@ def test_L10_orders_per_day_and_buys_per_day() -> None:
         and rep.latch is SafetyLevel.HALTED_BUYS
         and rep.pages
     )
-    rep2 = check_intents(many, _ctx(settled_cash=Decimal(100000), start_day=True),
-                         RiskLimits(buys_per_day_start_aud=Decimal(10**6), capital_cap_aud=Decimal(10**6)))  # fmt: skip
+    rep2 = check_intents(
+        many,
+        _ctx(settled_cash=Decimal(100000), start_day=True),
+        RiskLimits(buys_per_day_start_aud=Decimal(10**6), capital_cap_aud=Decimal(10**6)),
+    )
     assert sum(r.sendable for r in rep2.results) == 20
     rep3 = check_intents(many, _ctx(settled_cash=Decimal(100000)))
     assert sum(r.sendable for r in rep3.results) == 8  # 8 x 510 <= 4,500 < 9 x 510
@@ -261,16 +301,32 @@ def test_BW_SYS_04_property_no_intent_set_passes_with_a_limit_broken() -> None:
             ref = Decimal(f"{rng.uniform(0.05, 30):.3f}")
             band = Decimal(f"{rng.uniform(-0.06, 0.06):.3f}")
             limp = round_to_step(ref * (1 + band), side) if ref * (1 + band) > 0 else ref
-            its.append(OrderIntent(
-                f"c{k}", "b", k + 1, "L", "B", D, f"E{k % 7}", side, rng.randint(1, 3000),
-                OrderType.LOC, ref, limp, "T", tv_med20=Decimal(rng.randint(0, 400000)),
-                prev_close=ref * Decimal(f"{rng.uniform(0.3, 1.8):.2f}"),
-            ))  # fmt: skip
+            its.append(
+                OrderIntent(
+                    f"c{k}",
+                    "b",
+                    k + 1,
+                    "L",
+                    "B",
+                    D,
+                    f"E{k % 7}",
+                    side,
+                    rng.randint(1, 3000),
+                    OrderType.LOC,
+                    ref,
+                    limp,
+                    "T",
+                    tv_med20=Decimal(rng.randint(0, 400000)),
+                    prev_close=ref * Decimal(f"{rng.uniform(0.3, 1.8):.2f}"),
+                )
+            )
         ctx = _ctx(
             positions={f"E{k}": rng.randint(0, 2000) for k in range(7)},
-            settled_cash=Decimal(rng.randint(0, 12000)), start_day=rng.random() < 0.3,
-            safety=rng.choice(list(SafetyLevel)), holdings_cost=Decimal(rng.randint(0, 10000)),
-        )  # fmt: skip
+            settled_cash=Decimal(rng.randint(0, 12000)),
+            start_day=rng.random() < 0.3,
+            safety=rng.choice(list(SafetyLevel)),
+            holdings_cost=Decimal(rng.randint(0, 10000)),
+        )
         rep = check_intents(its, ctx, lim)
         sent = [r.intent for r in rep.results if r.sendable]
         buys = [i for i in sent if i.side is Side.BUY]
@@ -321,6 +377,7 @@ def test_BW_SYS_04_property_no_intent_set_passes_with_a_limit_broken() -> None:
 def test_L11_BW_RSK_20_22_29_book_monitors(
     value: str, peak: str, prev: str, level: SafetyLevel
 ) -> None:
+    """L11 value floors, BW-RSK-20 drawdown, BW-RSK-22 day move, BW-RSK-29 real-money floor."""
     r = evaluate_book(Decimal(value), Decimal(peak), Decimal(prev), Decimal(10000))
     assert r.level is level
     if Decimal(value) <= 7000:
