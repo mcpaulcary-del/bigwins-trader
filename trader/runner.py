@@ -30,7 +30,7 @@ def reconcile_and_page(
     r = reconcile(
         journal.positions(book),
         journal.cash(book),
-        broker.positions(),
+        journal.map_codes(broker.positions()),  # BF-D19: a broker still on an old code
         broker.account().ledger_cash,
     )
     if not r.ok:

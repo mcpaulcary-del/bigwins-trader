@@ -56,6 +56,10 @@ class PricePanel:
     # Number of sessions in the full history before ``dates[0]`` (for ages that start
     # before the panel window). 0 when the panel holds the whole history.
     sessions_before: int = 0
+    # A7 identity (BW-UNI-02): a code dropped as a duplicate -> (the code it continues
+    # as, rule "A7b" | "A7c", score). A held code that stops trading and has an entry
+    # here changed its code (``trader.identity_change``).
+    aliases: Mapping[str, tuple[str, str, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.dates:
@@ -78,6 +82,7 @@ class PricePanel:
             raise PanelError(f"unknown security classes {sorted(bad)}")
         object.__setattr__(self, "sec_class", MappingProxyType(dict(self.sec_class)))
         object.__setattr__(self, "first_session", MappingProxyType(dict(self.first_session)))
+        object.__setattr__(self, "aliases", MappingProxyType(dict(self.aliases)))
 
     @property
     def n_sessions(self) -> int:
@@ -101,4 +106,5 @@ class PricePanel:
             sec_class=self.sec_class,
             first_session={e: s for e, s in self.first_session.items() if s <= d},
             sessions_before=self.sessions_before,
+            aliases=self.aliases,
         )

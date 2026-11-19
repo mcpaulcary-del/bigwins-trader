@@ -144,6 +144,21 @@ safety = Table(
     Column("scope", String(40), nullable=False, server_default=""),
 )
 
+identity = Table(
+    "bf_identity",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("old_code", String(24), nullable=False, index=True),
+    Column("new_code", String(24), nullable=False),
+    # PROPOSED (applied, owner to confirm) | CONFIRMED | REJECTED; the latest row wins
+    Column("status", String(12), nullable=False),
+    Column("rule", String(8), nullable=False),  # A7b | A7c | OWNER
+    Column("score", Numeric(8, 6)),
+    Column("actor", String(64), nullable=False),
+    Column("at", DateTime(timezone=True), nullable=False),
+    Column("note", String(200), nullable=False),
+)
+
 events = Table(
     "bf_events",
     md,
@@ -545,11 +560,69 @@ class Journal:
             )
             self._event(c, "cash", book, None, kind, {"amount": str(amount), "note": note}, at)
 
+    # ------------------------------------------------------------ identity (code changes)
+    def add_identity(
+        self,
+        old: str,
+        new: str,
+        status: str,
+        rule: str,
+        score: Decimal | None,
+        actor: str,
+        note: str,
+        at: datetime | None = None,
+    ) -> None:
+        """Record a code change ``old -> new`` (PROPOSED / CONFIRMED / REJECTED)."""
+        if status not in ("PROPOSED", "CONFIRMED", "REJECTED") or old == new:
+            raise JournalError(f"bad identity record {old}->{new} {status}")
+        with self.engine.begin() as c:
+            c.execute(
+                insert(identity).values(
+                    old_code=old, new_code=new, status=status, rule=rule, score=score,
+                    actor=actor, at=at or utcnow(), note=note[:200],
+                )
+            )  # fmt: skip
+            self._event(c, "identity", old, None, status, {"new": new, "rule": rule}, at)
+
+    def identity_records(self) -> dict[str, dict[str, Any]]:
+        """The latest identity record of every old code."""
+        with self.engine.connect() as c:
+            rows = c.execute(select(identity).order_by(identity.c.id)).all()
+        return {r.old_code: dict(r._mapping) for r in rows}
+
+    def identity_map(self) -> dict[str, str]:
+        """Old code -> the code it trades as now (applied: PROPOSED or CONFIRMED),
+        chains followed. Positions and holdings cost are reported under the new code."""
+        step = {
+            o: str(r["new_code"])
+            for o, r in self.identity_records().items()
+            if r["status"] in ("PROPOSED", "CONFIRMED")
+        }
+        out: dict[str, str] = {}
+        for o, first in step.items():
+            n, seen = first, {o}
+            while n in step and n not in seen:
+                seen.add(n)
+                n = step[n]
+            out[o] = n
+        return out
+
+    def map_codes(self, positions: Mapping[str, int]) -> dict[str, int]:
+        """Positions under the current codes (e.g. a broker that still shows the old)."""
+        m = self.identity_map()
+        out: dict[str, int] = {}
+        for e, q in positions.items():
+            k = m.get(e, e)
+            out[k] = out.get(k, 0) + q
+        return {e: q for e, q in sorted(out.items()) if q != 0}
+
     # ------------------------------------------------------------ ledger views
     def positions(self, book: str) -> dict[str, int]:
+        m = self.identity_map()
         pos: dict[str, int] = {}
         for f in self.fills(book):
-            pos[f.entity] = pos.get(f.entity, 0) + (f.qty if f.side is Side.BUY else -f.qty)
+            e = m.get(f.entity, f.entity)
+            pos[e] = pos.get(e, 0) + (f.qty if f.side is Side.BUY else -f.qty)
         return {e: q for e, q in sorted(pos.items()) if q != 0}
 
     def has_cash_moves(self, book: str) -> bool:
@@ -576,14 +649,16 @@ class Journal:
         """Average cost of open positions incl. commission (for the capital cap)."""
         cost: dict[str, Decimal] = {}
         qty: dict[str, int] = {}
+        m = self.identity_map()  # a code change keeps the cost (one company)
         for f in self.fills(book):
+            e = m.get(f.entity, f.entity)
             if f.side is Side.BUY:
-                cost[f.entity] = cost.get(f.entity, Decimal(0)) + f.price * f.qty + f.commission
-                qty[f.entity] = qty.get(f.entity, 0) + f.qty
-            elif qty.get(f.entity):
-                avg = cost[f.entity] / qty[f.entity]
-                qty[f.entity] -= f.qty
-                cost[f.entity] = avg * qty[f.entity]
+                cost[e] = cost.get(e, Decimal(0)) + f.price * f.qty + f.commission
+                qty[e] = qty.get(e, 0) + f.qty
+            elif qty.get(e):
+                avg = cost[e] / qty[e]
+                qty[e] -= f.qty
+                cost[e] = avg * qty[e]
         return sum(cost.values(), Decimal(0)).quantize(Decimal("0.01"))
 
     # ------------------------------------------------------------ safety

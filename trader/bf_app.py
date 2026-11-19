@@ -62,6 +62,7 @@ from trader.broker.paper_sim import SimBroker
 from trader.canonical import sha256_json
 from trader.constants import ASX_TZ
 from trader.execution import Executor
+from trader.identity_change import code_changes
 from trader.journal import TERMINAL, Journal, Status
 from trader.lines.emg2 import (
     BookState,
@@ -266,6 +267,7 @@ class BfApp:
                 journal, rb, name, limits=s.limits, approval_deadline="23:59", safety_scope=name
             )
             self.rnd.append((name, seed, ex, rb))
+        self._idmap_seen = journal.identity_map()  # BF-D19: code changes applied so far
         if twin_rank is None and self.rnd:
             twin_rank = self.twin_percentile
         self.twin_rank = twin_rank or (lambda d: None)
@@ -338,7 +340,7 @@ class BfApp:
             data_as_of=data_as_of or decision_date,
             safety=SafetyLevel.NORMAL,  # the Executor adds the journal's latched level
             start_day=start_day,
-            positions=broker.positions(),
+            positions=self.j.map_codes(broker.positions()),  # BF-D19: a code change
             settled_cash=broker.account().settled_cash,
             holdings_cost=self.j.holdings_cost(book),
             orders_sent_today=n,
@@ -547,6 +549,7 @@ class BfApp:
         times, then a sell is paged. A carried order needs approval again (L8)."""
         closes: Mapping[str, Decimal] | None = None  # read only when an order is carried
         band = self.s.order_params.limit_band
+        idmap = self.j.identity_map()  # BF-D19: an order of an old code goes on the new
         new: list[OrderIntent] = []
         keys: list[str] = []
         for it, st in self._all_intents(book):
@@ -566,7 +569,8 @@ class BfApp:
                 continue
             if closes is None:
                 closes = self.closes(day)
-            ref = closes.get(it.entity) or it.ref_price
+            ent = idmap.get(it.entity, it.entity)
+            ref = closes.get(ent) or it.ref_price
             if sell:
                 lim, qty = round_to_step(ref * (1 - band), Side.SELL), rest
             else:
@@ -579,8 +583,9 @@ class BfApp:
                 replace(
                     it,
                     client_order_id=client_order_id(
-                        book, it.decision_date, it.entity, it.side, it.attempt + 1
+                        book, it.decision_date, ent, it.side, it.attempt + 1
                     ),
+                    entity=ent,
                     qty=qty,
                     ref_price=ref,
                     limit_price=lim,
@@ -661,6 +666,7 @@ class BfApp:
                 return False
             self.say(f"PAGE no closes for {day}: the twin is not advanced today")
             return True
+        self._code_changes(day, now, closes)
         self.sim.advance(day, closes)
         self.ex_sim.collect_fills(now, session_closed=True)
         self._carry(self.s.sim_book, self.ex_sim, self.sim, "auto", day, now)
@@ -697,6 +703,49 @@ class BfApp:
             if key.split(":", 1)[1] not in planned:  # L6: the other start buys wait for the
                 out.update(str(b[0]) for b in rec["buys"])  # canary (or the start stopped)
         return out
+
+    # ------------------------------------------------------------ code changes (BF-D19)
+    def _sim_brokers(self) -> list[tuple[str, SimBroker]]:
+        return [(self.s.sim_book, self.sim), *((name, rb) for name, _, _, rb in self.rnd)]
+
+    def _code_changes(self, day: date, now: datetime, closes: Mapping[str, Decimal]) -> None:
+        """A held code with no close today that A7 maps to a code trading today changed
+        its code: carried under the new code (PROPOSED), owner paged to confirm."""
+        books = (self.s.book, *(b for b, _ in self._sim_brokers()))
+        held: dict[str, dict[str, int]] = {}
+        for b in books:
+            for e, q in self.j.positions(b).items():
+                held.setdefault(e, {})[b] = q
+        changes = code_changes(held, self.panels(day), closes, self.j.identity_records())
+        for c in changes:
+            score = Decimal(repr(c.score)).quantize(Decimal("0.000001"))
+            self.j.add_identity(
+                c.old, c.new, "PROPOSED", c.rule, score, "system",
+                f"no close for {c.old} on {day}; A7 maps it to {c.new}", now,
+            )  # fmt: skip
+            mine = held[c.old].get(self.s.book, 0)
+            twin = held[c.old].get(self.s.sim_book, 0)
+            self.say(
+                f"PAGE code change {day}: {c.old} has no close today and {c.new} carries the "
+                f"same prices ({c.rule} {c.score:.4f}); {c.new} closed at {closes[c.new]}. "
+                f"Holdings of {c.old} (paper book {mine}, twin {twin}) are carried as "
+                f"{c.new} at its price; {c.old} and {c.new} are one company (never bought "
+                f"twice). Confirm: /idmap {c.old} {c.new} <code>. Undo: /idmap_reject "
+                f"{c.old} <code>."
+            )
+        m = self.j.identity_map()
+        if m != self._idmap_seen:  # applied, confirmed or undone: simulated books follow
+            for b, sb in self._sim_brokers():
+                sb.holdings = dict(self.j.positions(b))
+            self._idmap_seen = m
+
+    def _code_change_flags(self) -> list[str]:
+        return [
+            f"PAGE: code change {o} -> {r['new_code']} not confirmed: "
+            f"/idmap {o} {r['new_code']} <code> (or /idmap_reject {o} <code>)"
+            for o, r in sorted(self.j.identity_records().items())
+            if r["status"] == "PROPOSED"
+        ]
 
     # ------------------------------------------------------------ random twins (BF-D18)
     def _rnd_origin(self, day: date, now: datetime) -> int:
@@ -825,7 +874,7 @@ class BfApp:
             commission_to_date=sum((f.commission for f in self.j.fills(self.s.book)), Decimal(0)),
             orders_today=orders,
             safety=self.j.safety_level().value,
-            flags=[*stale, *reading.alerts],
+            flags=[*stale, *reading.alerts, *self._code_change_flags()],
             sim_value=sim_value,
             random_twins=self._rnd_line(day, now),
         )

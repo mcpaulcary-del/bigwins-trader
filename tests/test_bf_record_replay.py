@@ -9,6 +9,8 @@ panels are built once per module and shared by every scenario.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Callable, Sequence
 from datetime import date, timedelta
@@ -57,6 +59,8 @@ def _days(sess: Sequence[date], a: date = START, b: date = END) -> list[date]:
 
 
 def _app(r: Rec, **kw: Any) -> tuple[BfApp, MockGateway, str]:
+    """The scenarios below run without the 100 random twins (the full replay has them)."""
+    kw.setdefault("random_twins", 0)
     cfg, sess, prov = r
     return mock_app(cfg, prov, sess, START, **kw)
 
@@ -93,18 +97,48 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     sim_start = app.j.intents_of("EMG2_18_SIM-2026-10-30-S")
     assert {it.entity for it, _ in sim_start} == {it.entity for it in start_buys}
     assert app.j.batch(f"{BOOK}-2026-11-18-R")["execution_date"] == date(2026, 11, 19)  # type: ignore[index]
-    assert summ.safety == "NORMAL" and not summ.pages
+    assert summ.safety == "NORMAL"
+    # BF-D19: HGO (held) stops after 13 Nov and continues as KAN: one page, carried as KAN
+    assert [p[:46] for p in summ.pages] == ["PAGE code change 2026-11-16: HGO has no close "]
+    assert "carried as KAN" in summ.pages[0] and "/idmap HGO KAN <code>" in summ.pages[0]
+    idr = app.j.identity_records()["HGO"]
+    assert (idr["new_code"], idr["status"], idr["rule"]) == ("KAN", "PROPOSED", "A7b")
+    assert summ.positions["KAN"] == summ.sim_positions["KAN"] == 458
+    assert "HGO" not in summ.positions and "HGO" not in summ.sim_positions
+    held_hgo = [
+        b
+        for b in (BOOK, "EMG2_18_SIM", *(n for n, *_ in app.rnd))
+        if any(f.entity == "HGO" for f in app.j.fills(b))
+    ]
+    assert BOOK in held_hgo and len(held_hgo) > 2
+    kan_buys = [
+        it
+        for b in held_hgo
+        for it, _ in app.j.intents_of_book(b)
+        if it.entity == "KAN" and it.side is Side.BUY
+    ]
+    assert not kan_buys  # never a second holding of the same company
     assert summ.recon == {str(d): True for d in days}  # to the unit and the cent, each day
-    assert summ.positions == app.broker.positions()
+    assert summ.positions == app.j.map_codes(app.broker.positions())
     assert abs(summ.cash - summ.broker_cash) < Decimal("0.01")
     assert set(summ.l13_notes) == {"2026-10-30", "2026-11-18"}
     assert not any("L13 sim/broker holdings differ" in t for _, t in tr.outbox)
     reports = [t for _, t in tr.outbox if t.startswith(PAPER_BANNER)]
     assert len(reports) == len(days)
     assert any(t.startswith("Decision 2026-10-30") and "LIC list" in t for _, t in tr.outbox)
-    # HGO (held) is missing from the record's feed on 16-18 Nov: valued at its last mark
-    assert any("no mark for HGO on 2026-11-18" in t for t in reports) or "HGO" not in summ.positions
+    # HGO's last mark (1.045) is no longer used: KAN's close values the holding
+    assert not any("no mark for HGO" in t for t in reports)
+    assert "KAN" in reports[-1] and "code change HGO -> KAN not confirmed" in reports[-1]
+    assert reports[-1].count("Value A$10004.76") == 1
     assert not any("no price" in t for t in reports)
+    # BF-D18 golden: the 100 random twins on the record data (18 Nov 2026)
+    assert len(app.rnd) == 100 and app.rnd[0][:2] == ("EMG2_18_RND_s001", 8550001)
+    rnd = dict(app.j.job_records("rnd:2026-11-18"))["rnd:2026-11-18"]
+    assert rnd["sim"] == "9856.9547" and rnd["percentile"] == "41.0"
+    assert app.twin_rank(END) == Decimal("41.0")
+    digest = hashlib.sha256(json.dumps(rnd["values"]).encode()).hexdigest()
+    assert digest == "23843130ca83954e49c8acc281a2ecc91c5c378c427f35175e5ecadd656d9f2c"
+    assert "Simulated twin at the 41.0 percentile of 100 random twins" in reports[-1]
 
 
 def _auction_without(
@@ -203,7 +237,7 @@ def test_L6_record_restart_between_canary_and_the_17_uses_the_journal_only(
     rest = app2.j.intents_of(f"{BOOK}-2026-10-30-S")
     assert len(rest) == 17 and sum(st == Status.FILLED for _, st in rest) >= 14
     assert summ.safety == "NORMAL" and all(summ.recon.values())
-    assert summ.positions == app2.broker.positions()
+    assert summ.positions == app2.j.map_codes(app2.broker.positions())
     # the twin was rebuilt from the journal too and holds the same names
     assert set(summ.sim_positions) >= set(summ.positions)
 
@@ -246,7 +280,7 @@ def test_L11_record_drill_marks_scaled_below_6000_buys_stop_sells_go_resume(rec:
     assert any("safety HALTED_BUYS" in t and "L11 stage 2" in t for t in reports)
     assert any(f"L11 {END}: buys stay paused" in t and "(b) twin percentile unknown" in t
                for t in out)  # fmt: skip
-    assert all(summ.recon.values()) and summ.positions == app.broker.positions()
+    assert all(summ.recon.values()) and summ.positions == app.j.map_codes(app.broker.positions())
     # 19 Nov: the 18 Nov decision's sells go, its buys are refused by the breaker
     nov19 = date(2026, 11, 19)
     gw.placed.clear()

@@ -35,7 +35,13 @@ from typing import Any
 
 import numpy as np
 
-from trader.data.identity import cut_code_reuse, duplicates_a7b, duplicates_a7c, security_class
+from trader.data.identity import (
+    DupPair,
+    cut_code_reuse,
+    duplicates_a7b,
+    duplicates_a7c,
+    security_class,
+)
 from trader.panel import PricePanel
 
 RET_MIN, RET_MAX = -0.95, 10.0  # T6/build85: returns outside are invalid
@@ -250,17 +256,19 @@ class ForwardStore:
         ret = np.where(np.isnan(close), np.nan, ret)
         tv = np.where(np.isnan(close), np.nan, tv)
         keep = list(range(n))
+        aliases: dict[str, tuple[str, str, float]] = {}
         if apply_duplicates:
             dups = duplicates_a7b(close)
             dropped = frozenset(p.dup for p in dups)
             dups += duplicates_a7c(close, tv, ret, exclude=dropped)
             gone = {p.dup for p in dups}
             keep = [j for j in range(n) if j not in gone]
+            aliases = resolve_aliases([syms[j][:-3] for j in range(n)], dups)
         codes = [syms[j][:-3] for j in keep]
         return PricePanel(
             as_of=as_of, dates=tuple(sess), entities=tuple(codes),
             close=close[:, keep], ret=ret[:, keep], tv=tv[:, keep],
-            sec_class={c: cls[c] for c in codes},
+            sec_class={c: cls[c] for c in codes}, aliases=aliases,
         )  # fmt: skip
 
     def _events(self, kind: str, sym: str) -> list[dict[str, Any]]:
@@ -269,6 +277,22 @@ class ForwardStore:
             return []
         data = self._read(p)
         return list(data) if isinstance(data, list) else []
+
+
+def resolve_aliases(
+    codes: Sequence[str], dups: Iterable[DupPair]
+) -> dict[str, tuple[str, str, float]]:
+    """A7 pairs as ``dropped code -> (kept code, rule, score)``, chains followed to the
+    code that stays in the panel (a cycle, which A7's later-living rule excludes, stops)."""
+    step = {p.dup: p for p in dups}
+    out: dict[str, tuple[str, str, float]] = {}
+    for j, p in step.items():
+        k, seen = p.keep, {j}
+        while k in step and k not in seen:
+            seen.add(k)
+            k = step[k].keep
+        out[codes[j]] = (codes[k], p.rule, p.score)
+    return out
 
 
 def _day(r: dict[str, Any]) -> date:

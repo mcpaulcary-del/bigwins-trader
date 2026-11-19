@@ -260,9 +260,31 @@ class ApprovalBot:
                 "confirmation recorded (L11 stage 3): buys resume at the next decision "
                 "if the staged test passes"
             )
+        if cmd in ("/idmap", "/idmap_reject"):  # BF-D19: confirm or undo a code change
+            return self._idmap(cmd, args, actor, m.at)
         if cmd in ("/ok", "/veto", "/approve", "/refuse"):
             return self._approval(cmd, args, actor, m.at)
         return f"unknown command {cmd}"
+
+    def _idmap(self, cmd: str, args: list[str], actor: str, at: datetime) -> str:
+        n = 3 if cmd == "/idmap" else 2
+        if len(args) != n or not self.verifier.verify(args[-1], at):
+            return f"refused: {cmd} needs the codes and a valid one-time code"
+        old = args[0].upper()
+        rec = self.journal.identity_records().get(old)
+        if rec is None:
+            return f"refused: no code change recorded for {old}"
+        new = str(rec["new_code"])
+        if cmd == "/idmap":
+            if args[1].upper() != new:
+                return f"refused: the recorded change is {old} -> {new}"
+            self.journal.add_identity(old, new, "CONFIRMED", "OWNER", None, actor, "owner", at)
+            return f"code change {old} -> {new} confirmed"
+        self.journal.add_identity(old, new, "REJECTED", "OWNER", None, actor, "owner undo", at)
+        return (
+            f"code change {old} -> {new} undone: {old} is carried again at its last mark "
+            "(review the holding)"
+        )
 
     def _approval(self, cmd: str, args: list[str], actor: str, at: datetime) -> str:  # noqa: PLR0911
         if len(args) < 2:
