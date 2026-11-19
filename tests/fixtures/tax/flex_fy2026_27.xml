@@ -1,0 +1,28 @@
+<FlexQueryResponse queryName="asx-trader tax (synthetic)" type="AF">
+  <FlexStatements count="2">
+    <FlexStatement accountId="DU1234567" fromDate="20260701" toDate="20261231" period="" whenGenerated="20270101;151200">
+      <CashTransactions>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="" transactionID="8800001" type="Deposits/Withdrawals" amount="10000.00" dateTime="20260801;101500" settleDate="20260801" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS"/>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="AAA" transactionID="8800002" type="Dividends" amount="30.00" dateTime="20261125" settleDate="20261125" exDate="20261118" payDate="20261125" description="AAA(AU000000AAA1) CASH DIVIDEND AUD 0.50 PER SHARE - FULLY FRANKED (Ordinary Dividend)"/>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="" transactionID="8800003" type="Broker Interest Received" amount="1.23" dateTime="20261203" settleDate="20261203" description="AUD CREDIT INT FOR NOV-2026"/>
+      </CashTransactions>
+      <Trades>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="AAA" conid="700001" ibExecID="T1" tradeID="1" buySell="BUY" quantity="100" tradePrice="10" ibCommission="-6.00" tradeDate="20260803" dateTime="20260803;155900" settleDateTarget="20260805"/>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="AAA" conid="700001" ibExecID="T2" tradeID="2" buySell="SELL" quantity="-40" tradePrice="12" ibCommission="-6.00" tradeDate="20261015" dateTime="20261015;155900" settleDateTarget="20261019"/>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="BBB" conid="700002" ibExecID="T9" tradeID="9" buySell="BUY" quantity="10" tradePrice="5" ibCommission="-6.00" tradeDate="20261020" dateTime="20261020;155900" settleDateTarget="20261022"/>
+      </Trades>
+    </FlexStatement>
+    <FlexStatement accountId="DU1234567" fromDate="20270101" toDate="20270630" period="" whenGenerated="20270701;151200">
+      <OpenPositions>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="AAA" conid="700001" reportDate="20270630" position="60" markPrice="13" positionValue="780" levelOfDetail="SUMMARY"/>
+        <OpenPosition accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="A200" conid="700003" reportDate="20270630" position="70" markPrice="140" positionValue="9800" levelOfDetail="SUMMARY"/>
+      </OpenPositions>
+      <CashTransactions>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="A200" transactionID="8800010" type="Dividends" amount="84.00" dateTime="20270115" settleDate="20270115" exDate="20270102" payDate="20270115" description="A200(AU00000A2001) CASH DIVIDEND AUD 1.20 PER SHARE (Mixed Income)"/>
+      </CashTransactions>
+      <Trades>
+        <Trade accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="A200" conid="700003" ibExecID="T3" tradeID="3" buySell="BUY" quantity="70" tradePrice="130" ibCommission="-9.10" tradeDate="20261201" dateTime="20261201;155900" settleDateTarget="20261203"/>
+      </Trades>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

@@ -78,6 +78,11 @@ band_trend:                     # L15 (AMENDMENT_live_EMG2_18_BT.md; owner decis
   fund_order_max_aud: 10000     # one fund order (paged above the A$800 share-order limit); IBKR's
                                 # precautionary order value must be above it (as for sells, BF-D3)
   fund_half_spread: 0.0005      # simulated twin / random twins: the fund's spread a side (report 96)
+tax:                            # BF-D29: `trader-bf tax-report --fy 2026-27` (general information, not tax advice)
+  parcel_method: FIFO           # FIFO (default) | min_tax = specific identification: only after the accountant confirms (O-8)
+  discount_days: 367            # 50% CGT discount marked from 367 days held (the record's safety margin over 12 months)
+  fund_codes: [A200]            # trust distributions (band_trend.fund is added anyway); AMIT figures entered by hand:
+  amit_csv: null                #   fy,code,cost_base_increase,cost_base_decrease,note (from each annual tax statement)
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0
 journal:

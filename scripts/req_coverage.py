@@ -42,7 +42,7 @@ MILESTONES["BF"] = (
     "BW-UNI-02", "BW-UNI-03", "BW-UNI-11", "BW-RSK-01", "BW-RSK-02", "BW-RSK-03",
     "BW-RSK-06", "BW-RSK-07", "BW-RSK-08", "BW-RSK-11", "BW-RSK-20", "BW-RSK-22",
     "BW-RSK-27", "BW-RSK-29", "BW-RSK-30", "BW-EXE-06", "BW-EXE-09", "BW-APR-03",
-    "BW-APR-04", "BW-APR-05",
+    "BW-APR-04", "BW-APR-05", "BW-TAX-01", "BW-TAX-02",
 )  # fmt: skip
 ORDER = ("M0", "M1", "BF", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10")
 PREFIXES = "SYS|DAT|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF|RND|SIZ|MKT|ENG|USE|BP|STR|ADP|FUT"

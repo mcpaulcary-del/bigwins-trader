@@ -164,6 +164,22 @@ class DataCfg(_M):
         return self
 
 
+class TaxCfg(_M):
+    """BF-D29: ``trader-bf tax-report`` (Australian financial year; general information,
+    not tax advice). FIFO is the default parcel method; ``min_tax`` (specific
+    identification: loss parcels first, then discount-eligible gains, then the
+    highest-cost short-term parcel) only after the owner's accountant confirms it (O-8).
+    ``discount_days``: the record's 367-day safety margin for the 12-month CGT discount
+    test. ``fund_codes``: managed funds / ETFs whose payments are trust distributions
+    (with ``band_trend.fund`` added). ``amit_csv``: the owner's entries from each fund's
+    annual (AMIT) tax statement; nothing secret."""
+
+    parcel_method: Literal["FIFO", "min_tax"] = "FIFO"
+    discount_days: int = Field(default=367, ge=366, le=400)
+    fund_codes: list[str] = Field(default_factory=list)
+    amit_csv: Path | None = None
+
+
 class TelegramCfg(_M):
     allowed_chat_ids: list[int]
 
@@ -185,6 +201,14 @@ class BfastConfig(_M):
     telegram: TelegramCfg
     journal: JournalCfg
     band_trend: BandTrendCfg | None = None  # None = the switch is off (L15 not in use)
+    tax: TaxCfg = Field(default_factory=TaxCfg)  # BF-D29 tax report
+
+    def fund_codes(self) -> frozenset[str]:
+        """Codes whose payments are fund (trust) distributions (BF-D29)."""
+        out = {c.upper() for c in self.tax.fund_codes}
+        if self.band_trend is not None:
+            out.add(self.band_trend.fund)
+        return frozenset(out)
 
     def band_trend_params(self) -> BandTrendParams:
         b = self.band_trend

@@ -625,6 +625,12 @@ class Journal:
             )
             self._event(c, "cash", book, None, kind, {"amount": str(amount), "note": note}, at)
 
+    def cash_moves_of(self, book: str) -> list[dict[str, Any]]:
+        """The book's cash records (deposits, withdrawals, adjustments) in time order."""
+        q = select(cash_moves).where(cash_moves.c.book == book).order_by(cash_moves.c.id)
+        with self.engine.connect() as c:
+            return [dict(r._mapping) for r in c.execute(q)]
+
     # ------------------------------------------------------------ quote at order time (BF-D22)
     def record_order_quote(
         self,

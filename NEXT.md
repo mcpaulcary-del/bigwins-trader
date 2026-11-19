@@ -150,6 +150,16 @@ go-live checklist, by a reviewed code change.
 - Config `band_trend` (on in `config/bfast.yaml`). The paper record runs the same rule as
   `EMG2_18_SIM_BT` (+100 twins) in `paper_emg2bt.py` (ledger seq 70/72).
 
+## Tax report (BF-D29, 19 Nov 2026)
+
+- `trader-bf tax-report --fy 2026-27` (`trader/tax_report.py`): parcels (FIFO default,
+  `tax.parcel_method`), capital gains short-term v discount-eligible (367-day margin),
+  losses and carry-forward, dividends with franking, capital returns, demergers, splits,
+  code changes, A200 distributions (AMIT "from the annual tax statement - enter manually",
+  `tax.amit_csv`), brokerage, and a reconciliation against the Flex inbox. General
+  information, not tax advice. Owner: confirm FIFO (or specific identification) with the
+  accountant; give the accountant the summary + CSVs after 30 June 2027.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
@@ -220,7 +230,7 @@ go-live checklist, by a reviewed code change.
 | 11 | Amendments registered; code hashes pinned | Record keeper |
 | 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14, v2 BF-D20); a missing or changed list refuses every decision and order and pages (BF-D21, no fallback); owner review open |
 | 13 | Risk statement signed; 5% of investable assets | Owner |
-| 14 | Parcels for paper fills; short-term gains understood | Journal has fills and corporate actions (dividends, franking, capital returns, demerger cost split; `tax_view`, BF-D23); FIFO parcel view open |
+| 14 | Parcels for paper fills; short-term gains understood | Journal has fills and corporate actions (BF-D23); **FIFO parcel tax report** `trader-bf tax-report --fy 2026-27` (BF-D29: CSV + summary for the accountant, 367-day margin, losses carried forward, A200 AMIT entered by hand, reconciled to Flex); owner to confirm the parcel method with the accountant |
 | 15 | Owner reachable by 15:20 through April 2027 | Owner |
 | + | 100 random twins running (L11 test (b), staged-rule amendment registered) | Twins built and running (BF-D18); amendment registration with the record keeper |
 

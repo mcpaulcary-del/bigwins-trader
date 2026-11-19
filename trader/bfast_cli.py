@@ -4,6 +4,8 @@
     trader-bf emg2-list --asof 2026-11-30 [--config ...] [--store DIR] [--out DIR]
     trader-bf kill|pause [--journal URL]           # one step, no second factor
     trader-bf status [--journal URL]
+    trader-bf tax-report --fy 2026-27 [--book B] [--journal URL] [--flex DIR] [--amit CSV]
+                         [--prior-losses A$] [--out DIR]     # BF-D29, not tax advice
 
 ``emg2-list`` builds the panel from the forward store (read-only), prints the EMG2 list
 T and the EMG2-20 picks for a fresh A$10,000 book, and writes
@@ -219,6 +221,54 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tax_report(args: argparse.Namespace) -> int:
+    """BF-D29: the financial year's CSV files and markdown summary for the accountant."""
+    from trader.tax_report import (
+        TaxParams,
+        build_report,
+        flex_statements,
+        load_amit_csv,
+        write_report,
+    )
+
+    cfg = load_bfast_config(args.config)
+    j = _journal(args.journal) if args.journal else _journal_from_config(cfg.journal.url_env)
+    flex_dir = args.flex if args.flex is not None else cfg.data.flex_inbox
+    statements = None
+    if flex_dir is not None and Path(flex_dir).is_dir():
+        statements = flex_statements(sorted(Path(flex_dir).glob("*.xml")))
+    amit_path = args.amit if args.amit is not None else cfg.tax.amit_csv
+    amit = load_amit_csv(Path(amit_path)) if amit_path and Path(amit_path).is_file() else []
+    params = TaxParams(cfg.tax.parcel_method, cfg.tax.discount_days, cfg.fund_codes())
+    rep = build_report(
+        j, args.book or cfg.book, args.fy, params, statements, amit, args.prior_losses,
+        cfg.broker.account_id, paper=cfg.mode == "paper",
+    )  # fmt: skip
+    for p in write_report(rep, Path(args.out)):
+        print(p)
+    bad = [x for x in rep.recon if x.problem]
+    print(
+        f"FY {rep.fy}: net capital gain A${rep.summary.net_gain:.2f}, loss carried forward "
+        f"A${rep.summary.carried_out:.2f}; reconciliation: "
+        + ("not run (no Flex statements)" if statements is None else f"{len(bad)} difference(s)")
+        + f"; {len(rep.flags)} item(s) to confirm. General information, not tax advice."
+    )
+    return 0
+
+
+def _tax_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser("tax-report", help="financial-year tax report (BF-D29; not tax advice)")
+    p.add_argument("--fy", required=True, help="financial year, e.g. 2026-27")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("--book", help="book (default: the config's broker book)")
+    p.add_argument("--journal", help="journal URL (default: the config's url_env)")
+    p.add_argument("--flex", type=Path, help="Flex XML directory (default: data.flex_inbox)")
+    p.add_argument("--amit", type=Path, help="AMIT entries CSV (default: tax.amit_csv)")
+    p.add_argument("--prior-losses", type=Decimal, default=Decimal(0),
+                   help="net capital losses carried in from before this book (A$)")  # fmt: skip
+    p.add_argument("--out", default="out/tax")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="trader-bf", description="B-fast EMG2-20 (paper only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -251,18 +301,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--book", required=True)
     p.add_argument("--amount", type=Decimal, required=True)
     p.add_argument("--journal")
+    _tax_parser(sub)
     for name in ("kill", "pause", "status"):
         p = sub.add_parser(name)
         p.add_argument("--journal")
     a = ap.parse_args(argv)
-    if a.cmd == "validate-config":
-        return cmd_validate_config(a)
-    if a.cmd == "emg2-list":
-        return cmd_emg2_list(a)
-    if a.cmd == "dry-run":
-        return cmd_dry_run(a)
-    if a.cmd == "run":
-        return cmd_run(a)
+    commands = {
+        "validate-config": cmd_validate_config,
+        "emg2-list": cmd_emg2_list,
+        "dry-run": cmd_dry_run,
+        "run": cmd_run,
+        "tax-report": cmd_tax_report,
+    }
+    if a.cmd in commands:
+        return commands[a.cmd](a)
     if a.cmd == "deposit":
         _journal(a.journal).add_cash(a.book, "DEPOSIT", a.amount, "deposit via CLI")
         print(f"deposit A${a.amount} recorded for {a.book}")
