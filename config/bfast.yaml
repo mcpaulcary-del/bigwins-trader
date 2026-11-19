@@ -47,8 +47,11 @@ data:
   sim_book: EMG2_18_SIM                     # simulated twin (L13)
   sim_half_spread: 0.005                    # L9 start spread, a side
   etp_list: /data/ref/etp_list.txt
-  lic_list: /data/record/LIC_list_frozen.csv     # record keeper's frozen list (BF-D6)
-  lic_list_fallback: config/lic_list_candidates.csv  # used only until the frozen list exists
+  lic_list: config/lic_list.csv             # verbatim copy of the record's LIC_list_frozen.csv
+                                            # (BF-D6; ledger seq 39); $TRADER_BF_LIC_LIST
+                                            # overrides the path (e.g. the record file itself)
+  lic_list_sha256: 68775b0a4a2e86075312c42fde9da7bf9265b0c02f27ee1bb7d28ca46b8bc275
+  lic_list_fallback: config/lic_list_candidates.csv  # only if the frozen list is missing
   history_sessions: 760
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0

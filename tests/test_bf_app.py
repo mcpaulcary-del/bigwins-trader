@@ -338,3 +338,91 @@ def test_L8_reminder_at_1430_lists_unapproved_orders() -> None:
     dry_run(app, DAYS[:1], {}, lambda d, t: [], mock_auction(gw, _closes))
     app.job_remind(DAYS[1], at(DAYS[1], "14:30"))
     assert any(t.startswith("Reminder: 1 order(s)") for _, t in tr.outbox)
+
+
+def test_BW_RSK_29_owner_loss_rule_nav_below_6000_pauses_buys_keeps_holdings_until_resume() -> None:
+    """Owner decision (19 Nov 2026): account value below A$6,000 -> HALTED_BUYS and a
+    high-priority page; holdings kept (nothing sold by the halt), registered sells still
+    go, buys are not sent; only the owner's /resume re-enables buying. A breach that
+    continues after /resume is the owner's call (not re-latched); a new breach is."""
+    from trader.approval import Incoming
+    from trader.orders import OrderBatch, Side, client_order_id
+
+    app, gw, tr = _app(D0)
+    dry_run(app, DAYS[:4], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    book = app.s.book
+    held = app.j.positions(book)
+    cash = app.j.cash(book)
+    assert len(held) >= 15 and app.j.safety_level() is SafetyLevel.NORMAL
+    day = DAYS[4]
+    px = dict(app.marks(day))
+    worth = sum((px[e] * q for e, q in held.items()), Decimal(0))
+
+    def at_value(v: str) -> Callable[[date], dict[str, Decimal]]:
+        f = (Decimal(v) - cash) / worth
+        return lambda d: {e: px[e] * f for e in held}
+
+    def high() -> int:
+        return sum("PAGE HIGH PRIORITY" in t for _, t in tr.outbox)
+
+    batches_before = app.j.batches_of(book)
+    days = iter(DAYS[5:])
+
+    def report(v: str) -> date:
+        d = next(days)
+        app.marks = at_value(v)
+        app.job_report(d, at(d, "22:45"))
+        return d
+
+    for v in ("9000", "8000", "7100", "6300", "6000.00"):  # no day falls 12% or more
+        report(v)
+    assert app.j.safety_level() is SafetyLevel.NORMAL and high() == 0  # A$6,000: review only
+    report("5990.00")
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 1
+    page = next(t for _, t in tr.outbox if "PAGE HIGH PRIORITY" in t)
+    assert "holdings are kept" in page and "/resume" in page
+    assert app.j.positions(book) == held and app.j.batches_of(book) == batches_before
+    report("5900")  # still below: latched, no second page
+    last = report("6500")  # recovery does not re-arm by itself
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 1
+    # under the halt a registered sell is sent and a buy is not
+    x = next(days)
+    sell_e = sorted(held)[0]
+    buy_e = next(e for e in sorted(px) if e not in held and px[e] > 1)
+    ref_s, ref_b = px[sell_e], px[buy_e]
+    from trader.orders import OrderIntent, OrderType, round_to_step
+
+    def intent(e: str, side: Side, qty: int, ref: Decimal, seq: int) -> OrderIntent:
+        band = Decimal("1.03") if side is Side.BUY else Decimal("0.97")
+        return OrderIntent(
+            client_order_id(book, last, e, side), f"{book}-{last}-X", seq, "EMG2_18",
+            book, last, e, side, qty, OrderType.LOC, ref, round_to_step(ref * band, side),
+            "T", tv_med20=Decimal(10**9), prev_close=ref,
+        )  # fmt: skip
+
+    its = (
+        intent(sell_e, Side.SELL, held[sell_e], ref_s, 1),
+        intent(buy_e, Side.BUY, int(Decimal(520) / ref_b) + 1, ref_b, 2),
+    )
+    batch = OrderBatch(f"{book}-{last}-X", book, last, its, (), "d" * 64)
+    ctx = app._ctx(book, app.broker, x, last, at(last, "22:20"), False)
+    app.ex.plan(batch, "auto", x, ctx)
+    gw.placed.clear()
+    app.job_submit(x, at(x, "15:45"))
+    assert {o.orderRef for _, o in gw.placed} == {its[0].client_order_id}
+    st = {it.client_order_id: s for it, s in app.j.intents_of(batch.batch_id)}
+    assert st[its[1].client_order_id] == Status.RISK_REJECTED
+
+    def resume(d: date) -> None:
+        t = at(d, "16:00")
+        app.transport_inject(Incoming(CHAT, f"/resume {totp(SEED, t)}", t))
+        app.job_tick(d, t)
+
+    resume(x)  # only the owner's command re-enables buying
+    assert app.j.safety_level() is SafetyLevel.NORMAL
+    report("6400")
+    d = report("5950")  # a new breach latches again
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 2
+    resume(d)  # the owner resumes while still below the floor: honoured
+    report("5800")
+    assert app.j.safety_level() is SafetyLevel.NORMAL and high() == 2

@@ -368,7 +368,8 @@ def test_BW_SYS_04_property_no_intent_set_passes_with_a_limit_broken() -> None:
     [
         ("9000", "10000", "9100", SafetyLevel.NORMAL),
         ("6900", "10000", "7000", SafetyLevel.NORMAL),  # review page only
-        ("6000", "10000", "6100", SafetyLevel.HALTED_BUYS),
+        ("6000", "10000", "6100", SafetyLevel.NORMAL),  # exactly A$6,000: review only
+        ("5999.99", "10000", "6100", SafetyLevel.HALTED_BUYS),  # owner loss rule: < A$6,000
         ("5000", "10000", "5100", SafetyLevel.HALTED_LINE),
         ("8700", "10000", "9900", SafetyLevel.HALTED_BUYS),  # one-day fall of 12%
         ("9000", "18000", "9100", SafetyLevel.HALTED_BUYS),  # drawdown 50%
@@ -380,6 +381,7 @@ def test_L11_BW_RSK_20_22_29_book_monitors(
     """L11 value floors, BW-RSK-20 drawdown, BW-RSK-22 day move, BW-RSK-29 real-money floor."""
     r = evaluate_book(Decimal(value), Decimal(peak), Decimal(prev), Decimal(10000))
     assert r.level is level
+    assert bool(r.halts) is (level is not SafetyLevel.NORMAL)
     if Decimal(value) <= 7000:
         assert any("L11" in a for a in r.alerts)
 
@@ -390,3 +392,17 @@ def test_breaker_reruns_identically_at_send_time() -> None:
     b = check_intents([r.intent for r in a.results if r.sendable], _ctx())
     assert [r.intent for r in a.results] == [r.intent for r in b.results]
     assert replace(its[0], qty=1) != its[0]
+
+
+def test_BF_D3_buy_over_800_rejected_sell_over_800_sent_and_paged() -> None:
+    """Owner decision BF-D2/BF-D3: A$800 per order applies to buys; a larger sell of a
+    registered rule goes through and pages the owner. A$10,000 caps new buys (L1)."""
+    assert _one(_it(qty=900)) == (Verdict.REJECT, ("MAX_ORDER_VALUE",))
+    rep = check_intents([_it("SSS", Side.SELL, 1000)], _ctx())
+    assert rep.results[0].verdict is Verdict.PASS
+    assert "SELL_ABOVE_ORDER_LIMIT" in rep.results[0].reasons
+    assert any("SSS" in p and "above the L10 order limit" in p for p in rep.pages)
+    assert check_intents([_it("SSS", Side.SELL, 700)], _ctx()).pages == ()
+    capped = check_intents([_it(qty=700)], _ctx(holdings_cost=Decimal(9500)))
+    assert capped.results[0].reasons == ("CAPITAL_CAP",)
+    assert check_intents([_it(qty=700)], _ctx(holdings_cost=Decimal(9200))).results[0].sendable

@@ -77,7 +77,16 @@ from trader.orders import (
 from trader.panel import PricePanel
 from trader.reconcile import compare_books
 from trader.report import DailyInputs, daily_report
-from trader.risk import RiskContext, RiskLimits, SafetyLevel, evaluate_book, worst
+from trader.risk import (
+    BLOCKS_ALL,
+    BLOCKS_BUYS,
+    BookReading,
+    RiskContext,
+    RiskLimits,
+    SafetyLevel,
+    evaluate_book,
+    worst,
+)
 from trader.runner import reconcile_and_page
 from trader.universe import liquidity_table
 
@@ -371,6 +380,13 @@ class BfApp:
                 head += f"list {dec.list_digest[:12]}; {len(batch.intents)} order(s)"
                 if self.s.lic_note:
                     head += "\n" + self.s.lic_note
+                lvl = self.j.safety_level()
+                if lvl in BLOCKS_BUYS:
+                    head += f"\nSafety {lvl.value}: the buys below are not sent unless you " + (
+                        "/resume <code> before they go; sells proceed"
+                        if lvl not in BLOCKS_ALL
+                        else "re-arm; sells wait for the re-arm too"
+                    )
                 self.say(head + "\n" + render_batch(self.j, batch.batch_id, "PAPER"))
                 for p in ex.plan_pages:  # BF-D3: a sell above A$800 goes through, paged
                     self.say("PAGE " + p)
@@ -614,12 +630,11 @@ class BfApp:
         peak = max([self.s.capital_aud, *(Decimal(r["peak"]) for r in prior[-1:])])
         prev = Decimal(prior[-1]["value"]) if prior else None
         reading = evaluate_book(value, peak, prev, self.s.capital_aud, self.s.limits)
-        if reading.level is not SafetyLevel.NORMAL:
-            self.j.set_safety(
-                worst(self.j.safety_level(), reading.level), "book monitor", "risk", now
-            )
+        self._latch_book_halts(reading, set(prior[-1].get("halts", [])) if prior else set(), now)
         self.j.mark_job(
-            f"value:{self.s.book}:{day}", {"value": str(value), "peak": str(max(peak, value))}, now
+            f"value:{self.s.book}:{day}",
+            {"value": str(value), "peak": str(max(peak, value)), "halts": list(reading.halts)},
+            now,
         )
         d0 = at(day, "00:00").astimezone(UTC)
         fills = [
@@ -655,6 +670,26 @@ class BfApp:
             sim_value=sim_value,
         )
         self.say(daily_report(x))
+
+    def _latch_book_halts(self, reading: BookReading, before: set[str], now: datetime) -> None:
+        """L11 / owner loss rule: a halt rule latches once, on the day it is first breached
+        (it stays latched; nothing here lowers the level). The latch pages the owner at
+        high priority. A breach that continues after the owner's ``/resume`` is not
+        re-latched: resuming is the owner's decision. A rule that clears and is breached
+        again latches again. A halt never sells: holdings are kept and the registered
+        sells go on under ``HALTED_BUYS``."""
+        new = [h for h in reading.halts if h not in before]
+        if not new:
+            return
+        lvl = worst(self.j.safety_level(), reading.level)
+        self.j.set_safety(lvl, "book monitor: " + ",".join(new), "risk", now)
+        why = "; ".join(a.removeprefix("PAGE: ") for a in reading.alerts if a.startswith("PAGE"))
+        self.say(
+            f"PAGE HIGH PRIORITY {self.s.book}: {why}. Safety now {lvl.value}: no new buys are "
+            "sent; holdings are kept and the registered EMG2 sells continue"
+            + (" (HALTED_LINE: sells stop too)" if lvl is SafetyLevel.HALTED_LINE else "")
+            + ". Buying resumes only on your /resume <code>."
+        )
 
     # ------------------------------------------------------------ one session
     def run_day(

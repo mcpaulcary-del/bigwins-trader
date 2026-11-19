@@ -7,6 +7,7 @@ the signed gate record and an owner-reviewed code change, not a config edit).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -109,6 +110,7 @@ class DataCfg(_M):
     sim_half_spread: Decimal = Field(ge=0, le=Decimal("0.02"))
     etp_list: Path
     lic_list: Path
+    lic_list_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     lic_list_fallback: Path
     history_sessions: int = Field(ge=300)
 
@@ -204,12 +206,17 @@ class LicList:
 
 def lic_codes(cfg: BfastConfig) -> LicList:
     """BF-D6: the record keeper's frozen LIC list (``data.lic_list``, or the path in
-    ``$TRADER_BF_LIC_LIST``) when it exists, else ``data.lic_list_fallback`` (the
-    candidates). Neither file, or an empty one, is an error: the class filter must never
-    run silently without its list."""
+    ``$TRADER_BF_LIC_LIST``) when it exists, checked against ``data.lic_list_sha256``
+    when that is set, else ``data.lic_list_fallback`` (the candidates). Neither file, or
+    an empty one, is an error: the class filter must never run silently without its
+    list; a frozen file that differs from the pin is refused."""
     env = os.environ.get(LIC_LIST_ENV)
     frozen = Path(env) if env else cfg.data.lic_list
     if frozen.is_file():
+        pin = cfg.data.lic_list_sha256
+        got = hashlib.sha256(frozen.read_bytes()).hexdigest()
+        if pin is not None and got != pin:  # the registered file, byte for byte
+            raise ValueError(f"{frozen}: sha256 {got[:12]}... is not the registered {pin[:12]}...")
         return LicList(read_codes(frozen), frozen, True)
     if cfg.data.lic_list_fallback.is_file():
         return LicList(read_codes(cfg.data.lic_list_fallback), cfg.data.lic_list_fallback, False)

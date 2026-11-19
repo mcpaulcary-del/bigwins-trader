@@ -75,6 +75,7 @@ def test_BF_D6_lic_list_prefers_the_frozen_record_file(
     raw = _raw()
     raw["data"]["lic_list"] = str(tmp_path / "LIC_list_frozen.csv")
     raw["data"]["lic_list_fallback"] = str(tmp_path / "cand.csv")
+    raw["data"]["lic_list_sha256"] = None
     cfg = BfastConfig.model_validate(raw)
     with pytest.raises(FileNotFoundError):
         lic_codes(cfg)  # never silently without a list
@@ -104,3 +105,25 @@ def test_BF_D6_record_lic_list_covers_the_names_the_name_rule_misses() -> None:
     assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= cand
     if p.is_file():
         assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= read_codes(p)
+
+
+def test_BF_D6_repo_lic_list_is_the_registered_frozen_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``config/lic_list.csv`` is the record's ``LIC_list_frozen.csv`` byte for byte (SHA-256
+    pinned in ``config/bfast.yaml``, ledger seq 39): 46 codes including the five the name
+    rule misses. A file that differs from the pin is refused, never used silently."""
+    from trader.bfast_config import LIC_LIST_ENV, lic_codes
+
+    monkeypatch.delenv(LIC_LIST_ENV, raising=False)
+    root = Path(__file__).resolve().parent.parent
+    monkeypatch.chdir(root)
+    cfg = load_bfast_config(CFG)
+    got = lic_codes(cfg)
+    assert got.frozen and got.path == Path("config/lic_list.csv") and len(got.codes) == 46
+    assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= got.codes
+    edited = tmp_path / "edited.csv"
+    edited.write_bytes((root / "config" / "lic_list.csv").read_bytes() + b"XYZ,x,y\n")
+    monkeypatch.setenv(LIC_LIST_ENV, str(edited))
+    with pytest.raises(ValueError, match="not the registered"):
+        lic_codes(cfg)

@@ -27,8 +27,9 @@ BW-RSK-11 cash        buy cost (limit + commission) <= settled cash             
 L1 capital cap        holdings at cost + buys <= ``capital_cap_aud``             REJECT
 ====================  =========================================================  ===========
 
-Book monitors (``evaluate_book``): L11 value floors (A$7,000 review, A$6,000
-``HALTED_BUYS``, A$5,000 line halt), BW-RSK-20 drawdown (30% WARN, 50% halt
+Book monitors (``evaluate_book``): L11 value floors (A$7,000 review, below A$6,000
+``HALTED_BUYS`` -- the owner's loss rule: buys paused, holdings kept, owner resumes --
+A$5,000 line halt), BW-RSK-20 drawdown (30% WARN, 50% halt
 buys), BW-RSK-22 / L11 one-day fall (7% WARN, 12% halt buys), BW-RSK-29 real money
 below 60% of capital. A halt never sells by itself.
 """
@@ -282,6 +283,7 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
 class BookReading:
     level: SafetyLevel
     alerts: tuple[str, ...]
+    halts: tuple[str, ...] = ()  # the halt rules in breach (``L11_FLOOR``, ``RSK20``, ...)
 
 
 def evaluate_book(
@@ -292,25 +294,39 @@ def evaluate_book(
     lim: RiskLimits | None = None,
 ) -> BookReading:
     """L11 / BW-RSK-20, -22, -29 after each broker day. Returns the level to latch
-    (never lower than NORMAL; the caller keeps the worse of this and the current)."""
+    (never lower than NORMAL; the caller keeps the worse of this and the current) and
+    the halt rules in breach, so the caller can latch a halt once per breach (an owner
+    ``/resume`` while still in breach is the owner's decision and is not overridden).
+
+    Owner loss rule (19 Nov 2026, EMG2-18): account value **below** A$6,000 pauses new
+    buys (``HALTED_BUYS``) and pages; holdings are kept and the registered sells go on;
+    only the owner resumes. A halt never sells by itself."""
     lim = lim or RiskLimits()
     alerts: list[str] = []
+    halts: list[str] = []
     level = SafetyLevel.NORMAL
     if value <= lim.value_line_halt_aud:
         level = SafetyLevel.HALTED_LINE
+        halts.append("L11_LINE")
         alerts.append(f"PAGE: value A${value} <= A${lim.value_line_halt_aud}: line halted (L11)")
-    elif value <= lim.value_halt_buys_aud:
+    elif value < lim.value_halt_buys_aud:
         level = SafetyLevel.HALTED_BUYS
-        alerts.append(f"PAGE: value A${value} <= A${lim.value_halt_buys_aud}: HALTED_BUYS (L11)")
+        halts.append("L11_FLOOR")
+        alerts.append(
+            f"PAGE: value A${value} < A${lim.value_halt_buys_aud}: HALTED_BUYS, new buys "
+            "paused, holdings kept (L11, owner loss rule)"
+        )
     elif value <= lim.value_review_aud:
         alerts.append(f"PAGE: value A${value} <= A${lim.value_review_aud}: review (L11)")
     if capital_in > 0 and value < capital_in * lim.real_money_floor:
         level = worst(level, SafetyLevel.HALTED_BUYS)
+        halts.append("RSK29")
         alerts.append("PAGE: value below 60% of capital put in (BW-RSK-29)")
     if peak > 0:
         dd = 1 - value / peak
         if dd >= lim.drawdown_halt:
             level = worst(level, SafetyLevel.HALTED_BUYS)
+            halts.append("RSK20")
             alerts.append(f"PAGE: drawdown {dd:.1%} >= {lim.drawdown_halt:.0%} (BW-RSK-20)")
         elif dd >= lim.drawdown_review:
             alerts.append(f"WARN: drawdown {dd:.1%} >= {lim.drawdown_review:.0%} (BW-RSK-20)")
@@ -318,7 +334,8 @@ def evaluate_book(
         mv = value / previous_value - 1
         if mv <= lim.day_move_halt:
             level = worst(level, SafetyLevel.HALTED_BUYS)
+            halts.append("L11_DAY")
             alerts.append(f"PAGE: one-day fall {mv:.1%} (L11)")
         elif mv <= lim.day_move_review:
             alerts.append(f"WARN: one-day fall {mv:.1%} (BW-RSK-22)")
-    return BookReading(level, tuple(alerts))
+    return BookReading(level, tuple(alerts), tuple(halts))
