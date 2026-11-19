@@ -1,3 +1,1 @@
-"""Manual order sheet (D12).
-
-Stub: not implemented in M0 (see spec section 20, milestone M4)."""
+"""Manual broker: not used in B-fast (the owner never types orders for the system)."""

@@ -152,6 +152,9 @@ def test_SYS_13_floats_only_in_signal_modules() -> None:
     # Signal-input adapters build float panels for signal maths (SYS-13 allows floats
     # there); they hold no money. Listed explicitly so nothing else slips through.
     signal_inputs = {root / "data" / "forward_store.py", root / "data" / "identity.py"}
+    # The IBKR wire boundary: ib_async takes float prices; ``wire_price`` converts and
+    # refuses any price that does not round-trip exactly.
+    signal_inputs.add(root / "broker" / "ibkr.py")
     for name in money_layers:
         p = root / name
         for f in [p] if p.is_file() else sorted(p.rglob("*.py")):
