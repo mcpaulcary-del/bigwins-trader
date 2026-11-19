@@ -22,7 +22,8 @@ execution:
   buy_funds_wait_sessions: 4    # L7 / O-2
 live_emg2_20:
   capital_cap_aud: 10000
-  slots: 18                     # name count (BF-D1); 10,000/18 = A$555 parcels
+  slots: 18                     # name count (BF-D1, EMG2-18); 10,000/18 = A$555 parcels
+  slot_unit_aud: 550            # L3 of AMENDMENT_live_EMG2_18: n = min(18, floor(value/550))
   min_parcel_aud: 500
   cash_reserve_aud: 50
   skip_lottery: true

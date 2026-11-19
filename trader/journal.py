@@ -260,7 +260,7 @@ class Journal:
     ) -> None:
         conn.execute(
             insert(events).values(
-                at=at or utcnow(),
+                at=(at or utcnow()).astimezone(UTC),  # UTC: SQLite drops the zone
                 kind=kind,
                 ref=ref,
                 from_status=frm,
@@ -333,9 +333,22 @@ class Journal:
             q = select(events.c.id).where(events.c.kind == "job", events.c.ref == key)
             return c.execute(q).first() is not None
 
-    def mark_job(self, key: str, detail: Mapping[str, Any] | None = None) -> None:
+    def mark_job(
+        self, key: str, detail: Mapping[str, Any] | None = None, at: datetime | None = None
+    ) -> None:
         with self.engine.begin() as c:
-            self._event(c, "job", key, None, "DONE", detail)
+            self._event(c, "job", key, None, "DONE", detail, at)
+
+    def job_records(self, prefix: str) -> list[tuple[str, dict[str, Any]]]:
+        """``(key, detail)`` of every job record whose key starts with ``prefix``, oldest
+        first: the app's restart-safe memory (start state, book peak, L13 notes)."""
+        with self.engine.connect() as c:
+            q = (
+                select(events.c.ref, events.c.detail)
+                .where(events.c.kind == "job", events.c.ref.startswith(prefix, autoescape=True))
+                .order_by(events.c.id)
+            )
+            return [(r[0], dict(r[1] or {})) for r in c.execute(q)]
 
     def intents_of(self, batch_id: str) -> list[tuple[OrderIntent, str]]:
         with self.engine.connect() as c:

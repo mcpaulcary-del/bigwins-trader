@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -65,15 +66,41 @@ def test_run_refuses_without_a_paper_account_or_chat(tmp_path: Path) -> None:
         main(["run", "--config", str(p)])
 
 
-def test_lic_list_prefers_the_frozen_record_file(tmp_path: Path) -> None:
-    from trader.bfast_config import lic_codes
+def test_BF_D6_lic_list_prefers_the_frozen_record_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.bfast_config import LIC_LIST_ENV, lic_codes
 
+    monkeypatch.delenv(LIC_LIST_ENV, raising=False)
     raw = _raw()
     raw["data"]["lic_list"] = str(tmp_path / "LIC_list_frozen.csv")
     raw["data"]["lic_list_fallback"] = str(tmp_path / "cand.csv")
+    cfg = BfastConfig.model_validate(raw)
+    with pytest.raises(FileNotFoundError):
+        lic_codes(cfg)  # never silently without a list
     (tmp_path / "cand.csv").write_text("code,name\nFGG,x\n")
-    codes, src = lic_codes(BfastConfig.model_validate(raw))
-    assert codes == {"FGG"} and src == tmp_path / "cand.csv"
+    got = lic_codes(cfg)
+    assert got.codes == {"FGG"} and got.path == tmp_path / "cand.csv" and not got.frozen
+    assert "CANDIDATES" in got.describe()
     (tmp_path / "LIC_list_frozen.csv").write_text("code,name,reason\nAFI,a,b\nARG,c,d\n")
-    codes, src = lic_codes(BfastConfig.model_validate(raw))
-    assert codes == {"AFI", "ARG"} and src == tmp_path / "LIC_list_frozen.csv"
+    got = lic_codes(cfg)
+    assert got.codes == {"AFI", "ARG"} and got.frozen
+    other = tmp_path / "elsewhere.csv"
+    other.write_text("code,name,reason\nWAR,w,x\n")
+    monkeypatch.setenv(LIC_LIST_ENV, str(other))
+    assert lic_codes(cfg).codes == {"WAR"}
+    (tmp_path / "LIC_list_frozen.csv").write_text("code,name,reason\n")
+    monkeypatch.delenv(LIC_LIST_ENV)
+    with pytest.raises(ValueError, match="no codes"):
+        lic_codes(cfg)
+
+
+def test_BF_D6_record_lic_list_covers_the_names_the_name_rule_misses() -> None:
+    """The record's frozen list (when present here) holds FGG, FGX, PGF, WAR and PCX."""
+    from trader.bfast_config import read_codes
+
+    p = Path(os.environ.get("TRADER_BF_LIC_LIST", "/nonexistent"))
+    cand = read_codes(Path(__file__).resolve().parent.parent / "config" / "lic_list_candidates.csv")
+    assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= cand
+    if p.is_file():
+        assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= read_codes(p)

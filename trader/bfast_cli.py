@@ -14,7 +14,6 @@ T and the EMG2-20 picks for a fresh A$10,000 book, and writes
 from __future__ import annotations
 
 import argparse
-import math
 import json
 import sys
 from collections.abc import Sequence
@@ -26,7 +25,6 @@ from trader.bfast_config import lic_codes, load_bfast_config
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
 from trader.journal import Journal
-from trader.panel import PricePanel
 from trader.risk import SafetyLevel
 
 DEFAULT_CONFIG = Path("config/bfast.yaml")
@@ -54,8 +52,9 @@ def cmd_emg2_list(args: argparse.Namespace) -> int:
     etp: frozenset[str] = frozenset()
     if cfg.data.etp_list.is_file():
         etp = frozenset(x.strip() for x in cfg.data.etp_list.read_text().splitlines() if x.strip())
-    lic, lic_src = lic_codes(cfg)
-    print(f"LIC list: {lic_src} ({len(lic)} codes)", file=sys.stderr)
+    lic_list = lic_codes(cfg)
+    lic = lic_list.codes
+    print(lic_list.describe(), file=sys.stderr)
     panel = ForwardStore(store).build_panel(
         args.asof,
         _sessions(args.asof),
@@ -139,14 +138,11 @@ def _journal_from_config(url_env: str) -> Journal:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """The long-running paper process: scheduler + Telegram + IBKR paper gateway."""
-    from functools import cache
-
     from trader.approval import TelegramTransport, TotpVerifier
     from trader.bf_app import BfApp
-    from trader.bf_dryrun import settings_from
+    from trader.bf_dryrun import settings_from, store_providers
     from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
     from trader.broker.paper_sim import SimBroker
-    from trader.data.forward_store import ForwardStore
     from trader.scheduler import run_forever
     from trader.secrets import read_secret
 
@@ -164,29 +160,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     broker.connect()
     sim = SimBroker.from_journal(j, cfg.data.sim_book, cfg.data.sim_half_spread)
-    lic, _ = lic_codes(cfg)
-    etp: frozenset[str] = frozenset()
-    if cfg.data.etp_list.is_file():
-        etp = frozenset(x.strip() for x in cfg.data.etp_list.read_text().splitlines() if x.strip())
-    fs = ForwardStore(cfg.data.forward_store)
     sess = _sessions(datetime.now(ASX_TZ).date())
-
-    @cache
-    def panel(d: date) -> PricePanel:
-        return fs.build_panel(
-            d, sess, history=cfg.data.history_sessions, etp_codes=etp, lic_codes=lic
-        )
-
-    def closes(d: date) -> dict[str, Decimal]:
-        p = panel(d)
-        return {
-            e: Decimal(repr(float(c)))
-            for e, c in zip(p.entities, p.close[-1], strict=True)
-            if not math.isnan(c)
-        }
-
+    panel, closes, marks, note = store_providers(
+        cfg, cfg.data.forward_store, sess, refresh_seconds=600
+    )
+    print(note, file=sys.stderr)
     app = BfApp(
-        settings_from(cfg, frozenset(cfg.telegram.allowed_chat_ids), args.start),
+        settings_from(cfg, frozenset(cfg.telegram.allowed_chat_ids), args.start, note),
         j,
         broker,
         sim,
@@ -195,6 +175,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         sess,
         panel,
         closes,
+        marks,
     )
     run_forever(app)
     return 0

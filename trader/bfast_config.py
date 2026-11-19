@@ -7,7 +7,9 @@ the signed gate record and an owner-reviewed code change, not a config edit).
 
 from __future__ import annotations
 
+import os
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -61,7 +63,8 @@ class ExecutionCfg(_M):
 
 class Emg2_20Cfg(_M):  # noqa: N801
     capital_cap_aud: Decimal = Field(gt=0, le=Decimal(10000))  # D-4: never above A$10,000
-    slots: int = Field(ge=1, le=20)
+    slots: int = Field(ge=1, le=20)  # name count (BF-D1: 18)
+    slot_unit_aud: Decimal = Field(ge=Decimal(500))  # L3 divisor (EMG2-18: A$550)
     min_parcel_aud: Decimal = Field(ge=Decimal(500))
     cash_reserve_aud: Decimal = Field(ge=0)
     skip_lottery: bool
@@ -135,6 +138,7 @@ class BfastConfig(_M):
         c = self.live_emg2_20
         return Emg2_20Params(
             slots=c.slots,
+            slot_unit_aud=c.slot_unit_aud,
             min_parcel_aud=c.min_parcel_aud,
             cash_reserve_aud=c.cash_reserve_aud,
             capital_cap_aud=c.capital_cap_aud,
@@ -175,18 +179,41 @@ class BfastConfig(_M):
         )
 
 
+LIC_LIST_ENV = "TRADER_BF_LIC_LIST"  # overrides ``data.lic_list`` (the frozen list's path)
+
+
 def read_codes(path: Path) -> frozenset[str]:
     """First column of a CSV with a header row (``code,...``); blank lines skipped."""
     rows = path.read_text(encoding="utf-8").splitlines()[1:]
-    return frozenset(r.split(",")[0].strip() for r in rows if r.strip())
+    codes = frozenset(r.split(",")[0].strip().upper() for r in rows if r.strip())
+    if not codes:
+        raise ValueError(f"{path}: no codes (an empty list would exclude no LIC)")
+    return codes
 
 
-def lic_codes(cfg: BfastConfig) -> tuple[frozenset[str], Path | None]:
-    """BF-D6: the record keeper's frozen LIC list when it exists, else the candidates."""
-    for p in (cfg.data.lic_list, cfg.data.lic_list_fallback):
-        if p.is_file():
-            return read_codes(p), p
-    return frozenset(), None
+@dataclass(frozen=True)
+class LicList:
+    codes: frozenset[str]
+    path: Path
+    frozen: bool  # False: the candidates file stands in (go-live checklist item 12 open)
+
+    def describe(self) -> str:
+        what = "frozen record list" if self.frozen else "CANDIDATES (not frozen; BF-D6 open)"
+        return f"LIC list: {what} {self.path} ({len(self.codes)} codes)"
+
+
+def lic_codes(cfg: BfastConfig) -> LicList:
+    """BF-D6: the record keeper's frozen LIC list (``data.lic_list``, or the path in
+    ``$TRADER_BF_LIC_LIST``) when it exists, else ``data.lic_list_fallback`` (the
+    candidates). Neither file, or an empty one, is an error: the class filter must never
+    run silently without its list."""
+    env = os.environ.get(LIC_LIST_ENV)
+    frozen = Path(env) if env else cfg.data.lic_list
+    if frozen.is_file():
+        return LicList(read_codes(frozen), frozen, True)
+    if cfg.data.lic_list_fallback.is_file():
+        return LicList(read_codes(cfg.data.lic_list_fallback), cfg.data.lic_list_fallback, False)
+    raise FileNotFoundError(f"no LIC list: neither {frozen} nor {cfg.data.lic_list_fallback}")
 
 
 def load_bfast_config(path: Path) -> BfastConfig:

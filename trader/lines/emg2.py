@@ -197,7 +197,8 @@ def emg2_list(panel: PricePanel, params: Emg2Params | None = None) -> Emg2List:
 @dataclass(frozen=True)
 class Emg2_20Params:  # noqa: N801 - the line's registered name
     slots: int = 18  # owner decision BF-D1 (19 Nov 2026): EMG2-18, about A$550 a name
-    min_parcel_aud: Decimal = Decimal(500)
+    slot_unit_aud: Decimal = Decimal(550)  # EMG2-18 L3: n = min(18, floor(value / A$550))
+    min_parcel_aud: Decimal = Decimal(500)  # L5: an order under A$500 is not sent
     cash_reserve_aud: Decimal = Decimal(50)
     capital_cap_aud: Decimal = Decimal(10000)
     skip_lottery: bool = True
@@ -380,7 +381,7 @@ def decide_emg2_20(
     held_value = sum(((ctx.px(e) or Decimal(0)) * q for e, q in book.holdings.items()), Decimal(0))
     account_value = (book.cash + held_value).quantize(CENT)
     sizing_value = min(account_value, p.capital_cap_aud)  # L1
-    n = max(0, min(p.slots, int(sizing_value // p.min_parcel_aud)))  # L3
+    n = max(0, min(p.slots, int(sizing_value // p.slot_unit_aud)))  # L3 (EMG2-18)
     parcel = (sizing_value / n).quantize(CENT, ROUND_DOWN) if n else Decimal(0)
     if lst.data_block:  # rule 14: no decision, holdings kept
         return Emg2_20Decision(

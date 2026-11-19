@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import replace
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
 import numpy as np
@@ -139,7 +139,10 @@ def test_rule14_data_block_keeps_holdings() -> None:
 
 # ---------------------------------------------------------------- EMG2-20 (L1-L5)
 
-LOOSE = Emg2_20Params(slots=20, skip_lottery=False, cash_reserve_aud=Decimal(0))  # the 20-name text
+# the registered 20-name text (n = min(20, floor(value / A$500)))
+LOOSE = Emg2_20Params(
+    slots=20, slot_unit_aud=Decimal(500), skip_lottery=False, cash_reserve_aud=Decimal(0)
+)
 
 
 def test_L3_L5_start_twenty_parcels(panel: PricePanel) -> None:
@@ -182,6 +185,20 @@ def test_BF_D1_emg2_18_default_parcels_clear_500_after_costs(panel: PricePanel) 
         i.value_at_ref >= 500 and i.value_at_limit + Decimal("6.60") <= Decimal("552.77")
         for i in b.intents
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "n"),
+    [(10000, 18), (9950, 18), (9899, 17), (9350, 17), (9349, 16), (5500, 10), (549, 0)],
+)
+def test_BF_D1_L3_slots_are_value_over_550_capped_at_18(
+    panel: PricePanel, value: int, n: int
+) -> None:
+    """AMENDMENT_live_EMG2_18 L3: n = min(18, floor(account value / A$550))."""
+    d = decide_emg2_20(panel, BookState("B", Decimal(value)), Emg2_20Params(skip_lottery=False))
+    assert d.slots == n
+    if n:
+        assert d.parcel == (Decimal(value) / n).quantize(Decimal("0.01"), ROUND_DOWN)
 
 
 def test_L4_sell_only_when_off_T_or_pegged(panel: PricePanel) -> None:
@@ -235,26 +252,42 @@ FWD = os.environ.get("TRADER_FORWARD_STORE")
 
 @pytest.mark.skipif(not FWD, reason="set TRADER_FORWARD_STORE to the record's EODHD store")
 def test_BF_D1_real_30_oct_list_every_pick_becomes_an_order_over_500() -> None:
-    """The real 30 Oct 2026 list (forward store, FD defaults, EMG2-18): every pick becomes
-    a whole-share order worth at least A$500 at the close after commission, band and reserve."""
-    import exchange_calendars as xc
+    """BF-D1 on the real 30 Oct 2026 list (forward store, LIC list, config/bfast.yaml):
+    EMG2-18 gives 18 buys of A$552.77 and every one becomes a whole-share order worth at
+    least A$500 at the close after the A$6.60 commission, the +3% limit band and the
+    A$50 reserve; none is a listed investment company; the breaker passes them all."""
+    from datetime import UTC, datetime
 
-    from trader.data.forward_store import ForwardStore
+    from tests.bf_support import asx_sessions, real_config
+    from trader.bf_dryrun import store_providers
     from trader.orders import build_orders
+    from trader.risk import RiskContext, SafetyLevel, check_intents
 
     assert FWD
-    sess = [
-        x.date() for x in xc.get_calendar("XASX", start="2022-01-01", end="2026-12-31").sessions
-    ]
-    panel = ForwardStore(Path(FWD)).build_panel(date(2026, 10, 30), sess)
-    d = decide_emg2_20(panel, BookState("EMG2_18_PAPER", Decimal(10000)))
-    assert len(d.buys) == 18 and len(emg2_list(panel).targets) >= 40
-    b = build_orders(d)
+    cfg = real_config()
+    panel, _, _, note = store_providers(cfg, Path(FWD), asx_sessions())
+    p = panel(date(2026, 10, 30))
+    d = decide_emg2_20(p, BookState("EMG2_18_PAPER", Decimal(10000)), cfg.emg2_20_params())
+    assert d.slots == 18 and d.parcel == Decimal("555.55")
+    assert len(d.buys) == 18 and {b.value_aud for b in d.buys} == {Decimal("552.77")}
+    lic = {"FGG", "FGX", "PGF", "WAR", "PCX"}
+    assert not lic & set(emg2_list(p).targets), note
+    b = build_orders(d, params=cfg.order_params())
     assert len(b.intents) == 18, b.skipped
     for i in b.intents:
-        assert i.value_at_ref >= 500
+        assert i.value_at_ref >= 500  # the ASX minimum at the reference
         assert i.value_at_limit + Decimal("6.60") <= Decimal("552.77")
+        assert i.value_at_limit <= 800  # L10
     assert sum(i.value_at_limit + Decimal("6.60") for i in b.intents) <= Decimal(9950)
+    ctx = RiskContext(
+        now=datetime(2026, 11, 2, 4, 45, tzinfo=UTC), session=date(2026, 11, 2),
+        expected_data_date=date(2026, 10, 30), data_as_of=date(2026, 10, 30),
+        safety=SafetyLevel.NORMAL, start_day=True, positions={}, settled_cash=Decimal(10000),
+    )  # fmt: skip
+    tv = {e: Decimal(10**8) for e in p.entities}
+    r = check_intents(build_orders(d, params=cfg.order_params(), tv_med20=tv).intents, ctx,
+                      cfg.risk_limits())  # fmt: skip
+    assert all(x.sendable for x in r.results), [x.reasons for x in r.results]
 
 
 @pytest.mark.skipif(not GOLDEN, reason="set TRADER_EMG2_GOLDEN_DIR to the T6 golden slabs")

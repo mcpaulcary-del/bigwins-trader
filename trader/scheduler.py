@@ -1,9 +1,19 @@
 """Scheduler for the B-fast jobs (FD v3.0 §4; BW-OPS-01 idempotent jobs).
 
 A small deterministic loop instead of APScheduler: every ASX session it runs the jobs
-of ``trader.bf_app.DAY_JOBS`` whose time has come, each exactly once (the journal
-records ``<day>:<hh:mm>:<job>`` as done, so a restart never repeats a job), and it
-polls Telegram between jobs so that ``/pause`` and ``/kill`` act within seconds.
+of ``trader.bf_app.DAY_JOBS`` whose time has come, each once (the journal records
+``<day>:<hh:mm>:<job>`` as done, so a restart never repeats a job), and it polls
+Telegram between jobs so that ``/pause`` and ``/kill`` act within seconds.
+
+* A job that reports "not done" (the day's data is not in yet) is retried on the next
+  poll; the job itself decides when to give up (``bf_app.RETRY_UNTIL``).
+* A job that raises is recorded as done with the error and paged once: it is never
+  retried blindly (the owner re-runs it by hand after a look). Sending is safe to
+  re-run anyway (persist-before-send, one broker order per intent).
+* Only today's jobs run: a missed day is not replayed after a long outage (orders of
+  that day would be stale); the next session's jobs pick up held and carried orders.
+* At start-up ``Executor.recover`` adopts broker orders of intents left in SENDING
+  (never resends).
 Non-session days run nothing but the Telegram poll.
 """
 
@@ -30,16 +40,33 @@ def due_jobs(app: BfApp, now: datetime) -> list[tuple[str, str]]:
 
 
 def run_once(app: BfApp, now: datetime) -> list[str]:
-    """Poll Telegram, then run every due job in order. Returns the job keys run."""
+    """Poll Telegram, then run every due job in order. Returns the job keys completed.
+    Stops at the first job that is not done yet, so later jobs keep their order."""
     day = now.astimezone(ASX_TZ).date()
     app.now = now
     app.bot.handle_all()
     ran = []
     for key, name in due_jobs(app, now):
-        app.run_job(name, day, now)
-        app.j.mark_job(key)
+        try:
+            done = app.run_job(name, day, now)
+        except Exception as e:  # paged and recorded, never silently retried
+            app.j.mark_job(key, {"error": f"{type(e).__name__}: {e}"[:300]}, now)
+            app.say(f"PAGE job {name} of {day} failed: {type(e).__name__}: {e}"[:400])
+            ran.append(key)
+            continue
+        if not done:
+            break
+        app.j.mark_job(key, None, now)
         ran.append(key)
     return ran
+
+
+def start_up(app: BfApp, now: datetime) -> list[str]:
+    """After a (re)start: adopt broker orders of intents left mid-send; page what is odd."""
+    pages = app.ex.recover(now)
+    for p in pages:
+        app.say("PAGE " + p)
+    return pages
 
 
 def run_forever(
@@ -49,6 +76,7 @@ def run_forever(
     poll_seconds: float = 20.0,
     stop: Callable[[], bool] = lambda: False,
 ) -> None:
+    start_up(app, clock())
     while not stop():
         run_once(app, clock())
         sleep(poll_seconds)

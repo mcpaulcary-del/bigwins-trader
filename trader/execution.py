@@ -54,6 +54,7 @@ class Executor:
     limits: RiskLimits = field(default_factory=RiskLimits)
     crash: CrashHook = _no_crash
     approval_deadline: str = "15:20"
+    plan_pages: list[str] = field(default_factory=list)  # pages of the last plan() (BF-D3)
 
     # ------------------------------------------------------------ plan time
     def plan(
@@ -64,6 +65,7 @@ class Executor:
             raise ValueError(f"unknown approval mode {approval_mode}")
         self.journal.add_batch(batch, approval_mode, execution_date)  # type: ignore[arg-type]
         rep = check_intents(batch.intents, ctx, self.limits)
+        self.plan_pages = list(rep.pages)
         out = []
         for r in rep.results:
             coid = r.intent.client_order_id

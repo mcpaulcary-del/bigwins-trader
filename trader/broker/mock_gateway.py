@@ -45,6 +45,7 @@ class MockGateway:
     next_id: int = 1
     marks: dict[str, float] = field(default_factory=dict)
     unsettled: float = 0.0  # sale proceeds not yet settled (O-2 stand-in)
+    clock: datetime = datetime(2026, 12, 1, 5, 10, tzinfo=UTC)  # execution time of fills
 
     # session
     def connect(
@@ -133,9 +134,11 @@ class MockGateway:
         return None
 
     # broker-side events driven by the test
-    def auction(self, closes: dict[str, float]) -> int:
+    def auction(self, closes: dict[str, float], when: datetime | None = None) -> int:
         """The closing auction: every open DAY order fills at the close if its limit
         allows, else it is cancelled (DAY). Commission max(A$6.60, 0.088%) to the cent."""
+        if when is not None:
+            self.clock = when.astimezone(UTC)
         n = 0
         for t in list(self.gateway_trades):
             if t.orderStatus.status not in ("Submitted", "PreSubmitted"):
@@ -165,7 +168,7 @@ class MockGateway:
         ex_id = f"E{len(self.fills_) + 1:04d}"
         ex = Execution(
             execId=ex_id,
-            time=datetime(2026, 12, 1, 5, 10, tzinfo=UTC),
+            time=self.clock,
             acctNumber=t.order.account,
             side=side,
             shares=q,
@@ -175,7 +178,7 @@ class MockGateway:
             orderRef=order_ref,
         )
         self.fills_.append(
-            Fill(t.contract, ex, CommissionReport(execId=ex_id, commission=commission), ex.time)
+            Fill(t.contract, ex, CommissionReport(execId=ex_id, commission=commission), self.clock)
         )
         sym = t.contract.symbol
         self.pos[sym] = self.pos.get(sym, 0.0) + (q if side == "BOT" else -q)

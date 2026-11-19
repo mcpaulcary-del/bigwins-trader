@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from trader.bfast_config import BfastConfig, load_bfast_config
 from trader.panel import PricePanel
 
 
@@ -84,3 +87,24 @@ def t6_reference_list(panel: PricePanel) -> list[str]:
     prC = np.asarray(pd.Series(scC).rank(pct=True).values)
     cand = C[prC > 0.8][np.argsort(-scC[prC > 0.8], kind="stable")]
     return [panel.entities[j] for j in cand]
+
+
+# ---------------------------------------------------------------- recorded data (opt-in)
+# TRADER_FORWARD_STORE: the record's EODHD forward store; TRADER_BF_LIC_LIST: the record
+# keeper's frozen LIC list; TRADER_BF_ETP_LIST: the ETP list. Tests skip without the store.
+
+
+def real_config() -> BfastConfig:
+    """``config/bfast.yaml`` with the local paths of the recorded data."""
+    cfg = load_bfast_config(Path(__file__).resolve().parent.parent / "config" / "bfast.yaml")
+    etp = os.environ.get("TRADER_BF_ETP_LIST")
+    if etp:
+        cfg = cfg.model_copy(update={"data": cfg.data.model_copy(update={"etp_list": Path(etp)})})
+    return cfg
+
+
+def asx_sessions() -> list[date]:
+    import exchange_calendars as xc
+
+    cal = xc.get_calendar("XASX", start="2022-01-01", end="2026-12-31")
+    return [x.date() for x in cal.sessions]
