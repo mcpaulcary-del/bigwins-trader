@@ -9,6 +9,8 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from tests.test_bf_app import CHAT, D0, DAYS, SEED, _app, _closes, _panel
 from trader.approval import Incoming, totp
 from trader.bf_app import BfApp, at, dry_run, mock_auction, owner_approves_all
@@ -200,3 +202,65 @@ def test_BF_D25_flex_code_change_with_ratio_is_proposed_and_reconciles() -> None
     assert dict(app.j.job_records(f"recon:{app.s.book}:{X}"))[f"recon:{app.s.book}:{X}"]["ok"]
     assert any(f"/idmap {e} NWC" in t for _, t in app.transport.outbox)  # type: ignore[attr-defined]
     assert _owner(app, X, f"/idmap {e} NWC <code>", "17:00").endswith("ratio 0.25 confirmed")
+
+
+@pytest.mark.parametrize(
+    ("ratio", "words"), [(Decimal("0.1"), "1 FOR 10"), (Decimal(2), "2 FOR 1")]
+)
+def test_BF_D26_vendor_split_twin_and_random_twins_on_the_date_paper_from_flex(
+    ratio: Decimal, words: str
+) -> None:
+    """A 1-for-10 consolidation and a 2-for-1 split of a held name: the twin and every
+    random twin holding it change count on the split date (cost kept); the paper book
+    when IBKR's Flex record arrives; reconciliation explains the broker's new count in
+    between and matches after; nothing halts."""
+    app, gw, _ = _app(D0, random_twins=3)
+    dry_run(app, DAYS[:6], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    books = [app.s.book, app.s.sim_book, *(n for n, _, _, _ in app.rnd)]
+    pos = {b: app.j.positions(b) for b in books}
+    both = set(pos[app.s.book]) & set(pos[app.s.sim_book])
+    e = max(sorted(both), key=lambda c: sum(c in pos[b] for b in books))
+    ev = CaEvent(f"VENDOR:SPLIT:{e}:{X}", CaKind.SPLIT, e, X, ratio=ratio, source="VENDOR")
+    app.ca_source = _cal(ev)
+    scale = {e: 1 / ratio}
+
+    def closes(d: date) -> dict[str, Decimal]:  # the vendor's raw closes after the split
+        c = _closes(d)
+        return {k: (v * scale.get(k, 1) if d >= X else v) for k, v in c.items()}
+
+    marks0 = app.marks
+    app.closes = closes
+    app.marks = lambda d: {k: (v * scale.get(k, 1) if d >= X else v) for k, v in marks0(d).items()}
+    cost0 = {b: app.j.cost_book(b).cost.get(e) for b in books}
+    q = pos[app.s.book][e]
+    new = int(q * ratio)
+    acts = "".join(
+        f'<CorporateAction currency="AUD" assetCategory="STK" symbol="{e}" '
+        f'reportDate="{X:%Y%m%d}" description="{e}(AU0) SPLIT {words} ({e}, CO, AU1)" '
+        f'quantity="{n}" amount="0" value="0" type="RS" transactionID="S{i}" actionID="SP1"/>'
+        for i, n in enumerate((-q, new))
+    )
+    app.flex = _flex(LATE, _xml("DU1234567", X, actions=acts))
+
+    def at_ibkr() -> None:  # IBKR applies it on the split date, its Flex record comes later
+        gw.pos[e] = float(new)
+
+    dry_run(app, DAYS[6:11], {}, owner_approves_all(app, SEED), _credit(gw, X, at_ibkr))
+    assert app.j.safety_level() is SafetyLevel.NORMAL  # no L11 fall: valued at the new count
+    for b in books:
+        if e not in pos[b]:
+            continue
+        (x,) = [x for x in app.j.ca_bookings(b) if x.code == e and x.kind is CaKind.SPLIT]
+        assert x.qty_change == int(pos[b][e] * ratio) - pos[b][e] and x.ex_date == X
+        assert app.j.positions(b)[e] == int(pos[b][e] * ratio)
+        assert app.j.cost_book(b).cost[e] == cost0[b]  # total cost unchanged
+    assert sum(e in pos[b] for b in books) >= 3  # paper, twin and a random twin at least
+    assert app.sim.holdings[e] == app.j.positions(app.s.sim_book)[e]
+    for name, _, _, rb in app.rnd:
+        assert rb.holdings.get(e, 0) == app.j.positions(name).get(e, 0)
+    (bk,) = [x for x in app.j.ca_bookings(app.s.book) if x.code == e]
+    assert bk.expected_key == ev.key and bk.source == "FLEX"
+    recs = dict(app.j.job_records(f"recon:{app.s.book}:"))
+    assert all(r["ok"] for r in recs.values())
+    assert any(e in x for x in recs[f"recon:{app.s.book}:{X}"]["explained"])
+    assert not recs[f"recon:{app.s.book}:{LATE}"]["explained"]

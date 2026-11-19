@@ -121,10 +121,11 @@ Providers = tuple[PanelProvider, CloseProvider, CloseProvider, str]
 
 
 def ca_source_from(cfg: BfastConfig, store: Path) -> CaSource:
-    """BF-D23: the corporate-action calendar: the forward store's vendor dividends of the
-    held codes, corrected by the record's CORPORATE_ACTIONS.csv."""
+    """BF-D23: the corporate-action calendar: the forward store's vendor dividends (and,
+    BF-D26, splits / consolidations) of the held codes, corrected by the record's
+    CORPORATE_ACTIONS.csv."""
     fs = ForwardStore(store)
-    return calendar_source(fs.dividend_rows, corporate_actions_csv(cfg))
+    return calendar_source(fs.dividend_rows, corporate_actions_csv(cfg), fs.split_rows)
 
 
 def mock_app(

@@ -6,7 +6,7 @@ reconciliation while IBKR's records are still on their way. Synthetic Flex fixtu
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,12 +18,15 @@ from trader.corporate_actions import (
     CaError,
     CaEvent,
     CaKind,
+    kind_of,
     load_ca_csv,
     parse_ratio,
     ratio_from_note,
     vendor_events,
+    vendor_split_events,
 )
 from trader.data.flex import parse_statements
+from trader.data.forward_store import split_ratio
 from trader.journal import FillRecord, Journal
 from trader.orders import Side
 from trader.reconcile import reconcile
@@ -271,3 +274,114 @@ def test_BF_D23_record_corporate_actions_csv_loads_when_mounted() -> None:
     assert evs["BHP"].kind is CaKind.IN_SPECIE and evs["BHP"].new_code == "WDS"
     assert evs["TAH"].kind is CaKind.DEMERGER and evs["TAH"].ratio == 1
     assert evs["PMV"].ratio == Decimal("7.2021")
+
+
+# ---------------------------------------------------------------------------
+# BF-D26: splits and consolidations
+# ---------------------------------------------------------------------------
+
+SX = date(2026, 12, 3)  # split / consolidation date
+
+
+def _avg(j: Journal, code: str) -> Decimal:
+    cb = j.cost_book(BOOK)
+    return cb.cost[code] / cb.qty[code]
+
+
+def test_BF_D26_BW_UNI_20_vendor_consolidation_1_for_10_and_split_2_for_1_simulated_books() -> None:
+    """The twin's (and every random twin's) holdings on the split date: count x ratio,
+    cost per share / ratio, total cost unchanged; booked once; nothing held, nothing."""
+    j = _journal(("CNS", 1005, "0.20", date(2026, 11, 2)), ("SPL", 40, "12.50", date(2026, 11, 2)))
+    j.add_cash("RND1", "DEPOSIT", Decimal(10000), "t", datetime(2020, 1, 1, tzinfo=UTC))
+    j.add_fill(FillRecord("R1", None, "RND1", "SPL", Side.BUY, 7, Decimal(10), Decimal(6),
+                          datetime(2026, 11, 2, 5, 10, tzinfo=UTC)))  # fmt: skip
+    cal = CaCalendar.merged(
+        vendor_split_events(
+            [("CNS", SX, Decimal("0.1")), ("SPL", SX, Decimal(2)), ("ZZZ", SX, Decimal(2))]
+        ),
+        [],
+    )
+    cost0, cash0 = j.holdings_cost(BOOK), j.cash(BOOK)
+    avg_c, avg_s = _avg(j, "CNS"), _avg(j, "SPL")
+    assert j.positions(BOOK, before=datetime(2026, 12, 2, tzinfo=UTC)) == {"CNS": 1005, "SPL": 40}
+    got = book_calendar_day(j, [BOOK, "RND1"], cal.on(SX))
+    assert sorted((bk, b.code, b.held, b.qty_change) for bk, b in got) == [
+        (BOOK, "CNS", 1005, -905), (BOOK, "SPL", 40, 40), ("RND1", "SPL", 7, 7),
+    ]  # fmt: skip
+    assert j.positions(BOOK) == {"CNS": 100, "SPL": 80} and j.positions("RND1") == {"SPL": 14}
+    assert j.holdings_cost(BOOK) == cost0 and j.cash(BOOK) == cash0
+    assert _avg(j, "CNS") == avg_c * 1005 / 100  # 1-for-10: fraction dropped, cost kept
+    assert _avg(j, "SPL") == avg_s / 2
+    assert describe(got[0][1]).startswith("SPLIT CNS: 1005 -> 100 shares (x0.1)")
+    assert book_calendar_day(j, [BOOK, "RND1"], cal.on(SX)) == []  # once only
+    # after the split date the entitlement is the new count
+    assert j.held_at(BOOK, "SPL", date(2026, 12, 4)) == 80
+
+
+def test_BF_D26_vendor_split_rows_parse_and_merge_with_the_record_csv() -> None:
+    assert split_ratio("2.000000/1.000000") == 2 and split_ratio("1.000000/10.000000") == Decimal(
+        "0.1"
+    )
+    assert split_ratio("bad") is None and split_ratio("0/1") is None
+    assert vendor_split_events([("A", SX, Decimal(1))]) == []  # no change: no event
+    spl = vendor_split_events([("A", SX, Decimal(2))])
+    div = vendor_events([("A", SX, Decimal("0.10"), None)])
+    csv_div = CaEvent("CSV:A:div", CaKind.SPECIAL, "A", SX, per_share=Decimal(1), source="CSV")
+    csv_spl = CaEvent("CSV:A:spl", CaKind.SPLIT, "A", SX, ratio=Decimal(3), source="CSV")
+    # a CSV special replaces the vendor's dividend, not its split
+    assert {e.key for e in CaCalendar.merged([*spl, *div], [csv_div]).events} == {
+        "VENDOR:SPLIT:A:2026-12-03", "CSV:A:div",
+    }  # fmt: skip
+    # a CSV split (e.g. the right ratio) replaces the vendor's split, not its dividend
+    assert {e.key for e in CaCalendar.merged([*spl, *div], [csv_spl]).events} == {
+        "VENDOR:A:2026-12-03", "CSV:A:spl",
+    }  # fmt: skip
+    assert kind_of("Consolidation") is CaKind.SPLIT and kind_of("share split") is CaKind.SPLIT
+
+
+@pytest.mark.parametrize(
+    ("code", "qty", "ratio", "fixture", "new"),
+    [("CNS", 1005, Decimal("0.1"), "consolidation_1_for_10.xml", 100),
+     ("SPL", 40, Decimal(2), "split_2_for_1.xml", 80)],
+)  # fmt: skip
+def test_BF_D26_paper_book_split_from_flex_reconciles_before_and_after(
+    code: str, qty: int, ratio: Decimal, fixture: str, new: int
+) -> None:
+    """The broker shows the new count on the split date; IBKR's Flex record comes later.
+    In between the calendar split explains the difference (not a break); a wrong count
+    still halts; the Flex booking settles it with the same count and cost rule as the
+    simulated books."""
+    j = _journal((code, qty, "1.00", date(2026, 11, 2)))
+    cal = CaCalendar.merged(vendor_split_events([(code, SX, ratio)]), [])
+    pos, cash, cost0 = j.positions(BOOK), j.cash(BOOK), j.holdings_cost(BOOK)
+    pend = pending_expectations(j, BOOK, cal, SX)
+    assert [p.shares for p in pend] == [{code: new - qty}]
+    r = reconcile(pos, cash, {code: new}, cash, pending=pend)
+    assert r.ok and r.explained
+    assert not reconcile(pos, cash, {code: new + 5}, cash, pending=pend).ok  # wrong count
+    assert not reconcile(pos, cash, {code: new}, cash).ok  # no calendar: halts
+    res = ingest_flex(j, BOOK, _flex(fixture), cal)
+    (b,) = res.booked
+    assert (b.kind, b.qty_change, b.ratio, b.expected_key, b.ex_date) == (
+        CaKind.SPLIT, new - qty, ratio, f"VENDOR:SPLIT:{code}:{SX}", SX,
+    )  # fmt: skip
+    assert res.identity == ()  # same code: not a code change
+    assert j.positions(BOOK) == {code: new} and j.holdings_cost(BOOK) == cost0
+    assert pending_expectations(j, BOOK, cal, SX + timedelta(days=1)) == []  # settled
+    assert reconcile(j.positions(BOOK), j.cash(BOOK), {code: new}, j.cash(BOOK)).ok
+    # the simulated book's booking of the same event gives the same count and cost
+    k = _journal((code, qty, "1.00", date(2026, 11, 2)))
+    book_calendar_day(k, [BOOK], cal.on(SX))
+    assert k.positions(BOOK) == j.positions(BOOK) and k.holdings_cost(BOOK) == cost0
+
+
+def test_BF_D26_forward_split_shown_as_extra_shares_only() -> None:
+    j = _journal(("SPL", 40, "12.50", date(2026, 11, 2)))
+    cost0 = j.holdings_cost(BOOK)
+    body = (FX / "split_2_for_1.xml").read_bytes()
+    body = body.replace(b'quantity="-40"', b'quantity="0"').replace(
+        b'quantity="80"', b'quantity="40"'
+    )
+    res = ingest_flex(j, BOOK, parse_statements(body), CaCalendar())
+    assert [(b.kind, b.qty_change) for b in res.booked] == [(CaKind.SPLIT, 40)]
+    assert j.positions(BOOK) == {"SPL": 80} and j.holdings_cost(BOOK) == cost0

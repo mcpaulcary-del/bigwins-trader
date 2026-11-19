@@ -478,7 +478,7 @@ class BfApp:
             dec = None
             block = None if data_ready(panel) else "the day's closes are missing"
             if block is None:
-                state = BookState(book, self.j.cash(book), self.j.positions(book))
+                state = BookState(book, self.j.cash(book), self._book_positions(book, day))
                 order = self._random_order(seeds.get(book), day, now)
                 dec = decide_emg2_20(panel, state, self.s.params, lst=lst, target_order=order)
                 block = dec.data_block
@@ -718,6 +718,26 @@ class BfApp:
             return None
         return self.ca_source(frozenset(codes), day - timedelta(days=120), day)
 
+    def _book_positions(self, book: str, day: date) -> dict[str, int]:
+        """Holdings for valuation, decisions and sizing (BF-D26): the journal's, and for
+        the broker book a calendar split or consolidation of a held code whose date has
+        come and that IBKR's Flex record has not yet settled at its expected count (the
+        broker already trades the new count; the booking still waits for IBKR's record,
+        which normally comes the next afternoon). The simulated books are booked on the
+        date itself, so theirs are the journal's."""
+        pos = dict(self.j.positions(book))
+        if book != self.s.book:
+            return pos
+        cal = self._calendar(pos, day)
+        if cal is None:
+            return pos
+        for x in pending_expectations(self.j, book, cal, day):
+            if x.label.startswith("SPLIT "):  # trader.corporate_actions.expectations
+                for e, d in x.shares.items():
+                    if e in pos:
+                        pos[e] = max(pos[e] + d, 0)
+        return {e: q for e, q in pos.items() if q}
+
     def _ca_note(self, day: date, now: datetime, line: str) -> None:
         """A line for the day's report (kept in the journal: ``ca-note:<day>``)."""
         if line not in self._ca_lines(day):
@@ -807,6 +827,18 @@ class BfApp:
         n_rnd = len({b for b, _ in got if b != self.s.sim_book})
         if n_rnd:
             self._ca_note(day, now, f"INFO corporate actions booked in {n_rnd} random twin(s)")
+        split = {ev.code for ev in rest if ev.kind is CaKind.SPLIT}
+        open_ = sorted({
+            it.entity
+            for bk in (self.s.book, *sims)
+            for it, st in self._all_intents(bk)
+            if it.entity in split and st not in TERMINAL
+        })  # fmt: skip
+        if open_:  # BF-D26: an order sized before the split is not re-sized
+            self.say(
+                f"PAGE split/consolidation of {', '.join(open_)} on {day} with an order still "
+                "open: its quantity and limit are pre-split; review (cancel and re-plan)"
+            )
 
     def _start_followup(self, day: date, now: datetime, recon_ok: bool) -> None:
         """L6: the other start buys go the session after the canary fills and the book
@@ -1027,7 +1059,7 @@ class BfApp:
     def job_report(self, day: date, now: datetime) -> None:
         px = dict(self.marks(day))
         stale = self._carry_marks(px, day, now)
-        pos = self.j.positions(self.s.book)
+        pos = self._book_positions(self.s.book, day)
         cash = self.j.cash(self.s.book)
         value = cash + sum((px.get(e, Decimal(0)) * q for e, q in pos.items()), Decimal(0))
         value = value.quantize(Decimal("0.01"))
@@ -1305,7 +1337,7 @@ class BfApp:
                 done = sum(f.qty for f in self.j.fills(coid=it.client_order_id))
                 pending[it.entity] = pending.get(it.entity, 0) + it.qty - done
         out: list[OrderIntent] = []
-        for e, q in sorted(self.j.positions(self.s.book).items()):
+        for e, q in sorted(self._book_positions(self.s.book, day).items()):
             qty = wind_down_qty(q - pending.get(e, 0), step)
             ref = px.get(e)
             if qty <= 0 or ref is None or ref <= 0:

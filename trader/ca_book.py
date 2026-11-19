@@ -27,6 +27,7 @@ from trader.corporate_actions import (
     expectations,
     load_ca_csv,
     vendor_events,
+    vendor_split_events,
 )
 from trader.data.flex import FlexError, FlexStatement, parse_statements
 from trader.journal import Journal
@@ -37,6 +38,8 @@ CaSource = Callable[[frozenset[str], date, date], CaCalendar]
 VendorRows = Callable[
     [frozenset[str], date, date], Sequence[tuple[str, date, Decimal, date | None]]
 ]
+# (codes, start, end) -> vendor splits / consolidations (code, date, new per old share)
+VendorSplits = Callable[[frozenset[str], date, date], Sequence[tuple[str, date, Decimal]]]
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,10 @@ def describe(b: Booking) -> str:
             s += f", cost base A${b.child_cost}"
     elif b.kind is CaKind.CODE_CHANGE:
         s = f"CODE_CHANGE {b.code} -> {b.new_code} ratio {b.ratio}"
-    elif b.kind in (CaKind.SPLIT, CaKind.DISPOSAL):
+    elif b.kind is CaKind.SPLIT:
+        r = f" (x{b.ratio.normalize():f})" if b.ratio is not None else ""
+        s = f"SPLIT {b.code}: {b.held} -> {b.held + b.qty_change} shares{r}, cost base kept"
+    elif b.kind is CaKind.DISPOSAL:
         s = f"{b.kind.value} {b.code}: {b.qty_change:+d} shares"
     else:
         s = f"{b.kind.value} {b.code}"
@@ -137,17 +143,21 @@ def pending_expectations(j: Journal, book: str, cal: CaCalendar, today: date) ->
     return expectations(evs, lambda c, d: j.held_at(book, c, d), j.ca_settled(book), today)
 
 
-def calendar_source(vendor: VendorRows | None, csv_path: Path | None) -> CaSource:
-    """Vendor dividends of the asked codes merged with the record's
-    ``CORPORATE_ACTIONS.csv`` (re-read on every call, so an entry the record keeper adds
-    is used the same day; a missing file is no events, a malformed one raises)."""
+def calendar_source(
+    vendor: VendorRows | None, csv_path: Path | None, splits: VendorSplits | None = None
+) -> CaSource:
+    """Vendor dividends (and, BF-D26, splits / consolidations) of the asked codes merged
+    with the record's ``CORPORATE_ACTIONS.csv`` (re-read on every call, so an entry the
+    record keeper adds is used the same day; a missing file is no events, a malformed one
+    raises)."""
 
     def source(codes: frozenset[str], start: date, end: date) -> CaCalendar:
         own = []
         if csv_path is not None and csv_path.is_file():
             own = [e for e in load_ca_csv(csv_path) if start <= e.ex_date <= end]
         rows = vendor(codes, start, end) if vendor is not None and codes else []
-        return CaCalendar.merged(vendor_events(rows), own)
+        spl = splits(codes, start, end) if splits is not None and codes else []
+        return CaCalendar.merged([*vendor_events(rows), *vendor_split_events(spl)], own)
 
     return source
 

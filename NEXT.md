@@ -112,7 +112,16 @@ go-live checklist, by a reviewed code change.
 - Still open: the Flex Web Service pull into the inbox is not scheduled (manual or a
   cron `FlexClient` fetch until the reality spike settles Flex timing, O-3); IBKR's
   exact ASX `CorporateAction` types/descriptions on paper are **unverified** (synthetic
-  fixtures); vendor split events are not yet applied to simulated holdings.
+  fixtures); ~~vendor split events are not yet applied to simulated holdings~~ (done,
+  BF-D26 below).
+
+## Splits and consolidations (BF-D26, 19 Nov 2026)
+
+- Twin and random twins: vendor split rows (forward store) or a CSV `split` /
+  `consolidation` row adjust holdings on the split date (count x ratio, cost per share /
+  ratio, total cost kept). Paper book: from IBKR's Flex record; until it arrives the
+  calendar split explains the broker's new count in reconciliation and the book is
+  valued and sized at the expected count. Tests: 1-for-10 and 2-for-1, unit and app.
 
 ## Owner / record keeper points still open
 

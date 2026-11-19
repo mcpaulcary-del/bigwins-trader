@@ -64,6 +64,17 @@ def parse_split(text: str) -> float:
     return a / b if a > 0 and b > 0 else math.nan
 
 
+def split_ratio(text: str) -> Decimal | None:
+    """The vendor's ``"new/old"`` split text as an exact ``Decimal`` (None if bad)."""
+    try:
+        a, b = (Decimal(x.strip()) for x in text.split("/"))
+    except (ValueError, ArithmeticError):
+        return None
+    if not (a > 0 and b > 0):
+        return None
+    return (a / b).quantize(Decimal("0.00000001")).normalize()
+
+
 def reconcile_splits(
     close: Sequence[float], listed: Sequence[float], before: int = 3, after: int = 5
 ) -> list[float]:
@@ -150,6 +161,7 @@ class ForwardStore:
             raise FileNotFoundError(f"no manifest.tsv under {self.root}")
         self._latest: dict[tuple[str, str], Path] = {}
         self._bulk_div: dict[date, list[dict[str, Any]]] | None = None
+        self._bulk_split: dict[date, list[dict[str, Any]]] | None = None
         with (self.root / "manifest.tsv").open(newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f, delimiter="\t"):
                 if r.get("http") == "200" and r.get("file"):
@@ -299,6 +311,33 @@ class ForwardStore:
                 out[(code, ex)] = (
                     code, ex, Decimal(str(v)), date.fromisoformat(str(pay)[:10]) if pay else None,
                 )  # fmt: skip
+        return [out[k] for k in sorted(out)]
+
+    def split_rows(
+        self, codes: Iterable[str], start: date, end: date
+    ) -> list[tuple[str, date, Decimal]]:
+        """Vendor splits and consolidations ``(code, date, new shares per old share)`` of
+        ``codes`` dated in [start, end] (per-symbol history plus the bulk feed; the
+        vendor's ``"2.000000/1.000000"`` is 2, ``"1.000000/10.000000"`` 0.1). BF-D26:
+        the simulated books' share counts follow them on that date."""
+        if self._bulk_split is None:
+            self._bulk_split = self._bulk("bulk_splits")
+        out: dict[tuple[str, date], tuple[str, date, Decimal]] = {}
+        for code in sorted(set(codes)):
+            rows = [(x, x.get("date")) for x in self._events("splits", f"{code}.AU")]
+            rows += [
+                (x, str(d))
+                for d, xs in self._bulk_split.items()
+                for x in xs
+                if x.get("code") == code
+            ]
+            for x, ds in rows:
+                if not ds:
+                    continue
+                d = date.fromisoformat(str(ds)[:10])
+                r = split_ratio(str(x.get("split", "")))
+                if start <= d <= end and r is not None:
+                    out[(code, d)] = (code, d, r)
         return [out[k] for k in sorted(out)]
 
     def _events(self, kind: str, sym: str) -> list[dict[str, Any]]:

@@ -34,8 +34,11 @@ Tax classes (BW-TAX-02, ATO treatment as the build reads it; the tax agent confi
   booked ``UNCLASSIFIED`` for tax (cash and positions are exact either way);
 * ``CODE_CHANGE``: a code (and share count, by ``ratio``) change of one company: the
   journal's identity map (``bf_identity`` with a ratio, BF-D19 / BF-D25), no booking
-  effect; ``SPLIT`` a share-count change on the same code; ``DISPOSAL`` shares removed
-  for cash (a cash takeover, a buy-back); ``CASH_IN_LIEU`` cash for fractions.
+  effect; ``SPLIT`` a share-count change on the same code (a split, a consolidation;
+  BF-D26: count x ratio, cost per share / ratio, the total cost base unchanged; the
+  simulated books from the vendor's split rows or the CSV on the split date, the broker
+  books from IBKR's Flex record); ``DISPOSAL`` shares removed for cash (a cash takeover,
+  a buy-back); ``CASH_IN_LIEU`` cash for fractions.
 """
 
 from __future__ import annotations
@@ -75,6 +78,8 @@ class CaKind(StrEnum):
 
 CASH_KINDS = frozenset({CaKind.DIVIDEND, CaKind.SPECIAL, CaKind.CAPITAL_RETURN})
 SHARE_KINDS = frozenset({CaKind.DEMERGER, CaKind.IN_SPECIE})
+COUNT_KINDS = frozenset({CaKind.SPLIT, CaKind.CODE_CHANGE})  # share count of one company
+SPLIT_MATCH_DAYS = 10  # a Flex split row settles a calendar split this far around it
 
 
 class CaError(ValueError):
@@ -151,6 +156,14 @@ def floor_shares(x: Decimal) -> int:
     return int(x.to_integral_value(ROUND_FLOOR))
 
 
+def split_count(held: int, ratio: Decimal) -> int:
+    """Shares after a split or consolidation of ``held`` shares at ``ratio`` (new per
+    old): the fraction is dropped, as for a code change (BF-D25). IBKR's record gives the
+    broker book's exact count (an issuer that rounds a fraction up shows one share
+    more; reconciliation allows one share either way)."""
+    return floor_shares(held * ratio)
+
+
 # ---------------------------------------------------------------------------
 # Calendar: CSV + vendor
 # ---------------------------------------------------------------------------
@@ -165,6 +178,9 @@ _KIND_WORDS: tuple[tuple[str, CaKind], ...] = (
     ("return of capital", CaKind.CAPITAL_RETURN),
     ("capital reduction", CaKind.CAPITAL_RETURN),
     ("special", CaKind.SPECIAL),
+    ("consolidation", CaKind.SPLIT),
+    ("subdivision", CaKind.SPLIT),
+    ("split", CaKind.SPLIT),
     ("code change", CaKind.CODE_CHANGE),
     ("name change", CaKind.CODE_CHANGE),
     ("rename", CaKind.CODE_CHANGE),
@@ -274,9 +290,28 @@ def vendor_events(rows: Iterable[tuple[str, date, Decimal, date | None]]) -> lis
     ]
 
 
+def vendor_split_events(rows: Iterable[tuple[str, date, Decimal]]) -> list[CaEvent]:
+    """Vendor splits and consolidations ``(code, date, new shares per old share)`` as
+    ``SPLIT`` events on that date (BF-D26): 2-for-1 is 2, 1-for-10 is 0.1. A ratio of 1
+    (no change) or out of ``parse_ratio``'s range is left out."""
+    out = []
+    for c, d, r in rows:
+        if r == 1 or not (Decimal("0.0001") <= r <= Decimal(1000)):
+            continue
+        out.append(CaEvent(f"VENDOR:SPLIT:{c}:{d}", CaKind.SPLIT, c, d, ratio=r, source="VENDOR"))
+    return out
+
+
+def _family(e: CaEvent) -> bool:
+    """True for a share-count event (split, consolidation, code change)."""
+    return e.kind in COUNT_KINDS
+
+
 @dataclass
 class CaCalendar:
-    """Vendor dividends merged with the CSV (and owner) events; the CSV wins."""
+    """Vendor dividends and splits merged with the CSV (and owner) events; the CSV wins:
+    a CSV share-count event (split, consolidation, code change) replaces the vendor's
+    split rows of the code within a week, any other CSV event the vendor's dividends."""
 
     events: list[CaEvent] = field(default_factory=list)
 
@@ -287,7 +322,10 @@ class CaCalendar:
         keep = [
             v
             for v in vendor
-            if not any(o.code == v.code and abs(o.ex_date - v.ex_date) <= week for o in own)
+            if not any(
+                o.code == v.code and abs(o.ex_date - v.ex_date) <= week and _family(o) == _family(v)
+                for o in own
+            )
         ]
         evs = sorted([*keep, *own], key=lambda e: (e.ex_date, e.code, e.key))
         return cls(evs)
@@ -309,6 +347,18 @@ class CaCalendar:
             and (e.ex_date == ex if ex is not None else lo <= e.ex_date <= paid)
         ]
         return max(cands, key=lambda e: (e.source != "VENDOR", e.ex_date), default=None)
+
+    def split_event_for(self, code: str, when: date | None) -> CaEvent | None:
+        """The calendar split of ``code`` a Flex split row reported on ``when`` settles."""
+        if when is None:
+            return None
+        span = timedelta(days=SPLIT_MATCH_DAYS)
+        cands = [
+            e
+            for e in self.events
+            if e.code == code and e.kind is CaKind.SPLIT and abs(e.ex_date - when) <= span
+        ]
+        return min(cands, key=lambda e: (abs(e.ex_date - when), e.source == "VENDOR"), default=None)
 
     def share_event_for(self, new_code: str, parent: str | None) -> CaEvent | None:
         cands = [
@@ -336,6 +386,16 @@ def book_event(  # noqa: PLR0911 - one return per kind
     if held <= 0 or ev.kind is CaKind.CODE_CHANGE:
         return None
     key = book_key or ev.key
+    if ev.kind is CaKind.SPLIT:
+        if ev.ratio is None:
+            raise CaError(f"{ev.key}: a split needs its ratio")
+        change = split_count(held, ev.ratio) - held
+        if change == 0:
+            return None
+        return Booking(
+            key, ev.kind, ev.code, ev.ex_date, ev.ex_date, held, qty_change=change,
+            ratio=ev.ratio, source=ev.source, note=ev.note[:120],
+        )  # fmt: skip
     if ev.kind in CASH_KINDS:
         if ev.per_share is None:
             return None
@@ -419,6 +479,12 @@ def expectations(
             continue  # the identity map (owner-confirmed) carries code changes
         held = held_at(ev.code, ev.ex_date)
         if held <= 0:
+            continue
+        if ev.kind is CaKind.SPLIT:  # BF-D26: IBKR may show the new count before Flex
+            if ev.ratio is not None:
+                d = split_count(held, ev.ratio) - held
+                lbl = f"SPLIT {ev.code} x{ev.ratio.normalize():f} ex {ev.ex_date}"
+                out.append(Expected(ev.key, lbl, Decimal(0), {ev.code: d}))
             continue
         if ev.kind in CASH_KINDS:
             if ev.per_share is not None:
@@ -518,7 +584,29 @@ def _cash_booking(
     )  # fmt: skip
 
 
-def _action_bookings(  # noqa: PLR0911, PLR0915 - one return per action shape
+def _extra_shares_split(
+    key: str,
+    code: str,
+    n: int,
+    cash: Decimal,
+    when: date | None,
+    desc: str,
+    cal: CaCalendar,
+    held_at: Callable[[str, date], int],
+) -> Booking:
+    """BF-D26: a forward split (or bonus issue) shown as the extra shares of the code
+    only: a ``SPLIT`` of +n shares, the cost base unchanged."""
+    sev = cal.split_event_for(code, when)
+    ex = sev.ex_date if sev else when
+    held = held_at(code, ex) if ex is not None else 0
+    fm = _FOR_RE.search(desc)
+    fr = Decimal(fm.group(1)) / Decimal(fm.group(2)) if fm else None
+    return Booking(key, CaKind.SPLIT, code, ex, when, held, cash=cash, qty_change=n,
+                   ratio=fr, source="FLEX", expected_key=sev.key if sev else None,
+                   note=desc[:200])  # fmt: skip
+
+
+def _action_bookings(  # noqa: PLR0911, PLR0912, PLR0915 - one return per action shape
     rows: Sequence[FlexCorporateAction],
     cal: CaCalendar,
     held_at: Callable[[str, date], int],
@@ -542,8 +630,10 @@ def _action_bookings(  # noqa: PLR0911, PLR0915 - one return per action shape
             else (q_in / q_out).quantize(Decimal("0.000001"))
         )
         if old == new:
-            b = Booking(key, CaKind.SPLIT, old, when, when, int(q_out), cash=cash,
-                        qty_change=int(q_in - q_out), ratio=ratio, source="FLEX",
+            sev = cal.split_event_for(old, when)  # BF-D26: settles the calendar's split
+            b = Booking(key, CaKind.SPLIT, old, sev.ex_date if sev else when, when,
+                        int(q_out), cash=cash, qty_change=int(q_in - q_out), ratio=ratio,
+                        source="FLEX", expected_key=sev.key if sev else None,
                         note=desc[:200])  # fmt: skip
             return [b], []
         b = Booking(key, CaKind.CODE_CHANGE, old, when, when, int(q_out), cash=cash,
@@ -564,6 +654,8 @@ def _action_bookings(  # noqa: PLR0911, PLR0915 - one return per action shape
     child = ins[0].symbol.upper()
     n = int(sum((r.quantity for r in ins), Decimal(0)))
     m = _PARENT_RE.match(desc)
+    if (m and m.group(1) == child) or rows[0].type in ("FS", "SD"):
+        return [_extra_shares_split(key, child, n, cash, when, desc, cal, held_at)], []
     parent = m.group(1) if m and m.group(1) != child else None
     ev = cal.share_event_for(child, parent)
     if parent is None and ev is not None:
@@ -665,7 +757,9 @@ class CostBook:
             cut = min(have, b.cost_reduction)
             self.cost[code] = have - cut
             self.g1 += b.cost_reduction - cut
-        if b.qty_change > 0:
+        if b.kind is CaKind.SPLIT:  # BF-D26: one company, more or fewer shares, same cost
+            self.qty[code] = max(self.qty.get(code, Decimal(0)) + b.qty_change, Decimal(0))
+        elif b.qty_change > 0:
             self.qty[code] = self.qty.get(code, Decimal(0)) + b.qty_change
         elif b.qty_change < 0:
             self.sell(code, Decimal(-b.qty_change))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -151,3 +152,22 @@ def test_forward_store_builds_panel_read_only(tmp_path: Path) -> None:
     assert sorted((p, p.stat().st_mtime_ns) for p in tmp_path.rglob("*")) == before
     with pytest.raises(ValueError):
         fs.build_panel(date(2026, 10, 3), sess)  # a Saturday
+
+
+def test_BF_D26_forward_store_split_rows_from_history_and_bulk(tmp_path: Path) -> None:
+    """Vendor splits (per-symbol file and the bulk feed) as exact ratios, new per old."""
+    man = ["utc\tkind\tsymbol\thttp\tcost\tbytes\tpayload_sha256\tfile\tfile_sha256\turl"]
+    f = "raw/splits/CNS.AU__1.json.gz"
+    _gz(tmp_path / f, [{"date": "2026-12-03", "split": "1.000000/10.000000"},
+                       {"date": "2019-01-02", "split": "2.000000/1.000000"}])  # fmt: skip
+    man.append(f"t\tsplits\tCNS.AU\t200\t1\t1\tx\t{f}\tx\tu")
+    _gz(tmp_path / "raw/bulk_splits/AU_2026-12-04__1.json.gz",
+        [{"code": "SPL", "date": "2026-12-04", "split": "2/1"},
+         {"code": "BAD", "date": "2026-12-04", "split": "x"}])  # fmt: skip
+    (tmp_path / "manifest.tsv").write_text("\n".join(man) + "\n")
+    fs = ForwardStore(tmp_path)
+    got = fs.split_rows({"CNS", "SPL", "BAD", "NONE"}, date(2026, 12, 1), date(2026, 12, 31))
+    assert got == [
+        ("CNS", date(2026, 12, 3), Decimal("0.1")),
+        ("SPL", date(2026, 12, 4), Decimal(2)),
+    ]
