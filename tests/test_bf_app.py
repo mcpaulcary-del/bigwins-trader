@@ -622,7 +622,7 @@ def test_BF_D16_twin_latch_does_not_reach_the_broker_book() -> None:
 
 
 def test_BF_held_name_without_a_mark_is_valued_at_its_last_mark_not_zero() -> None:
-    """A held name missing from the day's data (suspension, feed gap: HGO on 17-18 Nov
+    """A held name missing from the day's data (suspension, feed gap: HGO on 16-18 Nov
     2026 in the record) keeps its last recorded mark, so a gap cannot fake an L11 stage."""
     app, gw, tr = _app(D0)
     dry_run(app, DAYS[:4], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))

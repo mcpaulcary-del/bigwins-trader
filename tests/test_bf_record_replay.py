@@ -102,7 +102,7 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     reports = [t for _, t in tr.outbox if t.startswith(PAPER_BANNER)]
     assert len(reports) == len(days)
     assert any(t.startswith("Decision 2026-10-30") and "LIC list" in t for _, t in tr.outbox)
-    # HGO (held) is missing from the record's feed on 17-18 Nov: valued at its last mark
+    # HGO (held) is missing from the record's feed on 16-18 Nov: valued at its last mark
     assert any("no mark for HGO on 2026-11-18" in t for t in reports) or "HGO" not in summ.positions
     assert not any("no price" in t for t in reports)
 
