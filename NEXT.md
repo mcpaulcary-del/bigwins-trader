@@ -1,6 +1,7 @@
-# NEXT — B-fast for the EMG2-20 slice (FD v3.0 §21.1), state on 19 Nov 2026
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026
 
-Branch `bigwins-fast`. **Paper only.** No code here can place a real order:
+Branches: `bigwins-fast` (tested baseline) and `bigwins-fast-wip` (this work: piece 1 of
+3 done, green). **Paper only.** No code here can place a real order:
 `LIVE_TRADING_ENABLED` is hard-coded `False`, `allow_live` is `Literal[False]` in the
 config schema, and the adapter refuses live ports, non-`DU` accounts and a gateway
 that manages any non-`DU` account. Live enablement is a separate owner step after the
@@ -16,13 +17,54 @@ go-live checklist, by a reviewed code change.
 | BF4 reconciliation, report | `trader/reconcile.py`, `report.py`, `runner.py` | Pieces done; scheduling not |
 | Deploy | `deploy/docker-compose.yml`, `deploy/Dockerfile`, `docs/SETUP_SYDNEY.md` | Stub; images pinned by digest; `docker compose config` passes |
 
-## Blocking decisions (owner / record keeper) — before any useful paper dry run
+## Piece 1 (done on `bigwins-fast-wip`, 19 Nov 2026)
 
-1. **BF-D1**: the literal L3/L5 sends no start buy at A$10,000 (A$497.50 shares, and
-   A$500 parcels cannot become A$500 orders after commission and the LOC band). The
-   amendment needs a sizing fix (e.g. A$525 slot unit) before 30 Nov.
-2. **BF-D6**: freeze `config/lic_list.csv` (candidates in `config/lic_list_candidates.csv`).
-3. **BF-D2 / BF-D3**: confirm the cap reading and sells above A$800.
+- WIP commits 4bcdf09/912e609 reviewed and kept (DECISIONS BF-D13): scheduler, `bf_app`
+  jobs, dry-run harness, mock gateway. ruff, mypy --strict, pytest (435), BF gate green;
+  record replay and T6 golden tests pass where the data are mounted.
+- Owner decisions applied (BF-D14): EMG2-18 (18 / A$550, configurable; real 30 Oct list:
+  18 orders >= A$500 after commission, band and reserve); A$10,000 cap on new buys;
+  A$800 per buy, larger sells sent and paged; `config/lic_list.csv` = the record's
+  frozen list, SHA-256 pinned (BF-D6 closed); loss rule: value < A$6,000 ->
+  `HALTED_BUYS` once per breach, high-priority page, holdings kept, sells continue,
+  only `/resume <code>` re-enables buying.
+- Scheduler: `run_forever` tested on a fake clock over a month-end (each job once a
+  session; decision at the month-end only; orders the next session; unapproved orders
+  lapse, never sent; late `/ok` refused); the broker book cannot use `auto` approval.
+
+## Piece 2 — full dry run, twin, canary (next)
+
+1. **Replay 30 Oct and 18 Nov** end to end with `trader-bf dry-run` against the mock
+   gateway (env as in the scratchpad `bfenv.sh`: `TRADER_FORWARD_STORE`,
+   `TRADER_BF_LIC_LIST`, `TRADER_BF_ETP_LIST`): start decision 30 Oct with canary, the
+   17 others after the canary reconciles, daily sessions to 18 Nov, an 18 Nov forced
+   decision; check every order >= A$500, <= A$800 (buys), reconciliation to the cent
+   every day, L13 notes explained, report banners. Store the summary (counts, digests)
+   in DECISIONS; extend `test_BF_dry_run_replays_30_oct_and_18_nov_record_data`.
+2. **Simulated twin per-book safety** (BF-D13 open point): the safety latch is
+   journal-wide, so `/pause`, `/kill` and halts of the paper book also block the twin's
+   buys. Give each book its own level (or exempt the twin from operational halts while
+   it keeps L11), with a test that a paused paper book leaves `EMG2_18_SIM` buying.
+3. **Canary flow (L6)** on replay: canary unfilled (carried once, then the start stops,
+   paged), canary filled but reconciliation broken (the 17 wait), restart between canary
+   and the 17 (journal-only state). Some exist on synthetic data; repeat on record data.
+4. Loss-rule drill on the replay (marks scaled below A$6,000 mid-run): buys stop, sells
+   continue, `/resume` re-enables; the daily report shows the halt.
+5. Twin random books (100, seeds 8550000 + i) and the A200 comparator are not built yet.
+
+## Piece 3 — merge
+
+Merge `bigwins-fast-wip` into `bigwins-fast` (fast-forward or a merge commit; never
+force-push), re-run the full gate on `bigwins-fast` (ruff, format, mypy --strict,
+pytest, `req_coverage --milestone BF`, both validate-config steps), push, then delete
+the `bigwins-fast-wip` branch locally and on origin. Update this file's header.
+
+## Owner / record keeper points still open
+
+1. A$5,000 `HALTED_LINE` (registered L11) also stops sells; the owner's loss rule talks
+   only of A$6,000. Confirm whether the line halt should keep sells going (BF-D14).
+2. Raise the IBKR precaution "max order value" above the largest expected sell before
+   go-live (BF-D3).
 
 ## Next build steps, in order
 
@@ -39,7 +81,7 @@ go-live checklist, by a reviewed code change.
 3. **Runner**: APScheduler in the trader container (Australia/Sydney, ASX calendar,
    advisory lock, idempotent jobs), the Telegram polling loop (`ApprovalBot`), the
    `/kill` path wired to `Executor.kill` (must cancel within 60 s — BF2 test on paper).
-4. **EMG2_20_SIM twin** booked daily with `SimBroker` from the 30 Nov decision and the
+4. **EMG2_18_SIM twin** booked daily with `SimBroker` from the 30 Nov decision and the
    L13 comparison (`compare_books`) in the daily report; 100 random twins (seeds
    8550000 + i) after that.
 5. **Canary flow** (L6): start batch `-S`, canary `-C` (one buy), the other 19 after
@@ -65,7 +107,7 @@ go-live checklist, by a reviewed code change.
 | 9 | Backups, restore, no inbound port (scan) | Open (compose has no published ports) |
 | 10 | Dead-man heartbeat 5 days | Open |
 | 11 | Amendments registered; code hashes pinned | Record keeper |
-| 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list open (BF-D6) |
+| 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14); owner review open |
 | 13 | Risk statement signed; 5% of investable assets | Owner |
 | 14 | Parcels for paper fills; short-term gains understood | Journal has fills; parcel/tax view open |
 | 15 | Owner reachable by 15:20 through April 2027 | Owner |
