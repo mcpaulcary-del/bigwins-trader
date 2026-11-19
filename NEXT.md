@@ -160,6 +160,26 @@ go-live checklist, by a reviewed code change.
   information, not tax advice. Owner: confirm FIFO (or specific identification) with the
   accountant; give the accountant the summary + CSVs after 30 June 2027.
 
+## Owner go-live guide (19 Nov 2026)
+
+- `docs/GO_LIVE_GUIDE.md`: IBKR (Pro cash, ASX, tiered, paper, precautions above
+  A$10,000, market data, Flex token + Activity query with the sections the parser
+  reads), BinaryLane + Tailscale + Docker + deploy key, `deploy/.env` (now lists
+  `RECORD_DIR`, `FLEX_INBOX` in `.env.example`), the nine secret files, Telegram + chat
+  id + TOTP seed, the FUND-start canary (one A200 order) with example messages, the
+  commands as implemented, and the remaining checklist.
+- Found while writing it (for the reality spike, before any paper order):
+  (1) `trader-bf deposit` / `kill` / `pause` / `status` use `--journal` or a local
+  SQLite file, not the config's Postgres journal (`bfast_cli.main`); fix before the
+  deposits are recorded. (2) The paper account's made-up starting balance must equal
+  the journal deposit (cash is reconciled to the cent; L11 assumes A$10,000): reset
+  the paper balance or decide another way. (3) Compose file secrets are bind mounts
+  with host permissions; the trader runs as uid 10001, so `chmod 600` root files are
+  unreadable: guide uses `444` files in a `700` folder; confirm each container reads
+  its secrets. (4) The daily refresh of `FORWARD_STORE` on the server is not built.
+  (5) In FUND state the book places one order and then none, so go-live item 2 (five
+  paper sessions with orders) needs a plan in the spike.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

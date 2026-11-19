@@ -4,6 +4,11 @@ Target: one always-on Linux machine in Sydney (cloud VM, e.g. 2 vCPU / 4 GB / 40
 or a home mini PC), Docker Engine + Compose v2, Tailscale. FD v3.0 §19.2, §21.1 BF0.
 This build cannot trade real money; the live gateway port is not used.
 
+**The owner's step-by-step guide is `docs/GO_LIVE_GUIDE.md`** (IBKR, server, secrets,
+Telegram, first messages, commands). Where the two differ, the guide is current: the
+secret files are `444` inside a `700` `secrets/` folder, because Docker passes them into
+the containers unchanged and the trader runs as uid 10001.
+
 ## 1. Owner provides (never through chat)
 
 | Item | How |
@@ -31,7 +36,7 @@ This build cannot trade real money; the live gateway port is not used.
 ```bash
 git clone <owner's GitHub remote> /srv/asx-trader && cd /srv/asx-trader/deploy
 cp .env.example .env && chmod 600 .env          # fill IBKR_PAPER_USERID, paths
-mkdir -p secrets && chmod 700 secrets            # one file per secret, chmod 600
+mkdir -p secrets && chmod 700 secrets            # one file per secret, chmod 444 (GO_LIVE_GUIDE B6)
 docker compose pull && docker compose build
 docker compose up -d
 docker compose logs -f gw-paper                  # paper login headless (IBKR 2FA on first login)
