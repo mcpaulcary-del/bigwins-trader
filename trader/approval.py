@@ -13,8 +13,9 @@ Approval modes per batch:
 
 ``/veto <batch> <n> <code>`` removes a single **buy** (BW-APR-04; sells of a registered
 line are refused one by one, the owner can ``/refuse <batch> <code>`` the whole batch).
-``/pause`` and ``/kill`` act in one step without a code (they only reduce risk,
-BW-RSK-30); ``/resume <code>`` re-arms and needs the second factor. ``<code>`` is a
+``/pause``, ``/kill`` and ``/stop`` (L11 (d): no automatic resume) act in one step
+without a code (they only reduce risk, BW-RSK-30); ``/resume <code>`` re-arms and needs
+the second factor, as does ``/continue <code>`` (L11 stage 3 written confirmation). ``<code>`` is a
 6-digit TOTP (RFC 6238, SHA-1, 30 s) from the owner's authenticator; each code is
 accepted once. Commands are accepted only from allow-listed Telegram chat ids
 (BP-11). The TOTP seed and the bot token are Docker secrets, never config.
@@ -245,7 +246,20 @@ class ApprovalBot:
             if len(args) != 1 or not self.verifier.verify(args[0], m.at):
                 return "refused: /resume needs a valid one-time code"
             self.journal.set_safety(SafetyLevel.NORMAL, "owner /resume (2FA)", actor, m.at)
+            self.journal.mark_job(f"l11:end:{m.at.isoformat()}", {"why": "owner /resume"}, m.at)
             return "re-armed: NORMAL"
+        if cmd == "/stop":  # L11 (d): the owner says stop; buys stay paused, sells go on
+            self.journal.set_safety(SafetyLevel.PAUSED, "owner /stop (L11)", actor, m.at)
+            self.journal.mark_job(f"l11:stop:{m.at.isoformat()}", {"actor": actor}, m.at)
+            return "STOP recorded (L11 d): buys stay paused, sells go on. /resume <code> re-arms."
+        if cmd == "/continue":  # L11 stage 3: the owner's written confirmation to continue
+            if len(args) != 1 or not self.verifier.verify(args[0], m.at):
+                return "refused: /continue needs a valid one-time code"
+            self.journal.mark_job(f"l11:confirm:{m.at.isoformat()}", {"actor": actor}, m.at)
+            return (
+                "confirmation recorded (L11 stage 3): buys resume at the next decision "
+                "if the staged test passes"
+            )
         if cmd in ("/ok", "/veto", "/approve", "/refuse"):
             return self._approval(cmd, args, actor, m.at)
         return f"unknown command {cmd}"

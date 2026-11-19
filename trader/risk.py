@@ -27,11 +27,13 @@ BW-RSK-11 cash        buy cost (limit + commission) <= settled cash             
 L1 capital cap        holdings at cost + buys <= ``capital_cap_aud``             REJECT
 ====================  =========================================================  ===========
 
-Book monitors (``evaluate_book``): L11 value floors (A$7,000 review, below A$6,000
-``HALTED_BUYS`` -- the owner's loss rule: buys paused, holdings kept, owner resumes --
-A$5,000 line halt), BW-RSK-20 drawdown (30% WARN, 50% halt
-buys), BW-RSK-22 / L11 one-day fall (7% WARN, 12% halt buys), BW-RSK-29 real money
-below 60% of capital. A halt never sells by itself.
+Book monitors (``evaluate_book``): L11 staged loss rule (owner, 19 Nov 2026; report 88
+§4.2; ``trader.loss_rule``): below A$7,000 high-priority page and integrity check, below
+A$6,000 ``HALTED_BUYS`` until the next month-end decision (automatic resume unless the
+staged test fails), below A$5,000 the same plus the owner's written confirmation (else
+wind-down over two decisions); BW-RSK-20 drawdown (30% WARN, 50% halt buys), BW-RSK-22 /
+L11 one-day fall (7% WARN, 12% halt buys), BW-RSK-29 real money below 60% of capital.
+A halt never sells by itself; sells continue under every book-monitor halt.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 
+from trader.loss_rule import stage_of
 from trader.orders import CommissionModel, OrderIntent, Side, is_valid_step
 
 CENT = Decimal("0.01")
@@ -283,7 +286,8 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
 class BookReading:
     level: SafetyLevel
     alerts: tuple[str, ...]
-    halts: tuple[str, ...] = ()  # the halt rules in breach (``L11_FLOOR``, ``RSK20``, ...)
+    halts: tuple[str, ...] = ()  # the halt rules in breach (``L11_S2``, ``RSK20``, ...)
+    stage: int = 0  # L11 staged loss rule: 0 none, 1 < A$7,000, 2 < A$6,000, 3 < A$5,000
 
 
 def evaluate_book(
@@ -294,30 +298,36 @@ def evaluate_book(
     lim: RiskLimits | None = None,
 ) -> BookReading:
     """L11 / BW-RSK-20, -22, -29 after each broker day. Returns the level to latch
-    (never lower than NORMAL; the caller keeps the worse of this and the current) and
-    the halt rules in breach, so the caller can latch a halt once per breach (an owner
-    ``/resume`` while still in breach is the owner's decision and is not overridden).
-
-    Owner loss rule (19 Nov 2026, EMG2-18): account value **below** A$6,000 pauses new
-    buys (``HALTED_BUYS``) and pages; holdings are kept and the registered sells go on;
-    only the owner resumes. A halt never sells by itself."""
+    (never lower than NORMAL; the caller keeps the worse of this and the current), the
+    halt rules in breach (the caller latches each once per breach) and the L11 stage.
+    The staged rule's resume / wind-down happens at the decision (``trader.loss_rule``);
+    a halt never sells by itself."""
     lim = lim or RiskLimits()
     alerts: list[str] = []
     halts: list[str] = []
     level = SafetyLevel.NORMAL
-    if value <= lim.value_line_halt_aud:
-        level = SafetyLevel.HALTED_LINE
-        halts.append("L11_LINE")
-        alerts.append(f"PAGE: value A${value} <= A${lim.value_line_halt_aud}: line halted (L11)")
-    elif value < lim.value_halt_buys_aud:
+    stage = stage_of(value, lim.value_review_aud, lim.value_halt_buys_aud, lim.value_line_halt_aud)
+    if stage >= 2:
         level = SafetyLevel.HALTED_BUYS
-        halts.append("L11_FLOOR")
+        halts.append("L11_S2")
+    if stage == 3:
+        halts.append("L11_S3")
         alerts.append(
-            f"PAGE: value A${value} < A${lim.value_halt_buys_aud}: HALTED_BUYS, new buys "
-            "paused, holdings kept (L11, owner loss rule)"
+            f"PAGE: value A${value} < A${lim.value_line_halt_aud}: L11 stage 3, new buys "
+            "paused; your written /continue <code> is needed before the next decision, "
+            "else the book is sold over two decisions"
         )
-    elif value <= lim.value_review_aud:
-        alerts.append(f"PAGE: value A${value} <= A${lim.value_review_aud}: review (L11)")
+    elif stage == 2:
+        alerts.append(
+            f"PAGE: value A${value} < A${lim.value_halt_buys_aud}: L11 stage 2, new buys "
+            "paused until the next month-end decision (automatic resume unless the test "
+            "fails); holdings kept, sells continue"
+        )
+    elif stage == 1:
+        alerts.append(
+            f"PAGE: value A${value} < A${lim.value_review_aud}: L11 stage 1, alert and "
+            "integrity check"
+        )
     if capital_in > 0 and value < capital_in * lim.real_money_floor:
         level = worst(level, SafetyLevel.HALTED_BUYS)
         halts.append("RSK29")
@@ -338,4 +348,4 @@ def evaluate_book(
             alerts.append(f"PAGE: one-day fall {mv:.1%} (L11)")
         elif mv <= lim.day_move_review:
             alerts.append(f"WARN: one-day fall {mv:.1%} (BW-RSK-22)")
-    return BookReading(level, tuple(alerts), tuple(halts))
+    return BookReading(level, tuple(alerts), tuple(halts), stage)

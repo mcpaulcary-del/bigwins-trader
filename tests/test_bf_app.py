@@ -350,57 +350,148 @@ def test_L8_reminder_at_1430_lists_unapproved_orders() -> None:
     assert any(t.startswith("Reminder: 1 order(s)") for _, t in tr.outbox)
 
 
-def test_BW_RSK_29_owner_loss_rule_nav_below_6000_pauses_buys_keeps_holdings_until_resume() -> None:
-    """Owner decision (19 Nov 2026): account value below A$6,000 -> HALTED_BUYS and a
-    high-priority page; holdings kept (nothing sold by the halt), registered sells still
-    go, buys are not sent; only the owner's /resume re-enables buying. A breach that
-    continues after /resume is the owner's call (not re-latched); a new breach is."""
-    from trader.approval import Incoming
-    from trader.orders import OrderBatch, Side, client_order_id
+# ---------------------------------------------------------------- L11 staged loss rule
 
+
+def _loss_app(
+    twin_pct: Decimal | None = Decimal(50), l12: str | None = None
+) -> tuple[BfApp, MockGateway, FakeTransport]:
+    """A started book (canary + start filled, reconciled) four sessions after D0, with
+    the staged test's inputs injected (random-twin percentile, L12 stop)."""
     app, gw, tr = _app(D0)
+    app.twin_rank = lambda d: twin_pct
+    app.l12_stop = lambda d: l12
     dry_run(app, DAYS[:4], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
-    book = app.s.book
-    held = app.j.positions(book)
-    cash = app.j.cash(book)
-    assert len(held) >= 15 and app.j.safety_level() is SafetyLevel.NORMAL
-    day = DAYS[4]
-    px = dict(app.marks(day))
-    worth = sum((px[e] * q for e, q in held.items()), Decimal(0))
+    assert len(app.j.positions(app.s.book)) >= 15
+    assert app.j.safety_level() is SafetyLevel.NORMAL
+    return app, gw, tr
 
-    def at_value(v: str) -> Callable[[date], dict[str, Decimal]]:
+
+class _Marks:
+    """Report the book at a chosen value: scale every holding's mark."""
+
+    def __init__(self, app: BfApp) -> None:
+        self.app = app
+        self.day = DAYS[4]
+        self.px = dict(app.marks(self.day))
+        self.days = iter(DAYS[5:])
+
+    def walk(self, *vs: str) -> date:
+        return [self.report(v) for v in vs][-1]
+
+    def report(self, v: str, d: date | None = None) -> date:
+        app = self.app
+        held = app.j.positions(app.s.book)
+        cash = app.j.cash(app.s.book)
+        worth = sum((self.px[e] * q for e, q in held.items()), Decimal(0))
         f = (Decimal(v) - cash) / worth
-        return lambda d: {e: px[e] * f for e in held}
-
-    def high() -> int:
-        return sum("PAGE HIGH PRIORITY" in t for _, t in tr.outbox)
-
-    batches_before = app.j.batches_of(book)
-    days = iter(DAYS[5:])
-
-    def report(v: str) -> date:
-        d = next(days)
-        app.marks = at_value(v)
+        app.marks = lambda _d: {e: self.px[e] * f for e in held}
+        d = d or next(self.days)
         app.job_report(d, at(d, "22:45"))
         return d
 
-    for v in ("9000", "8000", "7100", "6300", "6000.00"):  # no day falls 12% or more
-        report(v)
-    assert app.j.safety_level() is SafetyLevel.NORMAL and high() == 0  # A$6,000: review only
-    report("5990.00")
-    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 1
-    page = next(t for _, t in tr.outbox if "PAGE HIGH PRIORITY" in t)
-    assert "holdings are kept" in page and "/resume" in page
+
+def _high(tr: FakeTransport) -> list[str]:
+    return [t for _, t in tr.outbox if "PAGE HIGH PRIORITY" in t]
+
+
+def _owner(app: BfApp, d: date, text: str, hhmm: str = "16:00") -> None:
+    from trader.approval import Incoming
+
+    t = at(d, hhmm)
+    app.transport_inject(Incoming(CHAT, text.replace("<code>", totp(SEED, t)), t))
+    app.job_tick(d, t)
+
+
+M2 = next(d for d in DAYS if d.month == D0.month + 1 and DAYS[DAYS.index(d) + 1].month != d.month)
+
+
+def test_L11_stage1_below_7000_pages_and_runs_the_integrity_check() -> None:
+    """Owner staged rule (19 Nov 2026), stage 1: NAV < A$7,000 -> high-priority page and
+    an integrity check (live holdings = simulated twin; fills and costs as modelled).
+    Buying is not affected; a failed check latches HALTED_INTEGRITY."""
+    app, _, tr = _loss_app()
+    m = _Marks(app)
+    m.walk("9000", "8100", "7200", "7000.00")  # no day falls 12% or more
+    assert not _high(tr)  # exactly A$7,000: not below
+    m.report("6990")
+    page = _high(tr)[-1]
+    assert "L11 stage 1" in page and "Integrity check passed" in page
+    assert app.j.safety_level() is SafetyLevel.NORMAL
+    m.report("6800")  # still in stage 1: no second page
+    assert len(_high(tr)) == 1
+    m.walk("8000", "7500")
+    # a holding of the twin the live book does not have, with no order to explain it
+    from trader.journal import FillRecord
+    from trader.orders import Side
+
+    app.j.add_fill(FillRecord("x-1", None, app.s.sim_book, "ZZZ", Side.BUY, 10, Decimal(1),
+                              Decimal(0), at(DAYS[9], "16:00")))  # fmt: skip
+    m.report("6900")
+    assert any("Integrity check FAILED" in t and "HOLDING ZZZ" in t for t in _high(tr))
+    assert app.j.safety_level() is SafetyLevel.HALTED_INTEGRITY
+
+
+def test_L11_integrity_check_flags_fills_and_costs_not_as_modelled() -> None:
+    from trader.loss_rule import ModelledFill, integrity_breaks
+    from trader.orders import Side
+
+    ok = ModelledFill("o1", "AAA", Side.BUY, 100, Decimal("5.00"), Decimal("6.60"), Decimal("5.10"))
+    assert integrity_breaks({"AAA": 100}, {"AAA": 100}, (), [ok]) == ()
+    bad = [
+        ModelledFill("o2", "BBB", Side.BUY, 100, Decimal("5.20"), Decimal("6.60"), Decimal("5.10")),
+        ModelledFill(
+            "o3", "CCC", Side.SELL, 100, Decimal("4.90"), Decimal("6.60"), Decimal("5.00")
+        ),
+        ModelledFill("o4", "DDD", Side.BUY, 100, Decimal("5.00"), Decimal("9.99"), Decimal("5.10")),
+    ]
+    out = integrity_breaks({"AAA": 1, "EEE": 5}, {"AAA": 1}, ("XYZ",), bad)
+    assert [o.split()[0] for o in out] == ["HOLDING", "FILL", "FILL", "COST"]
+    # partial fills of one order pay the minimum once
+    parts = [
+        ModelledFill("o5", "FFF", Side.BUY, 50, Decimal("5.00"), Decimal("3.30"), Decimal("5.10")),
+        ModelledFill("o5", "FFF", Side.BUY, 50, Decimal("5.00"), Decimal("3.30"), Decimal("5.10")),
+    ]
+    assert integrity_breaks({}, {}, (), parts) == ()
+
+
+def test_L11_stage2_below_6000_pauses_buys_sells_go_on_and_resume_automatically_at_month_end() -> (
+    None
+):
+    """Stage 2: NAV < A$6,000 -> HALTED_BUYS (page), holdings kept, sells continue, buys
+    refused; at the next month-end decision buying resumes automatically when the
+    staged test passes (integrity, twin >= 10th percentile, no L12 stop, no owner stop)."""
+    from trader.orders import (
+        OrderBatch,
+        OrderIntent,
+        OrderType,
+        Side,
+        client_order_id,
+        round_to_step,
+    )
+
+    app, gw, tr = _loss_app()
+    book = app.s.book
+    held = app.j.positions(book)
+    m = _Marks(app)
+    m.walk("9000", "8100", "7200", "6400", "6000.00")  # no day falls 12% or more
+    assert app.j.safety_level() is SafetyLevel.NORMAL  # exactly A$6,000: not below
+    batches_before = app.j.batches_of(book)
+    last = m.report("5990.00")
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
+    page = _high(tr)[-1]
+    assert "L11 stage 2" in page and "sells continue" in page
+    assert f"resume automatically at the {M2} decision" in page
     assert app.j.positions(book) == held and app.j.batches_of(book) == batches_before
-    report("5900")  # still below: latched, no second page
-    last = report("6500")  # recovery does not re-arm by itself
-    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 1
-    # under the halt a registered sell is sent and a buy is not
-    x = next(days)
+    m.report("5900")
+    m.report("6500")  # recovery alone does not resume before the decision
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
+    n_high = len(_high(tr))
+    # under the pause a sell is sent and a buy is not
+    x = DAYS[DAYS.index(last) + 3]
+    px = m.px
     sell_e = sorted(held)[0]
     buy_e = next(e for e in sorted(px) if e not in held and px[e] > 1)
-    ref_s, ref_b = px[sell_e], px[buy_e]
-    from trader.orders import OrderIntent, OrderType, round_to_step
 
     def intent(e: str, side: Side, qty: int, ref: Decimal, seq: int) -> OrderIntent:
         band = Decimal("1.03") if side is Side.BUY else Decimal("0.97")
@@ -411,31 +502,126 @@ def test_BW_RSK_29_owner_loss_rule_nav_below_6000_pauses_buys_keeps_holdings_unt
         )  # fmt: skip
 
     its = (
-        intent(sell_e, Side.SELL, held[sell_e], ref_s, 1),
-        intent(buy_e, Side.BUY, int(Decimal(520) / ref_b) + 1, ref_b, 2),
+        intent(sell_e, Side.SELL, held[sell_e], px[sell_e], 1),
+        intent(buy_e, Side.BUY, int(Decimal(520) / px[buy_e]) + 1, px[buy_e], 2),
     )
     batch = OrderBatch(f"{book}-{last}-X", book, last, its, (), "d" * 64)
-    ctx = app._ctx(book, app.broker, x, last, at(last, "22:20"), False)
-    app.ex.plan(batch, "auto", x, ctx)
+    app.ex.plan(batch, "auto", x, app._ctx(book, app.broker, x, last, at(last, "22:20"), False))
     gw.placed.clear()
     app.job_submit(x, at(x, "15:45"))
     assert {o.orderRef for _, o in gw.placed} == {its[0].client_order_id}
     st = {it.client_order_id: s for it, s in app.j.intents_of(batch.batch_id)}
     assert st[its[1].client_order_id] == Status.RISK_REJECTED
-
-    def resume(d: date) -> None:
-        t = at(d, "16:00")
-        app.transport_inject(Incoming(CHAT, f"/resume {totp(SEED, t)}", t))
-        app.job_tick(d, t)
-
-    resume(x)  # only the owner's command re-enables buying
+    # the month-end decision: the staged test passes -> buys resume with this decision
+    app.job_decide(M2, at(M2, "22:20"))
     assert app.j.safety_level() is SafetyLevel.NORMAL
-    report("6400")
-    d = report("5950")  # a new breach latches again
-    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and high() == 2
-    resume(d)  # the owner resumes while still below the floor: honoured
-    report("5800")
-    assert app.j.safety_level() is SafetyLevel.NORMAL and high() == 2
+    assert any(t.startswith(f"L11 {M2}: staged test passed") for _, t in tr.outbox)
+    assert app.j.batch(f"{book}-{M2}-R") is not None and len(_high(tr)) == n_high
+    k = DAYS.index(M2)
+    m.report("5900", DAYS[k + 1])  # it had recovered to A$6,500: a new breach, a new episode
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS and len(_high(tr)) == n_high + 1
+    m.report("5800", DAYS[k + 2])  # the same breach: no second page
+    assert len(_high(tr)) == n_high + 1
+
+
+@pytest.mark.parametrize(
+    ("pct", "l12", "owner", "integrity", "why"),
+    [
+        (Decimal("9.9"), None, None, False, "(b) twin at the 9.9 percentile"),
+        (None, None, None, False, "(b) twin percentile unknown"),
+        (Decimal(50), "signal spread t <= -1.0", None, False, "(c) L12 stop rule met"),
+        (Decimal(50), None, "/stop", False, "(d) the owner said stop"),
+        (Decimal(50), None, None, True, "(a) integrity check failed"),
+    ],
+)
+def test_L11_stage2_stays_paused_when_the_staged_test_fails(
+    pct: Decimal | None, l12: str | None, owner: str | None, integrity: bool, why: str
+) -> None:
+    """Stage 2 resumes automatically UNLESS (a) the integrity check fails, (b) the twin is
+    below the 10th percentile of its 100 random twins (or they are not running: fails
+    safe), (c) an L12 stop rule is met, (d) the owner says stop."""
+    app, _, tr = _loss_app(pct, l12)
+    m = _Marks(app)
+    d = m.walk("9000", "8100", "7200", "6400", "5900")
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
+    if owner:
+        _owner(app, d, owner)
+        assert app.j.safety_level() is SafetyLevel.PAUSED
+    if integrity:
+        from trader.journal import FillRecord
+        from trader.orders import Side
+
+        app.j.add_fill(FillRecord("x-9", None, app.s.sim_book, "ZZZ", Side.BUY, 10,
+                                  Decimal(1), Decimal(0), at(d, "16:00")))  # fmt: skip
+    app.job_decide(M2, at(M2, "22:20"))
+    assert app.j.safety_level() is not SafetyLevel.NORMAL
+    page = _high(tr)[-1]
+    assert f"L11 {M2}: buys stay paused" in page and why in page
+    # the owner can still resume by hand
+    _owner(app, DAYS[DAYS.index(M2) + 1], "/resume <code>", "10:30")
+    assert app.j.safety_level() is SafetyLevel.NORMAL
+
+
+def test_L11_stage3_owner_confirms_in_writing_then_buys_resume() -> None:
+    """Stage 3: NAV < A$5,000 -> the same test, and the owner must confirm in writing
+    (/continue <code>, 2FA) to continue."""
+    app, _, tr = _loss_app()
+    m = _Marks(app)
+    d = m.walk("9000", "8100", "7200", "6400", "5700", "5050", "4990")
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
+    assert "L11 stage 3" in _high(tr)[-1] and f"/continue <code> before the {M2}" in _high(tr)[-1]
+    _owner(app, d, "/continue 000000")
+    assert "refused" in tr.outbox[-1][1]
+    _owner(app, d, "/continue <code>")
+    assert "confirmation recorded" in tr.outbox[-1][1]
+    app.job_decide(M2, at(M2, "22:20"))
+    assert app.j.safety_level() is SafetyLevel.NORMAL
+    assert app.j.batch(f"{app.s.book}-{M2}-W") is None
+
+
+def test_L11_stage3_without_confirmation_sells_the_book_over_two_decisions() -> None:
+    """Stage 3 without the owner's written confirmation by the next decision: the book is
+    sold over that decision (half of each holding, rounded up) and the next (the rest).
+    Buys stay paused; each sell still goes through approval (L8) and the breaker."""
+    app, gw, tr = _loss_app()
+    book = app.s.book
+    marks = app.marks
+    _Marks(app).walk("9000", "8100", "7200", "6400", "5700", "5050", "4900")
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
+    app.marks = marks
+    held = app.j.positions(book)
+    dry_run(app, [M2], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    w1 = app.j.intents_of(f"{book}-{M2}-W")
+    assert {it.entity: it.qty for it, _ in w1} == {e: (q + 1) // 2 for e, q in held.items()}
+    assert all(it.side.value == "SELL" and "L11_WIND_DOWN" in it.flags for it, _ in w1)
+    assert app.j.batch(f"{book}-{M2}-R") is None  # the wind-down replaces the decision
+    assert any("L11 wind-down" in t for t in _high(tr))
+    # the sells go the next session (approved by the owner), the rest at the next month-end
+    i = PANEL.dates.index(M2) + 1
+    m3 = next(d for d in PANEL.dates[i:] if app.is_month_end(d))
+    rest = list(PANEL.dates[i : PANEL.dates.index(m3) + 2])
+    summ = dry_run(app, rest, {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    w1_st = [st for _, st in app.j.intents_of(f"{book}-{M2}-W")]
+    assert w1_st.count(Status.FILLED) >= len(w1) // 2  # an unfilled sell is carried (L7)
+    w2 = app.j.intents_of(f"{book}-{m3}-W")
+    assert w2 and {it.entity for it, _ in w2} <= set(held)
+    assert sum(summ.positions.values()) < sum(held.values()) // 4
+    assert summ.pages == [] or all("unfilled" in p or "L11" in p for p in summ.pages)
+    assert app.j.safety_level() is SafetyLevel.HALTED_BUYS  # buying does not restart
+    assert app.j.batch(f"{book}-{m3}-R") is None
+    assert app._l11_episode() is None  # closed after the second step
+
+
+def test_L11_owner_resume_stops_a_wind_down() -> None:
+    app, gw, _ = _loss_app()
+    marks = app.marks
+    _Marks(app).walk("9000", "8100", "7200", "6400", "5700", "5050", "4900")
+    app.marks = marks
+    dry_run(app, [M2], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    assert app.j.batch(f"{app.s.book}-{M2}-W") is not None
+    nxt = DAYS[DAYS.index(M2) + 1]
+    _owner(app, nxt, "/resume <code>", "10:30")
+    assert app._l11_episode() is None and app.j.safety_level() is SafetyLevel.NORMAL
 
 
 # ---------------------------------------------------------------- scheduler (piece 1c)

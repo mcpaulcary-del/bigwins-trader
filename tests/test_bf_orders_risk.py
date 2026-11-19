@@ -369,8 +369,9 @@ def test_BW_SYS_04_property_no_intent_set_passes_with_a_limit_broken() -> None:
         ("9000", "10000", "9100", SafetyLevel.NORMAL),
         ("6900", "10000", "7000", SafetyLevel.NORMAL),  # review page only
         ("6000", "10000", "6100", SafetyLevel.NORMAL),  # exactly A$6,000: review only
-        ("5999.99", "10000", "6100", SafetyLevel.HALTED_BUYS),  # owner loss rule: < A$6,000
-        ("5000", "10000", "5100", SafetyLevel.HALTED_LINE),
+        ("5999.99", "10000", "6100", SafetyLevel.HALTED_BUYS),  # L11 stage 2: < A$6,000
+        ("5000", "10000", "5100", SafetyLevel.HALTED_BUYS),  # stage 2 (5,000 is not below)
+        ("4999.99", "10000", "5100", SafetyLevel.HALTED_BUYS),  # stage 3: sells go on
         ("8700", "10000", "9900", SafetyLevel.HALTED_BUYS),  # one-day fall of 12%
         ("9000", "18000", "9100", SafetyLevel.HALTED_BUYS),  # drawdown 50%
     ],

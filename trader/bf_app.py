@@ -64,6 +64,14 @@ from trader.constants import ASX_TZ
 from trader.execution import Executor
 from trader.journal import TERMINAL, Journal, Status
 from trader.lines.emg2 import BookState, BuyPlan, Emg2_20Decision, Emg2_20Params, decide_emg2_20
+from trader.loss_rule import (
+    ModelledFill,
+    Outcome,
+    StagedTest,
+    at_decision,
+    integrity_breaks,
+    wind_down_qty,
+)
 from trader.orders import (
     OrderBatch,
     OrderIntent,
@@ -201,10 +209,16 @@ class BfApp:
         panels: PanelProvider,
         closes: CloseProvider,
         marks: CloseProvider | None = None,
+        twin_rank: Callable[[date], Decimal | None] | None = None,
+        l12_stop: Callable[[date], str | None] | None = None,
     ) -> None:
         """``closes(d)``: the closes of session d (empty while the day's data is not in);
         ``marks(d)``: the last known close of every name at d (valuation; defaults to
-        the panel's last valid close of each name)."""
+        the panel's last valid close of each name). L11 staged test inputs:
+        ``twin_rank(d)``: the twin's percentile among its 100 random twins since the
+        start (None, the default, while the random twins are not running: the test
+        then fails safe and buys stay paused); ``l12_stop(d)``: the L12 stop rule met
+        at d, if any (default: none)."""
         self.s = s
         self.j = journal
         self.broker = broker
@@ -214,6 +228,8 @@ class BfApp:
         self.panels = panels
         self.closes = closes
         self.marks = marks or marks_from_panels(panels)
+        self.twin_rank = twin_rank or (lambda d: None)
+        self.l12_stop = l12_stop or (lambda d: None)
         self.now = datetime.now(UTC)
         self.ex = Executor(
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
@@ -363,6 +379,11 @@ class BfApp:
                     return False  # the day's data may still arrive: retried
                 self._data_block(book, key, day, now, block or "no decision")
                 continue
+            if book == self.s.book:  # L11 staged test; a stage-3 wind-down replaces the decision
+                wind = self._l11_decide(day, now, x, panel.as_of, tv20, key, dec.digest)
+                if wind is not None:
+                    acted[book] = wind
+                    continue
             canary = k == "S" and book == self.s.book
             batch = build_orders(
                 dec,
@@ -380,23 +401,28 @@ class BfApp:
                 self.j.mark_job(f"start:{book}:{day}", _decision_record(dec, tv20), now)
             self.j.mark_job(key, {"digest": dec.digest, "batch": batch.batch_id}, now)
             if book == self.s.book:
-                head = f"Decision {day} ({'start, canary first' if canary else 'regular'}); "
-                head += f"list {dec.list_digest[:12]}; {len(batch.intents)} order(s)"
-                if self.s.lic_note:
-                    head += "\n" + self.s.lic_note
-                lvl = self.j.safety_level()
-                if lvl in BLOCKS_BUYS:
-                    head += f"\nSafety {lvl.value}: the buys below are not sent unless you " + (
-                        "/resume <code> before they go; sells proceed"
-                        if lvl not in BLOCKS_ALL
-                        else "re-arm; sells wait for the re-arm too"
-                    )
-                self.say(head + "\n" + render_batch(self.j, batch.batch_id, "PAPER"))
-                for p in ex.plan_pages:  # BF-D3: a sell above A$800 goes through, paged
-                    self.say("PAGE " + p)
+                self._announce(day, canary, dec.list_digest, batch.batch_id, ex.plan_pages)
         if acted:
             self._note_decision_difference(day, now, acted)
         return True
+
+    def _announce(
+        self, day: date, canary: bool, list_digest: str, batch_id: str, pages: Sequence[str]
+    ) -> None:
+        head = f"Decision {day} ({'start, canary first' if canary else 'regular'}); "
+        head += f"list {list_digest[:12]}; {len(self.j.intents_of(batch_id))} order(s)"
+        if self.s.lic_note:
+            head += "\n" + self.s.lic_note
+        lvl = self.j.safety_level()
+        if lvl in BLOCKS_BUYS:
+            head += f"\nSafety {lvl.value}: the buys below are not sent unless you " + (
+                "/resume <code> before they go; sells proceed"
+                if lvl not in BLOCKS_ALL
+                else "re-arm; sells wait for the re-arm too"
+            )
+        self.say(head + "\n" + render_batch(self.j, batch_id, "PAPER"))
+        for p in pages:  # BF-D3: a sell above A$800 goes through, paged
+            self.say("PAGE " + p)
 
     def _data_block(self, book: str, key: str, day: date, now: datetime, why: str) -> None:
         self.j.mark_job(key, {"data_block": why}, now)
@@ -611,7 +637,7 @@ class BfApp:
             it.entity
             for book in (self.s.book, self.s.sim_book)
             for it, st in self._all_intents(book)
-            if st != Status.FILLED
+            if st != Status.FILLED or "L11_WIND_DOWN" in it.flags  # L11: only the live book
         }
         for _, rec in self.j.job_records("l13:"):
             out.update(rec.get("diff", []))
@@ -626,6 +652,7 @@ class BfApp:
         pos = self.j.positions(self.s.book)
         cash = self.j.cash(self.s.book)
         value = cash + sum((px.get(e, Decimal(0)) * q for e, q in pos.items()), Decimal(0))
+        value = value.quantize(Decimal("0.01"))
         prior = [
             r
             for k, r in self.j.job_records(f"value:{self.s.book}:")
@@ -634,10 +661,17 @@ class BfApp:
         peak = max([self.s.capital_aud, *(Decimal(r["peak"]) for r in prior[-1:])])
         prev = Decimal(prior[-1]["value"]) if prior else None
         reading = evaluate_book(value, peak, prev, self.s.capital_aud, self.s.limits)
-        self._latch_book_halts(reading, set(prior[-1].get("halts", [])) if prior else set(), now)
+        before = prior[-1] if prior else {}
+        self._l11_stage_change(reading, int(before.get("stage", 0)), value, day, now)
+        self._latch_book_halts(reading, set(before.get("halts", [])), day, now)
         self.j.mark_job(
             f"value:{self.s.book}:{day}",
-            {"value": str(value), "peak": str(max(peak, value)), "halts": list(reading.halts)},
+            {
+                "value": str(value),
+                "peak": str(max(peak, value)),
+                "halts": list(reading.halts),
+                "stage": reading.stage,
+            },
             now,
         )
         d0 = at(day, "00:00").astimezone(UTC)
@@ -675,24 +709,206 @@ class BfApp:
         )
         self.say(daily_report(x))
 
-    def _latch_book_halts(self, reading: BookReading, before: set[str], now: datetime) -> None:
-        """L11 / owner loss rule: a halt rule latches once, on the day it is first breached
-        (it stays latched; nothing here lowers the level). The latch pages the owner at
-        high priority. A breach that continues after the owner's ``/resume`` is not
-        re-latched: resuming is the owner's decision. A rule that clears and is breached
-        again latches again. A halt never sells: holdings are kept and the registered
-        sells go on under ``HALTED_BUYS``."""
+    def _latch_book_halts(
+        self, reading: BookReading, before: set[str], day: date, now: datetime
+    ) -> None:
+        """Book monitors latch once, on the day a halt rule is first breached (nothing
+        here lowers the level); the latch pages the owner at high priority. A breach that
+        continues after a resume is not re-latched; a rule that clears and is breached
+        again latches again. A halt never sells: holdings are kept and sells go on under
+        ``HALTED_BUYS``. Inside an L11 episode (stage 2/3) buying comes back at the next
+        month-end decision by the staged test (``_l11_at_decision``), otherwise only by
+        the owner's ``/resume <code>``."""
         new = [h for h in reading.halts if h not in before]
         if not new:
             return
         lvl = worst(self.j.safety_level(), reading.level)
         self.j.set_safety(lvl, "book monitor: " + ",".join(new), "risk", now)
         why = "; ".join(a.removeprefix("PAGE: ") for a in reading.alerts if a.startswith("PAGE"))
+        nxt = self._next_decision(day)
+        if reading.stage >= 3:
+            how = (
+                f"Reply /continue <code> before the {nxt} decision to keep the book; "
+                "without it the book is sold over that decision and the next (L11 stage 3)."
+            )
+        elif reading.stage == 2:
+            how = (
+                f"Buys resume automatically at the {nxt} decision unless (a) the integrity "
+                "check fails, (b) the twin is below the 10th percentile of its random "
+                "twins, (c) an L12 stop rule is met, or (d) you /stop. /resume <code> "
+                "resumes now."
+            )
+        else:
+            how = "Buying resumes only on your /resume <code>."
         self.say(
             f"PAGE HIGH PRIORITY {self.s.book}: {why}. Safety now {lvl.value}: no new buys are "
-            "sent; holdings are kept and the registered EMG2 sells continue"
-            + (" (HALTED_LINE: sells stop too)" if lvl is SafetyLevel.HALTED_LINE else "")
-            + ". Buying resumes only on your /resume <code>."
+            "sent; holdings are kept and sells continue. " + how
+        )
+
+    # ------------------------------------------------------------ L11 staged loss rule
+    def _next_decision(self, day: date) -> date | None:
+        later = [d for d in self.sessions if d > day and self.decision_kind(d, self.s.book)]
+        return later[0] if later else None
+
+    def _integrity_breaks(self) -> tuple[str, ...]:
+        """L11 stage 1 integrity check: live holdings equal the simulated twin (orders
+        that did not fill and recorded decision differences explain a difference); each
+        fill inside its limit and charged the modelled commission."""
+        fills = []
+        for f in self.j.fills(self.s.book):
+            if f.client_order_id is None:
+                continue
+            it, _ = self.j.intent(f.client_order_id)
+            mf = ModelledFill(
+                f.client_order_id, f.entity, f.side, f.qty, f.price, f.commission, it.limit_price
+            )
+            fills.append(mf)
+        return integrity_breaks(
+            self.j.positions(self.s.sim_book),
+            self.j.positions(self.s.book),
+            self._explained(),
+            fills,
+            self.s.order_params.commission,
+        )
+
+    def _l11_stage_change(
+        self, reading: BookReading, before: int, value: Decimal, day: date, now: datetime
+    ) -> None:
+        """A deeper L11 stage than the day before: run the integrity check (a failure
+        latches ``HALTED_INTEGRITY``); stage 1 pages here, stages 2-3 open an episode
+        (paged by the halt latch)."""
+        if reading.stage <= before:
+            return
+        breaks = self._integrity_breaks()
+        if reading.stage >= 2:
+            self.j.mark_job(f"l11:breach:{day}", {"stage": reading.stage, "value": str(value)}, now)
+        if breaks:
+            lvl = worst(self.j.safety_level(), SafetyLevel.HALTED_INTEGRITY)
+            self.j.set_safety(lvl, "L11 integrity: " + "; ".join(breaks)[:170], "l11", now)
+        verdict = "FAILED: " + "; ".join(breaks) if breaks else "passed"
+        if reading.stage == 1:
+            self.say(
+                f"PAGE HIGH PRIORITY {self.s.book}: value A${value} < "
+                f"A${self.s.limits.value_review_aud} (L11 stage 1). Integrity check {verdict}."
+            )
+        elif breaks:
+            self.say(f"PAGE HIGH PRIORITY L11 integrity check {verdict}")
+
+    def _l11_episode(self) -> dict[str, Any] | None:
+        """The open stage-2/3 episode, from the journal: since when, deepest stage,
+        written confirmation, owner stop, wind-down step done."""
+        ep: dict[str, Any] | None = None
+        for key, rec in self.j.job_records("l11:"):
+            kind = key.split(":")[1]
+            if kind == "breach":
+                if ep is None:
+                    ep = {"since": key.rsplit(":", 1)[1], "stage": 0, "confirmed": False,
+                          "stop": False, "wind": 0}  # fmt: skip
+                ep["stage"] = max(ep["stage"], int(rec["stage"]))
+            elif ep is None:
+                continue
+            elif kind == "end":
+                ep = None
+            elif kind == "confirm":
+                ep["confirmed"] = True
+            elif kind == "stop":
+                ep["stop"] = True
+            elif kind == "wind":
+                ep["wind"] = int(rec["step"])
+        return ep
+
+    def _l11_decide(
+        self,
+        day: date,
+        now: datetime,
+        x: date,
+        as_of: date,
+        tv20: Mapping[str, Decimal],
+        key: str,
+        digest: str,
+    ) -> set[tuple[str, str]] | None:
+        wind = self._l11_at_decision(day, now, tv20)
+        if wind is None:
+            return None
+        ctx = self._ctx(self.s.book, self.broker, x, day, now, False, data_as_of=as_of)
+        self.ex.plan(wind, self.s.approval_mode, x, ctx)
+        self.j.mark_job(key, {"digest": digest, "batch": wind.batch_id}, now)
+        self.say(
+            f"PAGE HIGH PRIORITY L11 wind-down {day}: {len(wind.intents)} sell(s)\n"
+            + render_batch(self.j, wind.batch_id, "PAPER")
+        )
+        return {(i.entity, i.side.value) for i in wind.intents}
+
+    def _l11_at_decision(
+        self, day: date, now: datetime, tv20: Mapping[str, Decimal]
+    ) -> OrderBatch | None:
+        """The staged test at the broker book's decision. Returns a wind-down batch
+        that replaces the decision, or None (the decision goes ahead; its buys are sent
+        only if buying resumed)."""
+        ep = self._l11_episode()
+        if ep is None:
+            return None
+        lvl = self.j.safety_level()
+        if ep["wind"] >= 1:  # step 2: the rest, then the episode closes
+            self.j.mark_job(f"l11:wind:{day}", {"step": 2}, now)
+            self.j.mark_job(f"l11:end:{day}", {"why": "wind-down complete"}, now)
+            return self._wind_down(day, 2, tv20)
+        test = StagedTest(
+            integrity=self._integrity_breaks(),
+            twin_percentile=self.twin_rank(day),
+            l12_stop=self.l12_stop(day),
+            owner_stop=bool(ep["stop"]) or lvl in (SafetyLevel.PAUSED, SafetyLevel.KILLED),
+        )
+        outcome, why = at_decision(int(ep["stage"]), test, bool(ep["confirmed"]))
+        self.j.mark_job(f"l11:test:{day}", {"outcome": outcome.value, "why": list(why)}, now)
+        if outcome is Outcome.RESUME:
+            self.j.mark_job(f"l11:end:{day}", {"why": "staged test passed"}, now)
+            if lvl is SafetyLevel.HALTED_BUYS:
+                self.j.set_safety(SafetyLevel.NORMAL, "L11 staged test passed", "l11", now)
+            self.say(
+                f"L11 {day}: staged test passed (integrity, twin percentile "
+                f"{test.twin_percentile}, no L12 stop, no owner stop): buys resume with this "
+                f"decision. Safety {self.j.safety_level().value}."
+            )
+            return None
+        if outcome is Outcome.STAY_PAUSED:
+            self.say(
+                f"PAGE HIGH PRIORITY L11 {day}: buys stay paused: "
+                + "; ".join(why)
+                + ". Re-tested at the next decision; /resume <code> resumes now."
+            )
+            return None
+        self.j.mark_job(f"l11:wind:{day}", {"step": 1}, now)
+        return self._wind_down(day, 1, tv20)
+
+    def _wind_down(self, day: date, step: int, tv20: Mapping[str, Decimal]) -> OrderBatch:
+        """L11 stage 3 without confirmation: sell half of each holding (rounded up) at
+        this decision, the rest at the next (less sells still open, e.g. a step-1 sell
+        carried under L7). Sells at the L7 band; each needs approval (L8)."""
+        px = dict(self.marks(day))
+        band = self.s.order_params.limit_band
+        bid = batch_id_for(self.s.book, day, "W")
+        pending: dict[str, int] = {}  # sells still open (a carried step-1 sell, an EMG2 sell)
+        for it, st in self._all_intents(self.s.book):
+            if it.side is Side.SELL and st not in TERMINAL:
+                done = sum(f.qty for f in self.j.fills(coid=it.client_order_id))
+                pending[it.entity] = pending.get(it.entity, 0) + it.qty - done
+        out: list[OrderIntent] = []
+        for e, q in sorted(self.j.positions(self.s.book).items()):
+            qty = wind_down_qty(q - pending.get(e, 0), step)
+            ref = px.get(e)
+            if qty <= 0 or ref is None or ref <= 0:
+                continue
+            it = OrderIntent(
+                client_order_id(self.s.book, day, e, Side.SELL), bid, len(out) + 1,
+                self.s.line, self.s.book, day, e, Side.SELL, qty,
+                self.s.order_params.order_type, ref,
+                round_to_step(ref * (1 - band), Side.SELL), f"L11_WIND_DOWN_{step}",
+                tv_med20=tv20.get(e), prev_close=ref, flags=("L11_WIND_DOWN",),
+            )  # fmt: skip
+            out.append(it)
+        return OrderBatch(
+            bid, self.s.book, day, tuple(out), (), sha256_json([i.client_order_id for i in out])
         )
 
     # ------------------------------------------------------------ one session
