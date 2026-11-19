@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
@@ -263,15 +263,21 @@ class Emg2_20Decision:  # noqa: N801
     buys: tuple[BuyPlan, ...]
     skipped: tuple[Skip, ...]
     kept: tuple[str, ...]
+    # L15 band-trend switch (BF-D28): "EMG2" or "FUND"; None = the switch is not in use
+    # (the payload, and so the digest, of a decision without the switch is unchanged)
+    state: str | None = None
 
     def payload(self) -> dict[str, Any]:
-        return {
+        out = {
             "book": self.book, "as_of": self.as_of, "list_digest": self.list_digest,
             "data_block": self.data_block, "account_value": self.account_value,
             "slots": self.slots, "parcel": self.parcel,
             "sells": [s.__dict__ for s in self.sells], "buys": [b.__dict__ for b in self.buys],
             "skipped": [s.__dict__ for s in self.skipped], "kept": list(self.kept),
         }  # fmt: skip
+        if self.state is not None:
+            out["state"] = self.state
+        return out
 
     @property
     def digest(self) -> str:
@@ -425,4 +431,88 @@ def decide_emg2_20(
     return Emg2_20Decision(
         book.book, lst.as_of, lst.digest, None, account_value, n, parcel,
         tuple(sells), tuple(buys), tuple(skipped), tuple(kept),
+    )  # fmt: skip
+
+
+# ---------------------------------------------------------------- L15 band-trend switch (BF-D28)
+
+BT_FUND_BUY = "BT_FUND_BUY"  # BT3: the cash goes into the fund
+BT_FUND_SELL = "BT_FUND_SELL"  # BT4: the fund is sold, the registered rules run
+BT_OFF_SELL = "BT_OFF_SELL"  # BT3: every share is sold
+
+
+def decide_emg2_18_bt(
+    panel: PricePanel,
+    book: BookState,
+    params: Emg2_20Params | None = None,
+    list_params: Emg2Params | None = None,
+    *,
+    trend_on: bool,
+    fund: str,
+    top_up_fraction: float = 0.10,
+    lst: Emg2List | None = None,
+    target_order: TargetOrder | None = None,
+) -> Emg2_20Decision:
+    """One EMG2-18 decision under rule L15 (``AMENDMENT_live_EMG2_18_BT.md``, BT3/BT4).
+
+    ON (``trend_on``, "state: EMG2"): ``decide_emg2_20`` unchanged; the fund is not on T,
+    so rule L4 sells it (reason ``BT_FUND_SELL``). OFF ("state: FUND"): every share
+    holding is sold (``BT_OFF_SELL``), no share is bought, and the cash after the sales
+    less the reserve, within the capital cap (L1), is one fund buy (``BT_FUND_BUY``) if
+    it is at least A$500; when the fund is already held, only if it is also at least
+    ``top_up_fraction`` of the account. Rule 14 data block: no decision, as always."""
+    p = params or Emg2_20Params()
+    lst = lst or emg2_list(panel, list_params)
+    if trend_on:
+        dec = decide_emg2_20(panel, book, p, list_params, lst=lst, target_order=target_order)
+        relabel = tuple(
+            replace(x, reason=BT_FUND_SELL) if x.entity == fund else x for x in dec.sells
+        )
+        return replace(dec, sells=relabel, state="EMG2")
+    if any(q <= 0 for q in book.holdings.values()):
+        raise ValueError("holdings must be positive whole shares (long only)")
+    ctx = _Ctx(
+        panel=panel, p=p, col={e: j for j, e in enumerate(panel.entities)},
+        last_any=recent_close(panel, p.payout_after_sessions - 1), peg=bid_peg(panel),
+        lottery={},
+    )  # fmt: skip
+    held_value = sum(((ctx.px(e) or Decimal(0)) * q for e, q in book.holdings.items()), Decimal(0))
+    account_value = (book.cash + held_value).quantize(CENT)
+    sizing_value = min(account_value, p.capital_cap_aud)
+    n = max(0, min(p.slots, int(sizing_value // p.slot_unit_aud)))
+    parcel = (sizing_value / n).quantize(CENT, ROUND_DOWN) if n else Decimal(0)
+    if lst.data_block:  # rule 14: no decision, holdings kept
+        return Emg2_20Decision(
+            book.book, lst.as_of, lst.digest, lst.data_block, account_value, n, parcel,
+            (), (), (), tuple(sorted(book.holdings)), "FUND",
+        )  # fmt: skip
+    sells: list[SellPlan] = []
+    kept: list[str] = []
+    proceeds = Decimal(0)
+    for e in sorted(book.holdings):
+        price = ctx.px(e)
+        if e == fund or price is None:  # the fund stays; no close for 20 sessions: payout path
+            kept.append(e)
+        else:
+            sells.append(SellPlan(e, book.holdings[e], price, BT_OFF_SELL))
+            proceeds += _sale_estimate(book.holdings[e], price, p)
+    kept_value = sum(((ctx.px(e) or Decimal(0)) * book.holdings[e] for e in kept), Decimal(0))
+    available = min(book.cash + proceeds - p.cash_reserve_aud, p.capital_cap_aud - kept_value)
+    held = book.holdings.get(fund, 0) > 0
+    need = p.min_parcel_aud
+    if held:
+        need = max(need, (account_value * Decimal(repr(top_up_fraction))).quantize(CENT))
+    j = ctx.col.get(fund)
+    buys: list[BuyPlan] = []
+    skipped: list[Skip] = []
+    if j is None or math.isnan(panel.close[-1, j]):
+        skipped.append(Skip(fund, "NO_CLOSE"))
+    elif available >= need:
+        value = available.quantize(CENT, ROUND_DOWN)
+        buys.append(BuyPlan(fund, 0, value, _dec_price(panel.close[-1, j]), BT_FUND_BUY))
+    elif not held:
+        skipped.append(Skip(fund, "MIN_PARCEL"))  # its cash waits for the next decision
+    return Emg2_20Decision(
+        book.book, lst.as_of, lst.digest, None, account_value, n, parcel,
+        tuple(sells), tuple(buys), tuple(skipped), tuple(kept), "FUND",
     )  # fmt: skip

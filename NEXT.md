@@ -1,4 +1,4 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3, corporate actions, splits and the Flex pull)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3, corporate actions, splits, the Flex pull and the band-trend switch)
 
 Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
 c07197c and deleted locally; **its remote copy could not be deleted from this session**
@@ -137,6 +137,19 @@ go-live checklist, by a reviewed code change.
 - Gate after BF-D26/D27: ruff, format, mypy --strict, validate-config x2, pytest, BF
   coverage gate green; `docker compose config` passes.
 
+## Band-trend switch L15 (BF-D28, owner decision after report 96; AMENDMENT_live_EMG2_18_BT.md, ledger seq 71)
+
+- At each month-end (and the start) the equal-weight index of band C (ranks 301-600) is
+  compared with its 10-month average: below = **state: FUND** (sell the EMG2 shares, one
+  A200 order with the cash), at or above = **state: EMG2** (sell A200, buy the picks).
+  Broker book, twin and the 100 random twins switch together; every report and decision
+  message shows the state.
+- **On the record's data the state is FUND on 30 Oct and 18 Nov 2026**: the paper month
+  and very likely the live start begin in A200 (replay test, switch on). The older record
+  replays run with the switch off to keep testing the EMG2-18 path.
+- Config `band_trend` (on in `config/bfast.yaml`). The paper record runs the same rule as
+  `EMG2_18_SIM_BT` (+100 twins) in `paper_emg2bt.py` (ledger seq 70/72).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
@@ -159,6 +172,10 @@ go-live checklist, by a reviewed code change.
    report flag asks for them); owner confirms BF-D24 (sell demerged shares at the next
    month-end unless on T) and adds Cash Transactions (with exDate/payDate) and
    Corporate Actions to the paper Flex query.
+7. **BF-D28 (L15)**: confirm (a) the single A200 order is exempt from the A$800
+   per-buy limit (paged) - IBKR's precautionary order value must then be above A$10,000;
+   (b) a switch decision uses L10's start-day limits; (c) at a FUND start the canary is
+   the fund order alone.
 
 ## Next build steps, in order
 
@@ -196,7 +213,7 @@ go-live checklist, by a reviewed code change.
 | 4 | `/kill`, `/pause`, `/stop`, `/continue` drilled from the owner's phone; re-arm needs 2FA | Code + tests done; phone drill open |
 | 5 | Unapproved orders not sent; approval expiry | Code + tests done; paper log open |
 | 6 | Paper/live guard both ways; live id pinned; API user without funding rights | Paper side tested; **live side is intentionally absent** in this build |
-| 7 | IBKR precautions set (A$1,000 / A$12,000) and photographed | Owner |
+| 7 | IBKR precautions set and photographed; max order value above A$10,000 (largest sell, BF-D3, and the one A200 order of L15, BF-D28) | Owner |
 | 8 | A$10,000 deposited and settled | Owner |
 | 9 | Backups, restore, no inbound port (scan) | Open (compose has no published ports) |
 | 10 | Dead-man heartbeat 5 days | Open |
@@ -237,6 +254,6 @@ go-live checklist, by a reviewed code change.
 - **Telegram** bot token and the owner's chat id (secret file / config).
 - **Authenticator**: the TOTP seed added to the owner's authenticator app (secret file).
 
-Owner decisions still wanted: confirm the BF-D15 interpretations of the staged loss
-rule (open point 1), the HGO -> KAN code change (open point 4) and BF-D24 (sell
+Owner decisions still wanted: confirm the BF-D28 points (open point 7), the BF-D15
+interpretations of the staged loss rule (open point 1), the HGO -> KAN code change (open point 4) and BF-D24 (sell
 demerged shares at the next month-end unless on T; open point 6).

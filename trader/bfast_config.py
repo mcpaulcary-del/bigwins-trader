@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from trader.lines.band_trend import BandTrendParams
 from trader.lines.emg2 import Emg2_20Params
 from trader.orders import OrderParams, OrderType
 from trader.risk import RiskLimits
@@ -71,6 +72,19 @@ class Emg2_20Cfg(_M):  # noqa: N801
     min_parcel_aud: Decimal = Field(ge=Decimal(500))
     cash_reserve_aud: Decimal = Field(ge=0)
     skip_lottery: bool
+
+
+class BandTrendCfg(_M):
+    """L15 band-trend switch (``AMENDMENT_live_EMG2_18_BT.md``, owner decision; BF-D28).
+    The window (10 month-ends) is the registered rule and is pinned here."""
+
+    enabled: bool
+    fund: str = Field(pattern=r"^[A-Z0-9]{3,6}$")  # A200, the record's ASX 200 fund
+    months: int = Field(default=10, ge=10, le=10)
+    top_up_fraction: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
+    # one fund order (BF-D28): never above the capital cap; paged above the A$800 limit
+    fund_order_max_aud: Decimal = Field(default=Decimal(10000), ge=Decimal(500), le=Decimal(10000))
+    fund_half_spread: Decimal = Field(default=Decimal("0.0005"), ge=0, le=Decimal("0.02"))
 
 
 class StartNormal(_M):
@@ -170,6 +184,19 @@ class BfastConfig(_M):
     data: DataCfg
     telegram: TelegramCfg
     journal: JournalCfg
+    band_trend: BandTrendCfg | None = None  # None = the switch is off (L15 not in use)
+
+    def band_trend_params(self) -> BandTrendParams:
+        b = self.band_trend
+        if b is None:
+            return BandTrendParams(enabled=False)
+        return BandTrendParams(
+            enabled=b.enabled,
+            fund=b.fund,
+            months=b.months,
+            top_up_fraction=float(b.top_up_fraction),
+            fund_half_spread=float(b.fund_half_spread),
+        )
 
     def emg2_20_params(self) -> Emg2_20Params:
         c = self.live_emg2_20
@@ -213,6 +240,11 @@ class BfastConfig(_M):
             day_move_review=r.day_move.review,
             day_move_halt=r.day_move.halt,
             real_money_floor=r.real_money_floor,
+            fund_order_max_aud=(
+                self.band_trend.fund_order_max_aud
+                if self.band_trend is not None
+                else RiskLimits().fund_order_max_aud
+            ),
         )
 
 

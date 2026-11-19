@@ -70,6 +70,14 @@ data:
     max_days: 30                            # ibkr_flex_query_id only (never here)
     attempts: 2
     backoff_seconds: 5
+band_trend:                     # L15 (AMENDMENT_live_EMG2_18_BT.md; owner decision after report 96; BF-D28)
+  enabled: true                 # month-end: band 301-600 equal-weight index below its 10-month average
+  fund: A200                    #   -> "state: FUND": sell EMG2 shares, hold the ASX 200 fund (A200);
+  months: 10                    #   back at or above -> "state: EMG2": sell A200, buy the EMG2-18 picks
+  top_up_fraction: 0.10         # a later FUND decision tops the fund up only if cash >= 10% of the account
+  fund_order_max_aud: 10000     # one fund order (paged above the A$800 share-order limit); IBKR's
+                                # precautionary order value must be above it (as for sells, BF-D3)
+  fund_half_spread: 0.0005      # simulated twin / random twins: the fund's spread a side (report 96)
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0
 journal:

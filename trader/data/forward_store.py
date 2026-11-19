@@ -201,8 +201,11 @@ class ForwardStore:
         etp_codes: frozenset[str] = frozenset(),
         lic_codes: frozenset[str] = frozenset(),
         apply_duplicates: bool = True,
+        protect: frozenset[str] = frozenset(),
     ) -> PricePanel:
-        """The panel of every stored ``.AU`` symbol for the last ``history`` sessions to D."""
+        """The panel of every stored ``.AU`` symbol for the last ``history`` sessions to D.
+        ``protect``: codes never dropped as an A7 duplicate (BF-D28: the L15 fund, A200,
+        must stay priceable even if another index fund's returns match it)."""
         if as_of not in sessions:
             raise ValueError(f"{as_of} is not an ASX session")
         sess = [d for d in sessions if d <= as_of][-history:]
@@ -274,7 +277,11 @@ class ForwardStore:
         if apply_duplicates:
             dups = duplicates_a7b(close)
             dropped = frozenset(p.dup for p in dups)
-            dups += duplicates_a7c(close, tv, ret, exclude=dropped)
+            dups = [
+                p
+                for p in dups + duplicates_a7c(close, tv, ret, exclude=dropped)
+                if syms[p.dup][:-3] not in protect
+            ]
             gone = {p.dup for p in dups}
             keep = [j for j in range(n) if j not in gone]
             aliases = resolve_aliases([syms[j][:-3] for j in range(n)], dups)

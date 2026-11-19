@@ -30,7 +30,7 @@ from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from enum import StrEnum
 
 from trader.canonical import sha256_json
-from trader.lines.emg2 import Emg2_20Decision
+from trader.lines.emg2 import BT_FUND_BUY, Emg2_20Decision
 
 CENT = Decimal("0.01")
 
@@ -232,7 +232,10 @@ def build_orders(
                 b.reason,
                 tv_med20=tvm.get(b.entity),
                 prev_close=b.ref_close,
-                flags=("CANARY",) if canary else (),
+                flags=(
+                    *(("CANARY",) if canary else ()),
+                    *(("FUND",) if b.reason == BT_FUND_BUY else ()),  # L15 fund order (BF-D28)
+                ),
             )
         )
     numbered = tuple(replace(it, seq=k) for k, it in enumerate(intents, start=1))

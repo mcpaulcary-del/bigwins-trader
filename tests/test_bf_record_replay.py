@@ -59,8 +59,12 @@ def _days(sess: Sequence[date], a: date = START, b: date = END) -> list[date]:
 
 
 def _app(r: Rec, **kw: Any) -> tuple[BfApp, MockGateway, str]:
-    """The scenarios below run without the 100 random twins (the full replay has them)."""
+    """The scenarios below run without the 100 random twins (the full replay has them)
+    and, like it, with the L15 band-trend switch off: they drill the registered EMG2-18
+    path, which on this data the switch would replace by the fund (BF-D28; the switch on
+    the same data: ``test_BF_D28_record_replay_switch_on_holds_the_fund``)."""
     kw.setdefault("random_twins", 0)
+    kw.setdefault("band_trend", False)
     cfg, sess, prov = r
     return mock_app(cfg, prov, sess, START, **kw)
 
@@ -79,7 +83,7 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     cfg, sess, prov = rec
     days = _days(sess)
     summ, app, tr = forward_store_dry_run(
-        cfg, Path(str(FWD)), sess, days, {START: "S", END: "R"}, providers=prov
+        cfg, Path(str(FWD)), sess, days, {START: "S", END: "R"}, providers=prov, band_trend=False
     )
     assert summ.batches[f"{BOOK}-2026-10-30-C"] == {Status.FILLED: 1}
     assert app.j.batch(f"{BOOK}-2026-10-30-C")["execution_date"] == NOV2  # type: ignore[index]
@@ -302,3 +306,40 @@ def test_L11_record_drill_marks_scaled_below_6000_buys_stop_sells_go_resume(rec:
     app.transport_inject(Incoming(1, f"/resume {totp(seed, t)}", t))
     app.job_tick(nov19, t)
     assert app.j.safety_level() is SafetyLevel.NORMAL
+
+
+def test_BF_D28_record_replay_switch_on_holds_the_fund(rec: Rec) -> None:
+    """L15 on the record's data (config as shipped, switch on): on 30 Oct 2026 the band
+    index is below its 10-month average, so the start is "state: FUND": the canary is the
+    one A200 order (2 Nov, approved by the owner, paged above A$800), no share is bought,
+    the twin and the random twins hold A200 too; the forced 18 Nov decision is FUND again
+    (no top-up: cash under 10%); reconciled to the cent every session; every report says
+    "state: FUND"."""
+    cfg, sess, prov = rec
+    days = _days(sess)
+    assert cfg.band_trend is not None and cfg.band_trend.enabled
+    summ, app, tr = forward_store_dry_run(
+        cfg, Path(str(FWD)), sess, days, {START: "S", END: "R"}, providers=prov, random_twins=3
+    )
+    can = app.j.intents_of(f"{BOOK}-2026-10-30-C")
+    assert [(it.entity, it.flags) for it, _ in can] == [("A200", ("CANARY", "FUND"))]
+    assert summ.batches[f"{BOOK}-2026-10-30-C"] == {Status.FILLED: 1}
+    assert app.j.batch(f"{BOOK}-2026-10-30-C")["execution_date"] == NOV2  # type: ignore[index]
+    assert app.j.batch(f"{BOOK}-2026-10-30-S") is None
+    assert 9000 < can[0][0].value_at_limit <= 9950
+    for book in (BOOK, "EMG2_18_SIM", *(n for n, *_ in app.rnd)):
+        assert list(app.j.positions(book)) == ["A200"], book
+    assert not app.j.intents_of(f"{BOOK}-2026-11-18-R") and not app.j.intents_of(
+        f"{BOOK}-2026-11-18-B"
+    )
+    bt = dict(app.j.job_records("bt:"))
+    assert {k: r["state"] for k, r in bt.items()} == {
+        "bt:2026-10-30": "FUND",
+        "bt:2026-11-18": "FUND",
+    }
+    assert summ.safety == "NORMAL" and summ.recon == {str(d): True for d in days}
+    assert summ.positions == app.j.map_codes(app.broker.positions())
+    assert [p for p in summ.pages if "above the L10" not in p] == []
+    reports = [t for _, t in tr.outbox if t.startswith(PAPER_BANNER)]
+    assert len(reports) == len(days) and all("state: FUND" in t for t in reports)
+    assert any(t.startswith("Decision 2026-10-30") and "state: FUND" in t for _, t in tr.outbox)

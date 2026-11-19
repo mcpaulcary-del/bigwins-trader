@@ -14,6 +14,7 @@ import base64
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -50,8 +51,13 @@ def settings_from(
     start: date | None,
     lic_note: str = "",
     random_twins: int | None = None,
+    band_trend: bool | None = None,
 ) -> AppSettings:
-    """``random_twins`` overrides the configured count (tests and short replays only)."""
+    """``random_twins`` overrides the configured count and ``band_trend`` switches the L15
+    band-trend switch on or off (tests and short replays only; BF-D28)."""
+    bt = cfg.band_trend_params()
+    if band_trend is not None:
+        bt = replace(bt, enabled=band_trend)
     return AppSettings(
         book=cfg.book,
         sim_book=cfg.data.sim_book,
@@ -70,6 +76,7 @@ def settings_from(
         random_twins=cfg.data.random_twins if random_twins is None else random_twins,
         random_prefix=cfg.data.random_prefix,
         random_seed_base=cfg.data.random_seed_base,
+        band_trend=bt,
     )
 
 
@@ -92,6 +99,8 @@ def store_providers(
     except LicListError as e:  # BF-D21: the app starts, pages and refuses to decide
         note = f"LIC list REFUSED (BF-D21): {e}"
     fs = ForwardStore(store)
+    bt = cfg.band_trend_params()
+    protect = frozenset({bt.fund}) if bt.enabled else frozenset()  # BF-D28: A200 stays priceable
     cache: dict[date, tuple[float, PricePanel]] = {}
 
     def panel(d: date) -> PricePanel:
@@ -99,8 +108,9 @@ def store_providers(
         if hit is None or (refresh_seconds is not None and clock() - hit[0] > refresh_seconds):
             lic = lic_codes(cfg)  # BF-D21: re-checked on every build; raises, never falls back
             p = fs.build_panel(
-                d, sessions, history=cfg.data.history_sessions, etp_codes=etp, lic_codes=lic.codes
-            )
+                d, sessions, history=cfg.data.history_sessions, etp_codes=etp,
+                lic_codes=lic.codes, protect=protect,
+            )  # fmt: skip
             cache[d] = hit = (clock(), p)
         return hit[1]
 
@@ -138,6 +148,7 @@ def mock_app(
     seed: str | None = None,
     random_twins: int | None = None,
     ca_source: CaSource | None = None,
+    band_trend: bool | None = None,
 ) -> tuple[BfApp, MockGateway, str]:
     """A ``BfApp`` on the mock gateway with a simulated owner's authenticator. Passing
     the same ``gw``, ``journal_path`` and ``seed`` again is a restart: the new app has
@@ -153,7 +164,7 @@ def mock_app(
     )
     broker.connect()
     j = Journal.sqlite(journal_path)
-    s = settings_from(cfg, frozenset({chat}), start, note, random_twins)
+    s = settings_from(cfg, frozenset({chat}), start, note, random_twins, band_trend)
     sim = SimBroker(cash=s.capital_aud, half_spread=s.sim_half_spread)
     if fresh:
         for book in (s.book, s.sim_book):
@@ -176,12 +187,13 @@ def forward_store_dry_run(
     journal_path: str = ":memory:",
     providers: Providers | None = None,
     random_twins: int | None = None,
+    band_trend: bool | None = None,
 ) -> tuple[DryRunSummary, BfApp, FakeTransport]:
     providers = providers or store_providers(cfg, store, sessions)
     start = min((d for d, k in decisions.items() if k == "S"), default=None)
     app, gw, seed = mock_app(
         cfg, providers, sessions, start, journal_path, random_twins=random_twins,
-        ca_source=ca_source_from(cfg, store),
+        ca_source=ca_source_from(cfg, store), band_trend=band_trend,
     )  # fmt: skip
     tr = app.transport
     assert isinstance(tr, FakeTransport)

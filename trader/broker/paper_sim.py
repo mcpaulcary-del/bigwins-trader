@@ -41,6 +41,8 @@ class SimBroker:
     account_id: str = "DUSIM0001"
     cash: Decimal = Decimal(0)
     half_spread: Decimal = Decimal(0)
+    # per-symbol half-spread (BF-D28: the L15 fund's spread a side); others use half_spread
+    half_spread_by: dict[str, Decimal] = field(default_factory=dict)
     commission: CommissionModel = field(default_factory=CommissionModel)
     is_paper: bool = True
     holdings: dict[str, int] = field(default_factory=dict)
@@ -105,6 +107,7 @@ class SimBroker:
         half_spread: Decimal = Decimal(0),
         account_id: str = "DUSIM0001",
         exec_prefix: str = "SIM",
+        half_spread_by: dict[str, Decimal] | None = None,
     ) -> SimBroker:
         """Rebuild the simulated book after a restart: cash and positions from the journal,
         and the orders the journal says were sent but not yet settled."""
@@ -112,6 +115,7 @@ class SimBroker:
             account_id=account_id,
             cash=journal.cash(book),
             half_spread=half_spread,
+            half_spread_by=dict(half_spread_by or {}),
             holdings=dict(journal.positions(book)),
             exec_prefix=exec_prefix,
         )
@@ -148,7 +152,8 @@ class SimBroker:
             ):
                 p.status = "Cancelled"  # not filled in the auction
                 continue
-            px = c * (1 + self.half_spread) if r.side is Side.BUY else c * (1 - self.half_spread)
+            hs = self.half_spread_by.get(r.symbol, self.half_spread)
+            px = c * (1 + hs) if r.side is Side.BUY else c * (1 - hs)
             px = px.quantize(Q4, ROUND_HALF_EVEN)
             comm = self.commission(c * r.qty)
             if r.side is Side.BUY:

@@ -74,12 +74,17 @@ from trader.execution import Executor
 from trader.flex_pull import FLEX_PAGE_SLOT, FLEX_PULL_SLOTS, FlexPuller
 from trader.identity_change import code_changes
 from trader.journal import TERMINAL, Journal, Status
+from trader.lines.band_trend import BandTrend, BandTrendParams, band_trend
 from trader.lines.emg2 import (
+    BT_FUND_BUY,
+    BT_FUND_SELL,
     BookState,
     BuyPlan,
     Emg2_20Decision,
     Emg2_20Params,
+    Emg2List,
     TargetOrder,
+    decide_emg2_18_bt,
     decide_emg2_20,
     emg2_list,
 )
@@ -171,6 +176,8 @@ class AppSettings:
     random_twins: int = 0
     random_prefix: str = "EMG2_18_RND"
     random_seed_base: int = SEED_BASE
+    # L15 band-trend switch (AMENDMENT_live_EMG2_18_BT.md; BF-D28); disabled by default
+    band_trend: BandTrendParams = field(default_factory=BandTrendParams)
 
 
 def data_ready(panel: PricePanel, min_share: float = 0.5) -> bool:
@@ -267,6 +274,10 @@ class BfApp:
         self.j = journal
         self.broker = broker
         self.sim = sim
+        fund_hs: dict[str, Decimal] = {}
+        if s.band_trend.enabled:  # BF-D28: the twins' fund spread (report 96's fund model)
+            fund_hs[s.band_trend.fund] = Decimal(repr(s.band_trend.fund_half_spread))
+            sim.half_spread_by.update(fund_hs)
         self.transport = transport
         self.sessions = sorted(sessions)
         self.panels = panels
@@ -294,7 +305,9 @@ class BfApp:
         for name, seed in twin_books(s.random_prefix, s.random_twins, s.random_seed_base):
             if not journal.has_cash_moves(name):
                 journal.add_cash(name, "DEPOSIT", s.capital_aud, "random twin (simulated)")
-            rb = SimBroker.from_journal(journal, name, s.sim_half_spread, exec_prefix=f"RND{seed}")
+            rb = SimBroker.from_journal(
+                journal, name, s.sim_half_spread, exec_prefix=f"RND{seed}", half_spread_by=fund_hs
+            )
             ex = Executor(
                 journal, rb, name, limits=s.limits, approval_deadline="23:59", safety_scope=name
             )
@@ -480,6 +493,7 @@ class BfApp:
         x = self.next_session(day)
         acted: dict[str, set[tuple[str, str]]] = {}
         lst = emg2_list(panel) if data_ready(panel) else None  # one list for every book
+        trend = self._band_trend(panel, day, now, lst)  # L15: one state for every book
         seeds = {name: seed for name, seed, _, _ in self.rnd}
         for book, ex, broker, mode in self._books():
             k = kinds[book]
@@ -491,7 +505,7 @@ class BfApp:
             if block is None:
                 state = BookState(book, self.j.cash(book), self._book_positions(book, day))
                 order = self._random_order(seeds.get(book), day, now)
-                dec = decide_emg2_20(panel, state, self.s.params, lst=lst, target_order=order)
+                dec = self._decide_book(panel, state, lst, order, trend)
                 block = dec.data_block
             if block is not None or dec is None:
                 if now < at(day, RETRY_UNTIL):
@@ -504,15 +518,18 @@ class BfApp:
                     acted[book] = wind
                     continue
             canary = k == "S" and book == self.s.book
+            # BF-D28: a decision that switches the book into or out of the fund replaces
+            # the whole book, like the start: batch kind "B", L10's start-day limits
+            kind = "B" if k == "R" and self._switches(dec, state.holdings) else k
             batch = build_orders(
                 dec,
                 line=self.s.line,
                 params=self.s.order_params,
-                kind=k,
+                kind=kind,
                 canary=canary,
                 tv_med20=tv20,
             )
-            ctx = self._ctx(book, broker, x, day, now, k == "S", data_as_of=panel.as_of)
+            ctx = self._ctx(book, broker, x, day, now, kind in ("S", "B"), data_as_of=panel.as_of)
             ex.plan(batch, mode, x, ctx)
             self.j.mark_job(key, {"digest": dec.digest, "batch": batch.batch_id}, now)
             if book in seeds:
@@ -522,16 +539,78 @@ class BfApp:
                 acted[book] |= {(b.entity, Side.BUY.value) for b in dec.buys}
                 self.j.mark_job(f"start:{book}:{day}", _decision_record(dec, tv20), now)
             if book == self.s.book:
-                self._announce(day, canary, dec.list_digest, batch.batch_id, ex.plan_pages)
+                self._announce(
+                    day, canary, dec.list_digest, batch.batch_id, ex.plan_pages,
+                    None if trend is None else trend.describe(),
+                )  # fmt: skip
         if acted:
             self._note_decision_difference(day, now, acted)
         return True
 
+    def _band_trend(
+        self, panel: PricePanel, day: date, now: datetime, lst: Emg2List | None
+    ) -> BandTrend | None:
+        """L15 (BF-D28): the band-trend state of the decision, recorded once a day in the
+        journal (``bt:<day>``). None when the switch is off or the day's data is not in
+        (then the decision is a rule-14 data block anyway)."""
+        if not self.s.band_trend.enabled or lst is None:
+            return None
+        trend = band_trend(panel, self.s.band_trend)
+        key = f"bt:{day}"
+        if not self.j.job_done(key):
+            self.j.mark_job(key, trend.payload(), now)
+        return trend
+
+    def _decide_book(
+        self,
+        panel: PricePanel,
+        state: BookState,
+        lst: Emg2List | None,
+        order: TargetOrder | None,
+        trend: BandTrend | None,
+    ) -> Emg2_20Decision:
+        """Rules L2-L5, under L15 when the band-trend switch is on (BF-D28)."""
+        if trend is None:
+            return decide_emg2_20(panel, state, self.s.params, lst=lst, target_order=order)
+        return decide_emg2_18_bt(
+            panel, state, self.s.params, lst=lst, target_order=order, trend_on=trend.on,
+            fund=self.s.band_trend.fund, top_up_fraction=self.s.band_trend.top_up_fraction,
+        )  # fmt: skip
+
+    def _switches(self, dec: Emg2_20Decision, holdings: Mapping[str, int]) -> bool:
+        """The decision moves the book into the fund (a first fund buy) or out of it."""
+        fund = self.s.band_trend.fund
+        first_in = any(b.reason == BT_FUND_BUY for b in dec.buys) and not holdings.get(fund)
+        return first_in or any(s.reason == BT_FUND_SELL for s in dec.sells)
+
+    def state_line(self, day: date) -> str | None:
+        """L14 + L15: "state: EMG2" / "state: FUND" from the latest decision's band-trend
+        record at or before ``day`` (None when the switch is off or none is recorded)."""
+        if not self.s.band_trend.enabled:
+            return None
+        recs = [r for k, r in self.j.job_records("bt:") if k.split(":", 1)[1] <= str(day)]
+        if not recs:
+            return "state: not decided yet (L15 band-trend switch)"
+        r = recs[-1]
+        rel = "at or above" if r["state"] == "EMG2" else "below"
+        return (
+            f"state: {r['state']} (band 301-600 index {float(r['level']):.4f} {rel} its "
+            f"{len(r['levels'])}-month average {float(r['mean']):.4f}, {r['as_of']})"
+        )
+
     def _announce(
-        self, day: date, canary: bool, list_digest: str, batch_id: str, pages: Sequence[str]
+        self,
+        day: date,
+        canary: bool,
+        list_digest: str,
+        batch_id: str,
+        pages: Sequence[str],
+        state: str | None = None,
     ) -> None:
         head = f"Decision {day} ({'start, canary first' if canary else 'regular'}); "
         head += f"list {list_digest[:12]}; {len(self.j.intents_of(batch_id))} order(s)"
+        if state is not None:
+            head += "\n" + state
         if self.s.lic_note:
             head += "\n" + self.s.lic_note
         lvl = self.j.safety_level()
@@ -601,7 +680,7 @@ class BfApp:
             for bid, final in self._active(book, day):
                 b = self.j.batch(bid)
                 assert b is not None
-                start_day = bid.endswith(("-S", "-C"))
+                start_day = bid.endswith(("-S", "-C", "-B"))  # BF-D28: a switch as the start
                 rep = ex.submit(
                     bid,
                     self._ctx(book, broker, day, b["decision_date"], now, start_day),
@@ -906,6 +985,10 @@ class BfApp:
                 if not recon_ok:
                     continue  # waits for a clean reconciliation
                 rest = _decision_from(self.s.book, rec, skip_first=1)
+                if not rest.buys:  # BF-D28: the canary was the whole start (the fund order)
+                    self.j.mark_job(done_key, {"batch": None}, now)
+                    self.say("Canary filled and reconciled to the cent; no other start orders.")
+                    continue
                 tv = {e: Decimal(v) for e, v in rec["tv20"].items()}
                 batch = build_orders(
                     rest, line=self.s.line, params=self.s.order_params, kind="S", tv_med20=tv
@@ -1172,6 +1255,7 @@ class BfApp:
             ],
             sim_value=sim_value,
             random_twins=self._rnd_line(day, now),
+            state=self.state_line(day),
         )
         self.say(daily_report(x))
 

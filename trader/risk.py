@@ -18,7 +18,8 @@ price sanity          ref > 0; last within ``absurd_move`` of the previous close
 BW-RSK-08 gap         last more than ``gap_hold`` from previous close            buy HOLD
 BW-RSK-07 / L7 band   limit within ``price_band`` of the reference, valid step    REJECT
 BW-RSK-03 no short    sell qty <= broker position                                REJECT+PAGE
-L10 order value       buy value at limit <= ``order_value_max_aud``              REJECT
+L10 order value       buy value at limit <= ``order_value_max_aud`` (the L15     REJECT
+                      fund order: ``fund_order_max_aud``, paged above the first)
 BW-RSK-06 particip.   qty x ref <= ``participation_max`` x ``tv_med20``          CLIP
 L5 min parcel         a clipped buy under A$500                                  REJECT
 L10 orders a day      <= start/normal limit and <= BW-RSK-09 hard 80             REJECT+PAGE
@@ -83,6 +84,9 @@ class RiskLimits:
     """EMG2-20 live-book limits (config ``live_emg2_20``; FD §7.9 L10-L11, §10)."""
 
     order_value_max_aud: Decimal = Decimal(800)
+    # L15 / BF-D28: the single fund order of the band-trend switch (flag ``FUND``) has its
+    # own limit (the capital cap by default) and is paged above ``order_value_max_aud``
+    fund_order_max_aud: Decimal = Decimal(10000)
     orders_per_day_start: int = 24
     orders_per_day_normal: int = 16
     orders_per_day_hard: int = 80  # BW-RSK-09
@@ -192,7 +196,8 @@ def _pre_checks(  # noqa: PLR0911, PLR0912 - one return per breaker rule
         return Verdict.REJECT, "PRICE_BAND"
     if not buy and it.qty > ctx.positions.get(it.entity, 0):
         return Verdict.REJECT, "NO_SHORT"
-    if buy and it.value_at_limit > lim.order_value_max_aud:
+    max_value = lim.fund_order_max_aud if "FUND" in it.flags else lim.order_value_max_aud
+    if buy and it.value_at_limit > max_value:
         return Verdict.REJECT, "MAX_ORDER_VALUE"
     return None
 
@@ -228,6 +233,12 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
         if cur.side is Side.SELL and cur.value_at_limit > lim.order_value_max_aud:
             pages.append(f"sell {cur.entity} A${cur.value_at_limit} above the L10 order limit")
             reasons.append("SELL_ABOVE_ORDER_LIMIT")
+        if "FUND" in cur.flags and cur.value_at_limit > lim.order_value_max_aud:
+            pages.append(
+                f"fund buy {cur.entity} A${cur.value_at_limit} above the L10 share-order limit "
+                "(L15 band-trend switch, BF-D28)"
+            )
+            reasons.append("FUND_ABOVE_ORDER_LIMIT")
         # BW-RSK-06 participation
         if cur.tv_med20 is None or cur.tv_med20 <= 0:
             if cur.side is Side.BUY:

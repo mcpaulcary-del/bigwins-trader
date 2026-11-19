@@ -42,6 +42,7 @@ class DailyInputs:
     sim_value: Decimal | None = None  # EMG2_20_SIM twin (L13)
     a200_value: Decimal | None = None  # the same money in A200 (L14 monthly)
     random_twins: str | None = None  # the twin's percentile among its random twins (BF-D18)
+    state: str | None = None  # L15 band-trend switch: "state: EMG2 / FUND ..." (BF-D28)
 
 
 def value_of(positions: Mapping[str, int], prices: Mapping[str, Decimal], cash: Decimal) -> Decimal:
@@ -54,6 +55,8 @@ def daily_report(x: DailyInputs) -> str:
     value = value_of(x.positions, x.prices, x.cash)
     lines = [L14_BANNER if x.real_money else PAPER_BANNER, INDEX_BANNER, ""]
     lines.append(f"{x.book} - {x.session.isoformat()} - safety {x.safety}")
+    if x.state is not None:
+        lines.append(x.state)
     pct = (value / x.capital_in - 1) if x.capital_in else Decimal(0)
     lines.append(
         f"Value A${value} (cash A${x.cash.quantize(CENT)}); capital in A${x.capital_in}; "
