@@ -127,7 +127,7 @@ fi
 
 # --- push (never force) ---
 [ "$PUSH" = 1 ] || { log "--no-push: done"; exit 0; }
-if [ "$(git rev-parse HEAD)" = "$(git rev-parse --verify -q "refs/remotes/origin/$BR" || echo none)" ]; then
+if [ "$(git rev-parse HEAD)" = "$(git ls-remote origin "refs/heads/$BR" 2>/dev/null | cut -f1)" ]; then
   log "origin/$BR up to date"; exit 0; fi
 for i in 1 2; do
   if out=$(git -c push.negotiate=true push -u origin "$BR" 2>&1); then echo "$out" | tail -2; log "pushed"; exit 0; fi
