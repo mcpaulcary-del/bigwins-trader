@@ -1,0 +1,84 @@
+# B-fast stack for the always-on Sydney server (FD v3.0 §19.2, §21.1 BF0). PAPER ONLY.
+#
+# - No service publishes a port to the host: nothing is reachable from the internet.
+#   Admin access is over Tailscale SSH to the host (docs/SETUP_SYDNEY.md).
+# - Images are pinned by tag AND digest (BP-10). Re-pin deliberately.
+# - Secrets are Docker secrets read from files under ./secrets (mode 600, never in git).
+#   The IBKR login is used only by the gateway container; the trader never sees it.
+# - TRADING_MODE=paper. The live port (4003) is not used; the trader refuses it anyway.
+
+name: asx-trader-bfast
+
+services:
+  gw-paper:
+    # gnzsnz/ib-gateway, stable channel 10.37 (checked 2026-11-19 on ghcr.io)
+    image: ghcr.io/gnzsnz/ib-gateway:10.37.1r@sha256:b248e4dad68cc1de8dd1905ea8598089e92307dfec57f59e08a28182bbb002d5
+    restart: unless-stopped
+    environment:
+      TRADING_MODE: paper
+      TWS_USERID: ${IBKR_PAPER_USERID:?set in deploy/.env (not committed)}
+      TWS_PASSWORD_FILE: /run/secrets/tws_password
+      READ_ONLY_API: "no"
+      TWOFA_TIMEOUT_ACTION: restart
+      AUTO_RESTART_TIME: "11:59 PM"
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
+      TIME_ZONE: Australia/Sydney
+      TZ: Australia/Sydney
+    secrets: [tws_password]
+    networks: [internal]
+    # no "ports:" on purpose; the trader reaches gw-paper:4004 on the internal network
+
+  db:
+    image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_DB: ledger_bf_paper
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d ledger_bf_paper"]
+      interval: 10s
+      retries: 10
+
+  trader:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+      gw-paper: {condition: service_started}
+    environment:
+      TZ: Australia/Sydney
+      # password-free URL; the password is read from the db_password secret (S-03)
+      TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/ledger_bf_paper
+    secrets: [db_password, telegram_bot_token, totp_seed, eodhd_api_token, healthchecks_url]
+    volumes:
+      - ../config:/app/config:ro
+      - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
+      - ${REF_DIR:?path holding etp_list.txt}:/data/ref:ro
+      - traderout:/app/out
+    networks: [internal, egress]
+    # The scheduler (runner) is B-fast step NEXT-3; until then the container idles and
+    # jobs are run with `docker compose run --rm trader trader-bf ...`.
+    command: ["sh", "-c", "trader-bf validate-config && exec sleep infinity"]
+
+networks:
+  internal:
+    internal: true        # no internet: gateway<->trader<->db only
+  egress: {}              # trader only: Telegram, EODHD, healthchecks (outbound)
+
+volumes:
+  pgdata: {}
+  traderout: {}
+
+secrets:
+  tws_password: {file: ./secrets/tws_password}
+  db_password: {file: ./secrets/db_password}
+  telegram_bot_token: {file: ./secrets/telegram_bot_token}
+  totp_seed: {file: ./secrets/totp_seed}
+  eodhd_api_token: {file: ./secrets/eodhd_api_token}
+  healthchecks_url: {file: ./secrets/healthchecks_url}

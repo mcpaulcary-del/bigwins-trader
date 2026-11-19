@@ -1,5 +1,14 @@
 # asx-trader
 
+> **Branch `bigwins-fast` (19 Nov 2026): B-fast build of FD v3.0 for the EMG2-20
+> slice — PAPER ONLY.** EMG2 / EMG2-20 decision engine (`trader/lines/emg2.py`),
+> order builder, breaker, approval queue (Telegram), paper-only IBKR adapter
+> (`ib_async`), journal, reconciliation, report, Docker Compose stub
+> (`deploy/`). Commands: `trader-bf validate-config`, `trader-bf emg2-list --asof D`.
+> State, blocking decisions and the go-live checklist: `NEXT.md`; readings and spec
+> defects: `docs/DECISIONS.md` section BF; server: `docs/SETUP_SYDNEY.md`.
+> Coverage gate: `uv run python scripts/req_coverage.py --milestone BF --junit junit.xml`.
+
 An automated, long-only, monthly-evaluated trading system for two ASX-listed
 index ETFs (VAS 40%, VGS 60%) through Interactive Brokers Australia, with rule
 L1 or static mode. The binding specification is **FD v2.10** (13 Nov 2026), plus

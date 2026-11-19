@@ -17,3 +17,4 @@ config/a.yaml
 config/b.yaml
 logs/
 trader/_build_sha.txt
+!deploy/.env.example
