@@ -1,0 +1,36 @@
+# AMENDMENT: the "ordinary share" class excludes listed investment companies and funds by an exact frozen code list (v2), not by words in the name; traded-value ranks leave them out
+
+Status: **REGISTERED 19 Nov 2026 by the record keeper on the owner's decision "Share-list fixes" ("Yes, fix both"; `OWNER_DECISIONS_2026-11-19.md`, SHA-256 e28d0647d155cf801fd8021c95f91b49fa20718f320ce68b04f2312a05f9cfb3). Takes effect at the 30 Nov 2026 month-end decision for every line in section 3, paper and live at once.** Finalised from the record keeper's draft `deep92b/AMENDMENT_class_rule_fix.DRAFT.md` (SHA-256 f42d6bb55828c75627eed09f3f3a939525dcd68d4bae7b90c4116f5eb5a47a87); the draft's evidence (sections 1 and 3) stands and is not repeated in full here. Hashed (SHA-256) and appended to `LEDGER.jsonl` together with `LIC_list_frozen_v2.csv` **before** any code for it is changed and before the first decision of any line it governs. PAPER record keeping: the AI never places trades. Not a trial: N stays 2,496 (no choice was made on evidence; the change corrects a definition).
+
+## 1. Why (summary of the draft)
+The class rules of the EMG2 family excluded listed investment companies (LICs) by words in the company name (`INVESTMENT`, `CAPITAL FUND`, `LIC`). This wrongly excluded ordinary companies — PNI (Pinnacle Investment Management), PMV (Premier Investments), NGI (Navigator Global Investments), AEF (Australian Ethical Investment), RG1 (Regal Partners), NZK (New Zealand King Salmon Investments), CIW (Clime Investment Management) — while the frozen LIC list (`LIC_list_frozen.csv` = `EMG2_LIC_LIST.csv`, 46 codes, SHA-256 68775b0a…) lacked 23 traded traditional LICs that only the name words kept out. Separately, the paper twins ranked traded value among the class only (`AMENDMENT_shadow_EMG2.md` s2) while the trading system ranked ORD + REIT + LIC (FD v3.0 BW-UNI-11), so the paper twins and the live book used different lists (draft s4).
+
+## 2. Rule (replaces the class sentence of `AMENDMENT_shadow_EMG2.md` s2 for the lines of section 3)
+1. **Class "ordinary share"** = vendor type Common Stock (ETF / FUND / Notes / Preferred / BOND types are already outside the forward store; in the trading system vendor types ETF, FUND, MUTUAL FUND are class FUND), three-character code or `XXX_old` / `XXX_oldN`, not on the exchange-traded-product list of rules v1.3 A4, and **not on the record keeper's frozen LIC list version 2, `68_forward_record/LIC_list_frozen_v2.csv`** (69 codes, SHA-256 **af441f284b2dedfd7ffb13833907a6e635c9bab834a99ce949014b705fe36582**). Property trusts and REITs stay in; asset managers stay in.
+2. **No test on words in the company name.** The name words survive only as a prompt for the record keeper's review of new listings, never as the rule.
+3. **Traded-value ranks** (`tv_rank`, bands A/B/C) are computed **among the class only: LICs and funds are left out of the rank population**, as already registered for EMG2 (`AMENDMENT_shadow_EMG2.md` s2, "among entities of the class"). FD v3.0 BW-UNI-11 ("ORD, REIT and LIC") is amended accordingly for the live EMG2-18 book: rank population = ORD + REIT that traded in the last 5 sessions with a 252-session median.
+4. **LIC list v2** = the 46 codes of `LIC_list_frozen.csv` (rows unchanged) + the 23 traded investment vehicles the name words alone excluded (owner: "add the 23 missing traded LICs"): AFI, ARG, MFF, RF1, BKI, HM1, AUI, DJW, MIR, PIC, RG8, KIT, BTI, ACQ, SNC, CIN, CDO, FPC, MEC, CD1, FSI, GFL, AIQ (source `deep92b/out/proposed_lic_additions.csv`, SHA-256 10ddc6ed…). Sorted by code; columns code, name, reason. Delisted names are not added (codes are reused).
+5. **New listings.** The record keeper adds a newly listed investment company or trust (Common Stock type) to the list from the new-listings tracker's classification before its first month-end in any band; every addition is a new list version, hashed and ledgered, and the trading system's pin is updated by a reviewed change.
+6. **Effective date.** Month-end decisions dated **30 Nov 2026 or later**. Earlier tables (none of the lines of section 3 has decided before 30 Nov 2026) keep the old rule, so replays of the record before that date are unchanged.
+
+## 3. Lines governed (exact)
+Changed from the 30 Nov 2026 decision (all read their month-end list from `paper_emg2.table` or the trading system's `emg2_list`):
+| Line | Books | Code |
+|---|---|---|
+| SHADOW EMG2 v1.0 + BANDSPREAD | EMG2_100k, EMG2_25k, EMG2_100k_ibkr, EMG2_25k_ibkr, EMG2_RND_100k_s001–s100, EMG2_RND_25k_s001–s100 (A$0 comparators EMG2_CMP_A200_* unaffected); BANDSPREAD groups B/C | `paper_emg2.py` |
+| EMG2-18 paper twins | EMG2_18_REF, EMG2_18_SIM_H6 + EMG2_18_H6_RND_s001–s100, EMG2_18_SIM_COMBO + EMG2_18_COMBO_RND_s001–s100 | `paper_emg2s.py` (via `paper_emg2.table`) |
+| PAIR, member E only | PAIR_10k and PAIR_RND_10k_s001–s100, EMG2-18 half | `paper_pair.py` (via `paper_emg2.table`) |
+| Live EMG2-18 (trading system) | EMG2_18_PAPER (broker book), EMG2_18_SIM twin, EMG2_18_RND_s001–s100 | `asx-trader` `trader/data/identity.py`, `trader/universe.py`, `data.lic_list` (decision BF-D20) |
+
+**Not changed** (they do not use this class rule, or their own registered definition stands; the draft's owner questions 4 and 5 were not part of the owner's answer and stay open): H82 and its twins, SHADOW momentum lines, M3/E3, ACC, CXL, MULTI, FORM, COSTALT (no name rule: Common Stock, three characters); **BLIND3 and PAIR member B** (the frozen blind-3 kit's `NAME_RX` and list, `paper_blind3.py` unchanged); **EARLY** (its registered report-84 definition — `LIC_RE` + `early_ref.fund_flag` + list v1 — kept verbatim in `paper_early.py`).
+
+## 4. Effect on the lists (seen data, paper scope = the rule above; draft `out/lists_effect.log`, re-run by the code entry)
+| | 30 Oct 2026 | 18 Nov 2026 |
+|---|---|---|
+| EMG2 / EMG2-18 target list T | 39 → 40: **enter PWH, RG1; leave HCW** | 36 → 37: **enter RG1** |
+| band C | enter PWH, RG1, AEF, NGI | enter RG1, RDX, AEF, NGI, BML |
+| band B | enter PMV, PNI; PWH moves to C | enter PMV, PNI; RDX, BML move to C |
+Live EMG2-18 (trading system): its list becomes identical to the paper EMG2-18 REF list on the same data (test in the trading system, BF-D20). The differences against the trading system's old rule (LICs ranked, name words) are recorded exactly by the trading-system change (BF-D20) and the code entry; the draft's emulation gives on 30 Oct paper scope vs old live scope: enter PWH, AMI, WGN, EDU, CEH / leave BOL, EZL, WCN, A11 (before the class fix).
+
+## 5. Implementation (after this entry)
+Paper: `paper_emg2.table` reads `LIC_list_frozen_v2.csv` (SHA-256 checked) and drops the name test for tables dated on or after 2026-11-30; earlier tables, `paper_emg2.lic_codes()` and `paper_emg2.LIC_RE` (still used by EARLY) unchanged. Tests on scratch copies: H82 state byte-identical, idempotent, resume-safe; 30 Oct and 18 Nov T before/after. Code ledger entry with SHA-256s. Trading system: `config/lic_list.csv` = `LIC_list_frozen_v2.csv` byte for byte, pin updated, `LIC_NAME_RE` removed from the class, `RANKED_CLASSES` = ORD + REIT, decision BF-D20; test that its 30 Oct and 18 Nov target lists equal the paper EMG2-18 REF lists exactly.

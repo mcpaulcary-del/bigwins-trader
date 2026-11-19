@@ -1,0 +1,33 @@
+{
+ "asof": "2026-10-30",
+ "axjo_close": 8908.1,
+ "comparator_tr_level": 2.612762190590095,
+ "created_utc": "2026-11-16T12:36:27Z",
+ "download_end": "2026-11-13",
+ "duplicate_rule": "A7(a) or A7(b)",
+ "file_first_day": "2014-06-02",
+ "files_sha256": {
+  "dupcodes_2026-10-30.csv": "05f69540e35b9b3a3634d62ed7f2127462ff51b0abdbde3aa11c5c1614126353",
+  "scores_h101_2026-10-30.csv": "42307e7d4357706d7e901698ebc035a39a4a9e4e5f79f1c49d7b4bcc44bb95f5",
+  "scores_top300_2026-10-30.csv": "32efb8b13461dd7a6b53309bb862752bb57cbd41117ef407ba4dd027885d2e5c"
+ },
+ "inputs_sha256": {
+  "asx_listed_companies_2026-11-14": "494034e3e8b8ce06ede4f83500f9a26a2acaa5058e6fcbefca7312eb361b52b6",
+  "code_bw13_prep": "4a6dd1885500f7ab631ddc13921f4be0967b11dbef20a689a764fb11a2ce88a5",
+  "code_bw13_snapshot": "cb28aa2f6c493fc606896d772f1563d108e62a69145ac59d495c990b4b80bdb2",
+  "eodhd_manifest": "0de16ab6709f16d87663d5ab65ece89851769492910af875ef6d63b9e56aee01",
+  "eodhd_panel_tr": "91034ec21c57cc58df893a1d7bc0e37c8140df54ec2e0db14905851fbd618143",
+  "eodhd_symbols": "538a9a5a84e31d90a8fc27bb38491dcb136f79bcf5cbf525e5a217ffa3bff9c5",
+  "etp_list": "58f006941ec74d5ee6b11dbde8f9abb8a8fb0f1f736736513d8ce67fbcff08cc"
+ },
+ "kind": "month-end",
+ "n_companies_in_file": 2978,
+ "n_h101_top_tenth": 20,
+ "n_h101_universe": 197,
+ "n_ranked": 1000,
+ "n_review_list_100k": 30,
+ "n_review_list_25k": 10,
+ "n_top300_scored": 300,
+ "record": "Big Wins forward paper record",
+ "rules": "v1.3"
+}

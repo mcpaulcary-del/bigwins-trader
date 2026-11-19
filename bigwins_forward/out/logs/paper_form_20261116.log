@@ -1,0 +1,10 @@
+23:17:29 panel 6609349 rows; last date 2026-11-16 ; symbols with last date 1410
+23:17:30 file as downloaded ends 2026-11-16
+23:18:03 Q4 test on 2026-11-16 {'axjo_row': True, 'universe': 300, 'with_close': 299, 'blocked': False}
+23:18:03 ledger 4 0b286beca04665a809421a1dd3935fd08d5853f8ad3b3d3b7733c0d27b0cc65d
+23:18:03 ledger 5 d4c184ed2c991b189ac2b33539a012a790179455e089abe420bac00a1c2a96ab
+23:18:03 H82_lifecycle_5k 4 1250.0 ['QBE', 'RHC', 'CPU', 'WOW']
+23:18:03 H82_25k 10 2500.0 ['QBE', 'RHC', 'CPU', 'WOW', 'ANN', 'FPH', 'ALL', 'CGF', 'APA', 'ASX']
+23:18:03 H82_100k 30 3333.33 ['QBE', 'RHC', 'CPU', 'WOW', 'ANN', 'FPH', 'ALL', 'CGF', 'APA', 'ASX', 'SOL', 'IAG', 'SUN', 'DTL', 'ANZ', 'EVT', 'MPL', 'REH', 'CWY', 'STO', 'BGA', 'ARG', 'CSL', 'SDF', 'CCP', 'BOQ', 'OML', 'TWE', 'ORG', 'DDR']
+23:18:03 MOM_25k 10 2500.0 ['VMM', 'BNZ', 'MI6', 'TEA', 'CDA', 'EOS', 'SXE', 'DTL', 'NHC', 'RHC']
+23:18:03 MOM_100k 10 10000.0 ['VMM', 'BNZ', 'MI6', 'TEA', 'CDA', 'EOS', 'SXE', 'DTL', 'NHC', 'RHC']

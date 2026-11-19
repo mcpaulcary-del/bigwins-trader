@@ -1,0 +1,204 @@
+22:37:58 refreshing 1832 symbols x3
+5209 requests to make (289 already done); budget left 20000
+250/5209 done in 0.6 min; status {'200': 250}; spent 250
+500/5209 done in 1.3 min; status {'200': 500}; spent 500
+750/5209 done in 1.9 min; status {'200': 750}; spent 750
+429; sleeping 33.0s
+429; sleeping 18.0s
+429; sleeping 18.0s
+429; sleeping 18.0s
+429; sleeping 18.0s
+429; sleeping 18.0s
+1000/5209 done in 3.1 min; status {'200': 1000}; spent 1000
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+1250/5209 done in 4.3 min; status {'200': 1250}; spent 1250
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 23.0s
+1500/5209 done in 6.2 min; status {'200': 1500}; spent 1500
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 40.0s
+429; sleeping 26.0s
+429; sleeping 26.0s
+429; sleeping 26.0s
+429; sleeping 25.0s
+429; sleeping 25.0s
+1750/5209 done in 8.1 min; status {'200': 1750}; spent 1750
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+2000/5209 done in 9.3 min; status {'200': 2000}; spent 2000
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 19.0s
+429; sleeping 37.0s
+429; sleeping 23.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+2250/5209 done in 11.1 min; status {'200': 2250}; spent 2250
+429; sleeping 17.0s
+429; sleeping 17.0s
+429; sleeping 17.0s
+429; sleeping 17.0s
+429; sleeping 17.0s
+429; sleeping 17.0s
+2500/5209 done in 12.3 min; status {'200': 2500}; spent 2500
+429; sleeping 22.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 33.0s
+429; sleeping 19.0s
+429; sleeping 19.0s
+429; sleeping 19.0s
+429; sleeping 18.0s
+429; sleeping 18.0s
+2750/5209 done in 14.1 min; status {'200': 2750}; spent 2750
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+3000/5209 done in 15.3 min; status {'200': 3000}; spent 3000
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 25.0s
+429; sleeping 25.0s
+429; sleeping 25.0s
+429; sleeping 25.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+3250/5209 done in 17.2 min; status {'200': 3250}; spent 3250
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 23.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+3500/5209 done in 19.1 min; status {'200': 3500}; spent 3500
+429; sleeping 23.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+3750/5209 done in 20.3 min; status {'200': 3750}; spent 3750
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 37.0s
+429; sleeping 37.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+4000/5209 done in 22.1 min; status {'200': 4000}; spent 4000
+429; sleeping 8.0s
+429; sleeping 8.0s
+429; sleeping 8.0s
+429; sleeping 7.0s
+429; sleeping 7.0s
+429; sleeping 7.0s
+4250/5209 done in 23.3 min; status {'200': 4250}; spent 4250
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 19.0s
+429; sleeping 19.0s
+4500/5209 done in 24.5 min; status {'200': 4500}; spent 4500
+429; sleeping 22.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 34.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 20.0s
+429; sleeping 19.0s
+429; sleeping 19.0s
+4750/5209 done in 26.3 min; status {'200': 4750}; spent 4750
+429; sleeping 25.0s
+429; sleeping 25.0s
+429; sleeping 25.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 24.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 21.0s
+429; sleeping 20.0s
+5000/5209 done in 28.2 min; status {'200': 5000}; spent 5000
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+429; sleeping 22.0s
+finished: {'200': 5209}; calls spent this run 5209
+Traceback (most recent call last):
+  File "/tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/code/fwd_download.py", line 57, in <module>
+    # AXJO raw file where bw13_prep.axjo() looks for it
+  File "/tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/code/fwd_download.py", line 48, in run
+    if d is None: continue
+  File "/usr/local/lib/python3.13/site-packages/pandas/core/generic.py", line 3139, in to_pickle
+    to_pickle(
+    ~~~~~~~~~^
+        self,
+        ^^^^^
+    ...<3 lines>...
+        storage_options=storage_options,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/usr/local/lib/python3.13/site-packages/pandas/io/pickle.py", line 127, in to_pickle
+    pickle.dump(obj, handles.handle, protocol=protocol)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 28] No space left on device

@@ -1,0 +1,48 @@
+# Amendment: SHADOW line EMG2 v1.0 — "emerging band, monthly momentum" (lead challenger)
+
+Status: **ADOPTED AS A SHADOW LINE 19 Nov 2026 — PAPER ONLY; lead challenger; not adopted on evidence** (owner decision D-2). First decision Mon 30 Nov 2026, fills at the close of Tue 1 Dec 2026. **LIC list frozen with this amendment: `68_forward_record/EMG2_LIC_LIST.csv` (46 codes, SHA-256 68775b0a4a2e86075312c42fde9da7bf9265b0c02f27ee1bb7d28ca46b8bc275)**, built by the record keeper from the class-ranked table of 16 Nov 2026 (forward store, A4(b) admitted, A7(c) applied to every AU ordinary share, 580 A7 pairs) by reading every name ranked 1–1,000: listed investment companies and listed investment/credit trusts not caught by section 2's name rule; property trusts and REITs stay in, asset managers stay in. Implementation: `bigwins_forward/code/paper_emg2.py`, hooked into `paper_daily.py` after the CXL step, state `out/paper_state/emg2_state.json`. Hashed (SHA-256) and appended to `LEDGER.jsonl` by the record keeper on 19 Nov 2026, before any code for it is installed and before the first decision of any line it governs (Mon 30 Nov 2026). Text below is the research agent's (Fable) draft `deep85/AMENDMENT_shadow_EMG2.md` (SHA-256 c7b63b1687fac8cbbc86b3cd041aef67970ceeb169df97601ae229d6491db6c6) unchanged except this status line and the title. The AI never places trades.
+None of the existing rules (v1.3 + amendments; SHADOW M3 v1.1, E3, ACC, CXL v1.1) is changed by this amendment.
+Source: report 85 (`85_full_review_and_direction_fable.md`) sections 1.3–1.4; FD v3.0 (`FD_v3.0_BigWins.md`) sections 7.6–7.8.
+
+## 1. Status and evidence, stated plainly
+**SHADOW / lead challenger: not adopted; tracked on paper.** Report 85, tests T4 and T6, pre-registered (`deep85/PREREG_85b.md`, `PREREG_85d.md`): in traded-value ranks 301–600 the best fifth by momentum score led the band average by +16.9 points a year in 2018–Oct 2026 (t 4.5) and +26.7 in 2010–2017 (t 3.5); the monthly-refreshed book made 13.3% a year after spreads and yearly tax against 8.5% for the ASX 200 total-return index in 2018–Oct 2026 (11.0% against 7.4% in 2010–2017), at the 100th percentile of 100 random twins in both periods. **It failed the pre-set bar on statistical strength: monthly t against the index 1.0 (bar 2.0), tracking error 20 points a year, worst falls 38% and 57%.** Both periods had been seen in some form before (card H101). Duplicate codes were not removed in those runs. The slow-hold form (T5) failed outright.
+Expectation printed on the scorecard: "Back-test +4.9 a year after costs and yearly tax on seen data; forward estimate +1 to +3; zero is possible; falls of 40–60% are normal for this line."
+
+## 2. Definitions
+- Entities, duplicate merging and `_old` admission: rules v1.3 A7–A9 with `AMENDMENT_v1.5_old_symbols.md` and the returns test A7(c) of `AMENDMENT_v1.6_dup_returns.md`, **applied to every AU ordinary share in the ranking, not only the top 300**.
+- Class: vendor type Common Stock, three-character code or `XXX_old`/`XXX_oldN`, not in the exchange-traded-product list of rules v1.3 A4, and not a listed investment company (name contains "INVESTMENT", "CAPITAL FUND", "LIC" or is on the record keeper's LIC list frozen with this amendment); property trusts stay in.
+- Traded value of a day = split-adjusted close × vendor volume (`AMENDMENT_v1.4_traded_value.md`). `tv_med252` = median over the last 252 trading days with at least 120 valid days; `tv_med63` = median over 63 days with at least 30. `tv_rank` = rank of `tv_med252` among entities of the class that traded in the last 5 trading days.
+- `s1` = total return from 252 to 21 trading days before the decision day (at least 150 valid days in the window); `s2` = total return over the last 126 trading days (at least 80 valid); `s3` = total-return index ÷ its highest value of the last 252 trading days (at least 200 valid). Total returns per rules v1.3 A3.
+- `BID_PEG`: the entity's closes over the last 10 trading days span less than 3% (highest ÷ lowest − 1) and it had a one-day total return of +15% or more within the 30 trading days before that window began or inside it.
+
+## 3. Rules (EMG2 v1.0)
+"Session" = ASX trading day. References of the form "report 81" are to the research reports.
+1. **Clock.** Decide at each ASX month-end after the close, first decision Mon 30 Nov 2026. Trade at the close of the next trading day: sells first, then buys.
+2. **Eligible set E.** Entities of the class of section 2, duplicates merged (A7(c)), with `tv_rank` ≤ 600, `tv_med63` ≥ A$100,000, raw close ≥ A$0.10 on the decision day (or within the previous 5 sessions), traded in the last 5 sessions, and `s1`, `s2`, `s3` all present.
+3. **Band C list.** C = members of E with `tv_rank` 301–600. Score = mean of the three percentiles of `s1`, `s2`, `s3` computed inside C (rank ÷ count, average ranks for ties). **Target list T = the top fifth of C by score** (score percentile above 0.8), best first; ties by higher `tv_med252`.
+4. **Sell.** Every holding not on T is sold in full. No waiting rule, no tax-holding rule, no trim.
+5. **Buy.** Parcel = NAV at the decision close ÷ number of names on T. Names on T not held are bought best first; each order = min(parcel, free cash after the day's estimated sale proceeds); an order under half a parcel is skipped. A name with no close on the fill day is skipped and may be bought at a later decision.
+6. **No top-ups, no trims** except rule 9.
+7. **Payouts.** A holding with no close for 20 sessions is paid out at its last close (rules v1.3 C1).
+8. **Bid peg.** A holding flagged `BID_PEG` on a decision day is sold at that decision whether or not it is on T, and is not bought while flagged. *(Not in the T6 back-test; added on the evidence of report 81 §6.3; it only frees slots.)*
+9. **Single-name cap.** A holding above 10% of NAV at a decision is trimmed to 7.5%. *(Not in T6; a safety rule; expected to bind rarely.)*
+10. **Costs in the line's own book.** Brokerage A$0. Half-spread per side = max(0.50% if `tv_rank` > 300, 0.25% if 101–300, 0.10% if ≤ 100; half an ASX price step ÷ price), price steps A$0.001 below A$0.10, A$0.005 below A$2, A$0.01 from A$2. Whole shares. Cash earns 0%. A second book per size at IBKR brokerage max(A$6.60, 0.088%) is kept as a cost stress.
+11. **Tax in the scorecard** (not in the book's cash): 32%, 50% discount for parcels held 367 days or more, losses carried forward, FIFO parcels, dividends taxed; "kept" and "sold" readings (scoring v2).
+12. **Books.** `EMG2_100k` (A$100,000 cash at the first decision), `EMG2_25k` (A$25,000; holds up to 25 names: buys the best-ranked names of T not held while fewer than 25 are held, parcel = NAV ÷ 25, sells a holding only when it is off T; information only), each with 100 random twins `EMG2_RND_<size>_s001…s100` (rule 3's order replaced by a persistent seeded random score per entity, redrawn with probability 0.2 a month; same count of names; seeds 8530000 + i and 8540000 + i), and comparators `EMG2_CMP_A200_<size>` at A$0 brokerage.
+13. **Reading.** The scorecard line leads with (a) the forward band spread (section 4) and its t, (b) the book's percentile among its twins, (c) the book against A200 after tax, in that order.
+14. **Data block.** If the universe table of a month-end has fewer than 150 names in C or the market-wide verdict fails, there is no decision that month; holdings are kept.
+
+## 4. Measurement line BANDSPREAD (registered with EMG2; no book, no decision)
+Each month-end from 30 Nov 2026, for band B (`tv_rank` 101–300) and band C (301–600) separately, eligible set as rule 2 restricted to the band: TOP = top fifth by the in-band M3 score, BOT = bottom fifth, ALL = the band; equal weights; return from the next trading day's close to the close of the trading day after the following month-end; no costs; a company that stops trading keeps its last value. Recorded monthly: TOP − ALL, BOT − ALL, TOP − A200 (A200 total return over the same days). Reported: cumulative mean a year and t (monthly observations, Newey-West lag 1). **Band C TOP − ALL is "the signal spread" of EMG2 for adopt rule v3.** History for reference: +16.9 a year, t 4.5 (2018–Oct 2026).
+
+## 5. Scoring
+Rows marked EMG2 on `SCORECARD.md` / `scorecard_latest.csv` / `scorecard_history.csv`, **placed first** (owner decision D-2), leading with: (a) forward signal spread and t; (b) percentile among the 100 twins of the same size; (c) return against A200 (A$0), after tax kept and sold (`AMENDMENT_scoring_v2.md` §4); then NAV, holdings, cash, turnover, costs paid, worst fall, tracking error once 12 monthly returns exist; the twins' median and 5th–95th percentiles. State file `out/paper_state/emg2_state.json`; month-end list `shadow/emg2_list_<date>.csv` (E, band C, parts, score, T); orders `shadow/emg2_orders_<date>.csv`; hashes in the daily ledger entry. Hooked into `paper_daily.py` after the CXL step; never reads or writes another line's state.
+
+## 6. Gate
+EMG2 is a high-swing line under `AMENDMENT_adopt_rule_v3.md`. Under adopt rule v2 it could not be adopted in any practical time (tracking error 20 points).
+
+## 7. Differences from the back-test code (`deep85/code/t6.py`)
+Daily booking on the record's conventions instead of a monthly loop; duplicates merged; class filter; rules 8 (bid peg) and 9 (single-name cap) added; tax in the scorecard instead of paid from the book's cash; the A$25,000 book defined (not run in report 85).
+
+## 8. Trial count
+EMG2's back-test is trial 85-T6, already counted in report 85 (+6 for T1–T6). Registering the frozen design for forward data adds no back-test return. **No change to N.** The verdict stands for all lines: not shown to beat the index.

@@ -1,0 +1,12 @@
+2026-11-16T23:18:36Z nothing new to book; scorecard refreshed for 2026-11-16
+2026-11-17T09:28:13Z 2026-11-17 bulk {'eod': 1884, 'div': 8, 'splits': 0}
+2026-11-17T09:28:13Z 2026-11-17 booked; ledger 11 b81965537a09
+2026-11-18T09:27:54Z 2026-11-18 bulk {'eod': 1905, 'div': 0, 'splits': 0}
+2026-11-18T09:27:54Z 2026-11-18 booked; ledger 15 283d462e46ab
+2026-11-19T04:31:23Z 2026-11-19 bulk {'eod': 0, 'div': 5, 'splits': 0}
+2026-11-19T04:31:24Z 2026-11-19 bulk re-fetch {'eod': 0, 'div': 5, 'splits': 0}
+2026-11-19T04:31:24Z 2026-11-19 only 0/300 universe closes in the bulk file: EODHD not complete yet; stopping (re-run later)
+2026-11-19T04:31:24Z SCORE state created (A$0 comparators re-computed from 2026-11-17 )
+2026-11-19T04:31:24Z nothing new to book; scorecard refreshed for 2026-11-18
+2026-11-19T09:28:11Z 2026-11-19 bulk re-fetch {'eod': 1930, 'div': 5, 'splits': 0}
+2026-11-19T09:28:12Z 2026-11-19 booked; ledger 40 5d2fba9882ee

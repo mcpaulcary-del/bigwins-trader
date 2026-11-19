@@ -1,0 +1,45 @@
+book,list_pos,code,name,industry_group,score,tv_rank,n,target_AUD
+H82_lifecycle_5k,1,QBE,QBE Insurance Group Limited,Insurance,0.900652,21,4,1250.0
+H82_lifecycle_5k,2,RHC,Ramsay Health Care Ltd,Health Care Equipment & Services,0.897397,66,4,1250.0
+H82_lifecycle_5k,3,CPU,Computershare Ltd,Commercial & Professional Services,0.896558,33,4,1250.0
+H82_lifecycle_5k,4,WOW,Woolworths Group Ltd,Consumer Staples Distribution & Retail,0.896486,18,4,1250.0
+H82_25k,1,QBE,QBE Insurance Group Limited,Insurance,0.900652,21,10,2500.0
+H82_25k,2,RHC,Ramsay Health Care Ltd,Health Care Equipment & Services,0.897397,66,10,2500.0
+H82_25k,3,CPU,Computershare Ltd,Commercial & Professional Services,0.896558,33,10,2500.0
+H82_25k,4,WOW,Woolworths Group Ltd,Consumer Staples Distribution & Retail,0.896486,18,10,2500.0
+H82_25k,5,ANN,Ansell Ltd,Health Care Equipment & Services,0.894936,110,10,2500.0
+H82_25k,6,FPH,Fisher & Paykel Healthcare Corporation Ltd,Health Care Equipment & Services,0.868186,108,10,2500.0
+H82_25k,7,ALL,Aristocrat Leisure Ltd,Consumer Services,0.854908,20,10,2500.0
+H82_25k,8,CGF,Challenger Ltd,Financial Services,0.852355,103,10,2500.0
+H82_25k,9,APA,APA Group,Utilities,0.850496,67,10,2500.0
+H82_25k,10,ASX,ASX Ltd,Financial Services,0.849922,48,10,2500.0
+H82_100k,1,QBE,QBE Insurance Group Limited,Insurance,0.900652,21,30,3333.33
+H82_100k,2,RHC,Ramsay Health Care Ltd,Health Care Equipment & Services,0.897397,66,30,3333.33
+H82_100k,3,CPU,Computershare Ltd,Commercial & Professional Services,0.896558,33,30,3333.33
+H82_100k,4,WOW,Woolworths Group Ltd,Consumer Staples Distribution & Retail,0.896486,18,30,3333.33
+H82_100k,5,ANN,Ansell Ltd,Health Care Equipment & Services,0.894936,110,30,3333.33
+H82_100k,6,FPH,Fisher & Paykel Healthcare Corporation Ltd,Health Care Equipment & Services,0.868186,108,30,3333.33
+H82_100k,7,ALL,Aristocrat Leisure Ltd,Consumer Services,0.854908,20,30,3333.33
+H82_100k,8,CGF,Challenger Ltd,Financial Services,0.852355,103,30,3333.33
+H82_100k,9,APA,APA Group,Utilities,0.850496,67,30,3333.33
+H82_100k,10,ASX,ASX Ltd,Financial Services,0.849922,48,30,3333.33
+H82_100k,11,SOL,Washington H Soul Pattinson & Company Ltd,Financial Services,0.847171,86,30,3333.33
+H82_100k,12,IAG,Insurance Australia Group Ltd,Insurance,0.845666,47,30,3333.33
+H82_100k,13,SUN,Suncorp Group Ltd,Insurance,0.840652,31,30,3333.33
+H82_100k,14,DTL,Data 3 Ltd,Software & Services,0.839077,219,30,3333.33
+H82_100k,15,ANZ,ANZ Group Holdings Ltd,Banks,0.838021,7,30,3333.33
+H82_100k,16,EVT,EVT Ltd,Media & Entertainment,0.833983,264,30,3333.33
+H82_100k,17,MPL,Medibank Private Ltd,Insurance,0.830588,60,30,3333.33
+H82_100k,18,REH,Reece Ltd,Capital Goods,0.828211,137,30,3333.33
+H82_100k,19,CWY,Cleanaway Waste Management Ltd,Commercial & Professional Services,0.824897,83,30,3333.33
+H82_100k,20,STO,Santos Ltd,Energy,0.822979,17,30,3333.33
+H82_100k,21,BGA,Bega Cheese Ltd,"Food, Beverage & Tobacco",0.821477,231,30,3333.33
+H82_100k,22,ARG,Argo Investments Ltd,unknown,0.815513,230,30,3333.33
+H82_100k,23,CSL,CSL Ltd,"Pharmaceuticals, Biotechnology & Life Sciences",0.813283,5,30,3333.33
+H82_100k,24,SDF,Steadfast Group Ltd,Insurance,0.805747,104,30,3333.33
+H82_100k,25,CCP,Credit Corp Group Ltd,Financial Services,0.804044,227,30,3333.33
+H82_100k,26,BOQ,Bank of Queensland Ltd,Banks,0.803824,118,30,3333.33
+H82_100k,27,OML,Ooh!Media Ltd,Media & Entertainment,0.803188,298,30,3333.33
+H82_100k,28,TWE,Treasury Wine Estates Ltd,"Food, Beverage & Tobacco",0.795803,92,30,3333.33
+H82_100k,29,ORG,Origin Energy Ltd,Utilities,0.792193,39,30,3333.33
+H82_100k,30,DDR,Dicker Data Ltd,Technology Hardware & Equipment,0.789688,194,30,3333.33

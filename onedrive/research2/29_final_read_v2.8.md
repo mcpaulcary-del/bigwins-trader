@@ -1,0 +1,82 @@
+# Report 29 — Fourth full final read of FD v2.8
+
+13 November 2026 · reviewer: independent reader, also the v2.9 editor · subject: `FD_v2.8.md` (2,101 lines) · result: `FD_v2.9.md`
+
+## 1. Headline
+
+**This read found 1 High finding. It is fixed in v2.9. Because a full read has again found a High finding, v2.9 is not declared final: its status row reads "Final candidate" and asks for one more independent full read. No `FD_FINAL.md` was created.**
+
+5 findings in all: **0 Critical, 1 High, 1 Medium, 3 Low.** All 5 were edited in v2.9.
+
+| ID | Severity | One line |
+| --- | --- | --- |
+| Z-01 | High | The restore drill starts a restored copy of the instance while production is in service. The copy holds the same bot token and reads the bot at its start, so a `/kill` or `/veto` sent during a drill could be taken and answered by the copy while production trades on |
+
+The High finding is the fault that report 27 closed for a paper runner (Q-02: two processes reading one bot), in a place no earlier read looked. It is narrow in practice: it needs a real stop command during the hours of a drill (before go-live and once a quarter). It is rated High because the earlier reads rated every path on which the user's stop is lost while the user believes it is in force as High or Critical (R-01, Q-01, Q-02, P-01), and this path gives a false kill page, as Q-02 did. A reader who weighs the short window more heavily could call it Medium; section 4 says what that would change.
+
+All six report 28 fixes (P-01 to P-06) are correct as far as they go, and none introduced a defect. Two small edges of P-01 are picked up (Z-03, Z-05).
+
+## 2. What was done
+
+One reader read `FD_v2.8.md` from the title to the end of section 30: document control, "How to read", every change-log part (CL-N, CL-M, CL-L, CL-J, CL-K, CL-H, CL-I, CL-A to CL-G) and sections 1 to 30, including the section 18 YAML, the key index, section 21 and section 22. No section was skipped or sampled. The long rows (OPS-02, OPS-06, PRT-16, PRT-19, EXE-12, TAX-05, the section 24 proxy paragraph, BP-16, BP-20) were read in full.
+
+Report 28 was read in full. Reports 11 to 27 were searched only, for three questions: what report 27 meant by a `/veto` "of its day"; whether any report says what a restore-drill copy shares with production; and whether any report holds a fact about Telegram. No earlier spec version was opened. The archive file was not re-read; only its header was re-pointed.
+
+**Method.** First, each report 28 fix was read where it sits and checked against the paragraphs around it, with three questions for the long-outage kill of P-01: can it block a risk-off exit outside the `KILLED` behaviour the owner accepted, can it fire at an ordinary restart, and is it cleared correctly. Then each path that can send, carry, retry, replace, cancel or block an order was walked again, and each place where a second process of this system can exist beside the live runner (the paper runner, the tools client, a restore, a restore drill). The prose was checked against the section 18 YAML and the section 3 interfaces.
+
+**Rules followed.** Smallest edit that removes the problem. No redesign. No number added. No owner decision (OD1 to OD9) and no editor's reading already recorded was reopened. No requirement ID, reason code, config key, command, table, column or open item was added or withdrawn. One message prefix is new (`DRILL`, after the `PAPER` prefix of OPS-01).
+
+**One limit of this read.** The 24-hour Telegram figure (open item P10) could not be checked in this session either: the host `core.telegram.org` is outside the session's network allow-list. P10 stays open. No finding depends on the exact figure.
+
+## 3. Findings
+
+| ID | Severity | Location (v2.8) | Problem | Fix applied in v2.9 |
+| --- | --- | --- | --- | --- |
+| Z-01 | High | BP-16 (restore drill); OPS-01, OPS-02, INF-01, section 15 commands | A restore drill runs before go-live and each quarter "while the production instance stays in service". BP-16 keeps the restored copy off IBKR (R-02: gateway containers not started) and says nothing else about it. Its `trader` container is started (INF-01: `docker compose up`, secrets and a restore give "a working system"), with the same secrets, the bot token among them, and OPS-02 makes every runner read the pending bot commands at its start and go on reading. OPS-01 states the consequence for a paper runner: "Two processes that both read one bot would each receive only some of the commands". So a `/kill` or `/veto` sent during a drill can be taken by the copy. The copy sets `KILLED` in its own restored ledger and sends the kill page, which section 15 names as the confirmation; production trades on. Example: the owner runs the quarterly drill on the morning of an execution date, reads the 08:10 plan, sends `/veto ALL` (or `/kill`) at 09:00, the copy takes it, and production sends the orders at 11:30. The copy's late jobs under OPS-02 ("run once as soon as the runner is up") do further harm in every drill: heartbeat and check-ins that hide a silent production from the dead-man monitor, vendor calls against the same 20-a-day budget (DAT-23), a backup written to the production backup path, and a dashboard snapshot of the restored state. Rated High like Q-02: a stop the user believes is in force is not. Not Critical: it needs a real stop command inside the hours of a drill, and the 20:00 digest from production still says it is not killed | BP-16: the restored copy of a drill takes no part in anything it would share with production. It reads no Telegram command, sends no heartbeat or check-in, makes no vendor call, writes nothing to the backup or dashboard store, and starts every message with `DRILL`. The restore procedure is told the restore is a drill and sets this with the halt flag, before the runner is started. The acceptance test adds: a `/kill` sent during a drill is in force on production and the copy has read no command, sent no check-in and written nothing. Section 15 says the commands still act on production during a drill. Editor's reading: no report says what a drill copy shares with production |
+| Z-02 | Medium | OPS-02 "Commands sent while the runner was down" | "A `/veto` is applied to the plan of the day it was sent if Telegram stamped it by `veto_deadline` (OPS-04); an older one is logged and ignored." "Older" is not defined and can be read as "sent on an earlier day than the start". On that reading: the runner dies at 08:20 on Monday, the user sends `/veto ALL` at 08:30, the runner returns on Tuesday at 07:00 (inside Telegram's retention, so P-01 does not fire). The veto is ignored, Monday's buys are carried under PRT-27 and sent on Tuesday, although Telegram stamped the veto in time and PRT-27 says "a vetoed intent is not carried". Report 27's own fix text ("a `/veto` stamped by the veto deadline of its day is applied") points the other way, so a builder must guess. Rated Medium: it can send a buy the user vetoed, but Tuesday's plan shows the buy again and has its own veto window | OPS-02: the veto is applied to the plan of the day it was sent, if Telegram stamped it by that day's deadline, on whatever day the runner reads it; an intent it names that has not been sent is vetoed and is not carried. Any other `/veto` found at a start is logged and ignored. Editor's reading, the one OPS-04 and PRT-27 imply |
+| Z-03 | Low | OPS-02 "Out of touch for longer than Telegram keeps a message" | The rule fires "when the runner next reads the bot". If the bot still cannot be read at the start that follows a long outage, two recorded rules meet and the text does not say which holds: P-01 (set `KILLED`) or Q-01 (no buy, sells proceed, page by email). Read literally the kill waits for the first read that succeeds, and until then sells proceed. That is the same result Q-01 and P-02 already accept for any time the bot cannot be read, and the user is told by email that commands are not arriving, so it is not a new defect; but a builder should not have to work it out, and the owner should know | OPS-02 says so in one sentence: the test is made at the first read that succeeds; until then the rule for a bot that cannot be read applies. No behaviour changed |
+| Z-04 | Low | TAX-05 (Q-09) | A parcel that enters the ledger after the 30 June 2027 snapshot gets its `valuations_2027` row "(an import at `trader init`, OPS-06) … when it is imported". A trade dated before 1 July 2027 that is booked from Flex after the snapshot ran also creates such a parcel: a recovery after a restore that lost the last June trading day (BP-16), or a manual trade whose Flex statement was late (BP-20). It has no row and no rule, and TAX-04 and TAX-05 need the row at disposal | TAX-05: the parenthesis names these trades as well; the row is written "when it enters the ledger" |
+| Z-05 | Low | OPS-02 (P-01) | The out-of-touch rule compares "the time of its last successful read" with Telegram's retention, but nothing says how often a running system reads the bot. The kill drill (time to kill under 2 minutes, BP-05) implies frequent reading only at the time of the drill. A builder who reads the bot only around the order jobs, or only on trading days, would set `KILLED` after every weekend, and the owner would learn to clear kills by habit | OPS-02: while it is up the runner reads the bot continuously, on every calendar day, so the rule cannot fire in normal running, at an ordinary restart or after a weekend. No number added |
+
+## 4. What the owner should know
+
+- **Z-01 changes what a restore drill does.** The restored copy is silent towards everything production uses: it reads no Telegram command, sends no check-in, fetches no vendor data and writes no backup or dashboard file, and its messages start with `DRILL`. Until this is built, a drill should not be run with the bot token entered on the drill machine. If the owner judges the window too short to matter and reads Z-01 as Medium, nothing in v2.9 changes except the status row; the fix is the same.
+- **Z-02:** a veto sent in time counts for its own day's plan even if the system reads it a day late; the vetoed order is not carried.
+- **Z-03 is not a change, but it is a limit of the P-01 rule.** After an outage of more than a day the system comes back `KILLED` only once it can read the bot again. If Telegram cannot be reached at that start, it pages by email, sends no buy, and still sends the rule's sells, as it does whenever the bot cannot be read (the reading recorded for Q-01 and P-02). The safe habit is the one section 15 already states: a `/kill` that brings no kill page is not in force; use `trader kill` on the server or the IBKR app.
+- **Open item P10** (how long Telegram keeps an unread message) is still unverified.
+
+None of these needs a decision before the build.
+
+## 5. The report 28 fixes (P-01 to P-06)
+
+Each was checked against the v2.8 text.
+
+- **P-01** (long-outage kill): correct.
+  - *Does it block an exit outside the accepted `KILLED` behaviour?* No. It sets the ordinary kill flag. Everything that follows is section 10's `KILLED` paragraph, which the owner accepted (ruling 1, OD2, O3): every order stops, `decide()` keeps running, the daily page names each blocked sell with the order sheet, and each line is `MANUAL_PENDING`. It adds no new state and no new block.
+  - *Can it fire at every restart?* No. It fires only when the stored last read is older than Telegram's retention. It is exempt at the first start after `trader init`. It does not fire for a paper runner beside a live one, which reads no bot (OPS-01). One gap: nothing said how often a running system reads the bot (Z-05).
+  - *Is it cleared correctly?* Yes: `trader resume --clear kill` with the second factor, like any kill. The read at which it fired was a successful read, so the stored time is fresh and it does not fire again. A `/kill` that Telegram still held is applied as well, and one resume clears both. A resume before 08:00 is planned that day and a later one the next day (EXE-12, P-03).
+  - *The arithmetic of the test is right:* a `/kill` sent after the last read can have been dropped only if the last read is more than the retention period back.
+  - One edge: the start at which the bot cannot be read (Z-03).
+- **P-02** (bot unreachable at 11:15): correct; the 11:15 row of section 4 and OPS-02 agree; held buys become `NOT_SENT` and take the 13:00 route or carry.
+- **P-03** (no release on the day of a resume): correct for every flag set after the 08:10 plan, which is the case it was written for. A kill set and cleared between 08:00 and 08:10 is not covered by the words "that a kill … stopped"; the plan made at 08:10 is then an ordinary plan with its own veto window. Left as it is.
+- **P-04** (order found cancelled after a restart): correct; section 11 step 5 builds no fresh intent in that case either, because a broker order exists.
+- **P-05** (snapshot rows lost by a restore): correct; the job runs whatever the halt, so the `HALTED_INTEGRITY` that follows every restore does not stop it. One edge on the neighbouring Q-09 rule (Z-04).
+- **P-06** (step 5 named): correct.
+
+## 6. Things checked and found consistent, or left as they are
+
+- **Second processes.** The paper runner (OPS-01), the tools client 12 (no path to `Broker.place`), CLI commands (none places an order when typed), a real restore (halts, R-01), a restore drill (off IBKR, R-02; the rest was Z-01).
+- **The stored last-read time lost.** OPS-02 exempts "the first start after `trader init`, when no read has been stored". A later start with no stored value has no rule. The value sits with the scheduler's persistent job store, on the same disk as the ledger, so it is lost only with the disk, and every restore starts in `HALTED_INTEGRITY` with the user told to give any kill again (BP-16). Not changed.
+- **The clock at a start.** The test trusts the server clock at the start; the NTP check comes at 11:15. A machine that boots with a clock set back would under-measure the gap. Hardware fault outside this specification; noted for the builder, not changed.
+- **Duplicate, oversized and stale orders.** The send-time quantity (target minus managed position minus open orders), one intent per symbol per day, the BP-02 barrier, the latching limits, the 2% reference test and the confirming-snapshot path were walked for a missed login, a late start, a partial fill, a crash before and after `placeOrder`, an external cancel and a resume. Nothing new.
+- **Unheld units.** RSK-03, RSK-06, `Book.positions`, PRT-19, section 11 step 2, BP-03 and BP-20 agree on managed units.
+- **Bad data.** Each missing or disputed input blocks the buy and lets the rule's own sell through on a valid quote, or blocks the symbol.
+- **Halts and freezes.** What sets and clears each flag; no stop is cleared without the second factor.
+- **Exits blocked.** Outside `KILLED` and an integrity halt, a sell waits only for a named cause with a page and an order-sheet line (freeze, BLOCK verdict, foreign order, held quote, missed login, IBKR rejection, external cancel).
+- **Tax ledger.** Parcel matching, the two slices, the snapshot, units entitled, the income year, capital losses. The one gap is Z-04.
+- **Prose against the section 18 YAML, the key index and the section 3 interfaces.** No difference found. The times, tolerances and limits in sections 4, 6, 9 to 12 and 15 match the YAML; `RunContext`, `Book` and `Broker` carry what the rules use. The verify script checks the YAML and the key index mechanically.
+- **Calendar table.** The weekdays of the 2026–27 dates in section 5 are right.
+
+## 7. Verification
+
+`verify_v29.py` (adapted from `verify_v28.py`) checks, in addition to everything the v2.8 script checked: the CL-O table (Z-01 to Z-05 present once each); that every `[R29 Z-xx]` citation resolves and every applied finding is cited in Part A or B; that the text each fix promises is present and the replaced phrases are gone; that the CL-O totals and the version row match the severities in this report; that the status row does not say "Final" or "ready to build" while CL-O holds a Critical or High finding; the v2.9 title, version row and status row; that Parts A and B no longer call themselves v2.8; and the re-issued archive file. Run: `python3 -I verify_v29.py onedrive/FD_v2.9.md onedrive/research2` from the scratchpad directory. The run result is in the hand-over note.

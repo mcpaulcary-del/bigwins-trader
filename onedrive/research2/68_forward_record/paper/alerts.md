@@ -1,0 +1,32 @@
+# Intraday alert log (append-only). Indicative, delayed quotes. NO trading decision is made intraday (v1.3 decides on closes).
+
+- 2026-11-16 23:38Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL'] leaving ['TWE']
+- 2026-11-16 23:38Z INDICATIVE top-90 band vs 2026-11-16: entering ['BHP', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'ELD', 'IPH', 'ORI']
+- 2026-11-17 02:01Z INDICATIVE top-90 band vs 2026-11-16: entering ['SPK', 'WGN'] leaving ['IPH', 'ORI']
+- 2026-11-17 03:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['INA'] leaving ['TWE']
+- 2026-11-17 03:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['SPK', 'WES', 'WGN'] leaving ['CDA', 'IPH', 'ORI']
+- 2026-11-17 05:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['INA'] leaving ['TWE']
+- 2026-11-17 05:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['SIQ', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'CDA', 'IPH', 'ORI']
+- 2026-11-17 23:20Z +20% JUMP NXL +47.8% (possible takeover/scheme; check ASX announcements)
+- 2026-11-17 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL', 'NUF'] leaving ['DDR', 'TWE']
+- 2026-11-17 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['NXL', 'SPK', 'WGN'] leaving ['BTR', 'CDA', 'ORI']
+- 2026-11-18 01:20Z +20% JUMP NXL +45.9% (possible takeover/scheme; check ASX announcements)
+- 2026-11-18 01:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL', 'INA'] leaving ['DDR', 'TWE']
+- 2026-11-18 01:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['NXL', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'CDA', 'IPH', 'ORI']
+- 2026-11-18 03:20Z +20% JUMP NXL +45.9% (possible takeover/scheme; check ASX announcements)
+- 2026-11-18 03:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'INA'] leaving ['DDR', 'TWE']
+- 2026-11-18 03:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['NXL', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'CDA', 'IPH', 'ORI']
+- 2026-11-18 05:20Z +20% JUMP NXL +45.3% (possible takeover/scheme; check ASX announcements)
+- 2026-11-18 05:20Z HOLDING MOVE TEA -8.4% on day (quote 8.98, last close 9.8)
+- 2026-11-18 05:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL'] leaving ['DDR']
+- 2026-11-18 05:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['NXL', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'CDA', 'IPH', 'ORI']
+- 2026-11-18 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'INA'] leaving ['DDR', 'TWE']
+- 2026-11-18 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'NXL', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'CDA', 'IPH', 'ORI', 'SRG']
+- 2026-11-19 01:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-19 01:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['DXS', 'NXL', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['BTR', 'CDA', 'IPH', 'NUF', 'ORI', 'SRG']
+- 2026-11-19 03:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-19 03:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['DXS', 'MMS', 'NXL', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'CDA', 'IPH', 'ORI', 'PRU', 'SRG']
+- 2026-11-19 05:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-19 05:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['DXS', 'NXL', 'SHL', 'SPK', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'ORI', 'SRG']
+- 2026-11-19 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-19 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'DXS', 'MMS', 'SHL', 'SIQ', 'SPK', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'ORI', 'PRU', 'SRG', 'XYZ']
