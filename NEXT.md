@@ -1,7 +1,9 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 2)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3)
 
-Branches: `bigwins-fast` (tested baseline) and `bigwins-fast-wip` (this work: pieces 1
-and 2 of 3 done, green; piece 3 = merge). **Paper only.** No code here can place a real order:
+Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
+c07197c and deleted locally; **its remote copy could not be deleted from this session**
+(the git proxy refuses branch deletion): delete `origin/bigwins-fast-wip` by hand, it
+points at c07197c, already in `bigwins-fast`). **Paper only.** No code here can place a real order:
 `LIVE_TRADING_ENABLED` is hard-coded `False`, `allow_live` is `Literal[False]` in the
 config schema, and the adapter refuses live ports, non-`DU` accounts and a gateway
 that manages any non-`DU` account. Live enablement is a separate owner step after the
@@ -50,15 +52,30 @@ go-live checklist, by a reviewed code change.
 - Found on the record: **HGO** (held) is missing from the feed on 16-18 Nov; a held name
   without a mark is now valued at its last mark and flagged (was valued at zero).
 
-## Piece 3 — merge (next)
+## Piece 3 (done on `bigwins-fast`, 19 Nov 2026)
 
-1. Merge `bigwins-fast-wip` into `bigwins-fast` (fast-forward or a merge commit; never
-   force-push), re-run the full gate on `bigwins-fast` (ruff, ruff format --check, mypy
-   --strict, pytest, `req_coverage --milestone BF`, both validate-config steps; and the
-   record tests with `bfenv.sh` sourced, about 10 min), push, then delete
-   `bigwins-fast-wip` locally and on origin. Update this file's header.
-2. Existing journals (none in production) need
-   `ALTER TABLE bf_safety ADD COLUMN scope VARCHAR(40) NOT NULL DEFAULT ''` (BF-D16).
+- Gate after piece 3: ruff, format, mypy --strict, validate-config x2, pytest 479
+  passed (7 skipped: Postgres), BF coverage gate; record replay 5/5 and T6 golden 3/3
+  with the data mounted.
+- **Merge**: `bigwins-fast-wip` fast-forwarded into `bigwins-fast`; full gate green on
+  `bigwins-fast` (ruff, format, mypy --strict, both validate-config, pytest,
+  `req_coverage --milestone BF`; record replay and T6 golden with the data mounted).
+- **100 random twins** `EMG2_18_RND_s001...s100` (seeds 8550000 + i; BF-D18): the
+  simulated twin's code path and costs with a persistent seeded random score per entity
+  (redrawn p = 0.2 a month) in place of rule 3's order; daily percentile in the report
+  and the journal; `BfApp.twin_rank` reads it, so **L11 test (b) runs and stage 2
+  resumes automatically** (go-live blocker closed). Golden: a twin given rule 3's order
+  equals `EMG2_18_SIM` to the cent; record replay 30 Oct-18 Nov pinned: on 18 Nov the
+  twin (A$9,856.95 with HGO carried as KAN) is at the 41.0 percentile of its 100
+  random twins (values digest `23843130ca83`).
+- **Journal under Alembic** (branch `journal`: j0001 baseline, j0002 `bf_safety.scope`
+  (BF-D16), j0003 `bf_identity`); test on SQLite (and Postgres where available); CI
+  migrates `journal_ci`. Existing journals: `alembic -x db=journal stamp j0001`, then
+  `upgrade journal@head`.
+- **Code changes** (BF-D19): a held code that stops trading and that A7 maps to a
+  trading code is carried under the new code (HGO -> KAN on 16 Nov 2026 in the
+  record), never bought twice, reconciled against a broker still on the old code, owner
+  paged to confirm `/idmap OLD NEW <code>` or undo `/idmap_reject OLD <code>`.
 
 ## Owner / record keeper points still open
 
@@ -67,13 +84,13 @@ go-live checklist, by a reviewed code change.
    cleared by an automatic resume inside an episode; "within one decision" = the first
    month-end decision after the stage-3 breach, sale starting at that decision; the
    wind-down sells still need per-order approval (L8). Owner: confirm or correct.
-2. **100 random twins (seeds 8550000 + i) are not built.** Test (b) cannot pass until
-   they run, so stage 2 does **not** resume automatically yet (fails safe, paged).
-   Build before go-live (go-live blocker).
+2. ~~100 random twins~~: built (BF-D18). Record keeper: confirm the counter-based
+   score (BF-D18) as the registered method for `EMG2_18_RND_*`, or name another.
 3. L12 stop input (`l12_stop`) is a hook only; none applies before the first December
    review 13 months after registration.
-4. HGO missing from the record's EODHD feed on 16-18 Nov 2026 (consolidation in Aug
-   2026; `HGODB` listed): record keeper to check the identity mapping / suspension.
+4. HGO -> KAN (BF-D19): handled as a code change (PROPOSED); record keeper / owner to
+   confirm from the ASX announcement (`/idmap HGO KAN <code>`), and the record's own
+   books to follow.
 5. Raise the IBKR precaution "max order value" above the largest expected sell before
    go-live (BF-D3).
 
@@ -92,15 +109,15 @@ go-live checklist, by a reviewed code change.
 3. **Runner**: APScheduler in the trader container (Australia/Sydney, ASX calendar,
    advisory lock, idempotent jobs), the Telegram polling loop (`ApprovalBot`), the
    `/kill` path wired to `Executor.kill` (must cancel within 60 s — BF2 test on paper).
-4. **EMG2_18_SIM twin**: done (daily, own safety latch, L13 in the report). **100 random
-   twins** (seeds 8550000 + i, AMENDMENT_shadow_EMG2 §12 method) and the A200
-   comparator: still to build; they feed L11 test (b) via `BfApp.twin_rank`.
+4. **EMG2_18_SIM twin** and its **100 random twins**: done (BF-D18). The A200
+   comparator (`EMG2_18_CMP_A200`, L14 monthly line) is still to build.
 5. **Canary flow** (L6): done and replayed on record data (carry, stop, recon wait,
    restart); the paper-gateway run is part of dry runs 1-5.
 6. **Heartbeat + backups**: healthchecks dead-man, nightly encrypted off-site copy,
    restore drill. One line a day to `LEDGER.jsonl` (FD §21.1; coordinate with the
    record keeper — this build does not touch `$B/bigwins_forward` or `$B/onedrive`).
-7. **B4 ledger**: move `bf_*` tables into the v3.0 ledger (Alembic, grants, guard).
+7. **B4 ledger**: the `bf_*` tables are under Alembic (branch `journal`); still to do:
+   move them into the v3.0 ledger database (grants, mutability guard).
 8. **Paper dry runs 1-5** (BF3/BF4 acceptance) and the go-live evidence pack.
 
 ## Go-live checklist (FD §21.1) — status from this build
@@ -122,13 +139,34 @@ go-live checklist, by a reviewed code change.
 | 13 | Risk statement signed; 5% of investable assets | Owner |
 | 14 | Parcels for paper fills; short-term gains understood | Journal has fills; parcel/tax view open |
 | 15 | Owner reachable by 15:20 through April 2027 | Owner |
-| + | 100 random twins running (L11 test (b), staged-rule amendment registered) | **Open: blocks automatic resume** (BF-D15) |
+| + | 100 random twins running (L11 test (b), staged-rule amendment registered) | Twins built and running (BF-D18); amendment registration with the record keeper |
+
+## What remains before go-live (in order)
+
+1. **Server**: BinaryLane Sydney server (owner orders it), Docker, Tailscale, no
+   inbound port, `deploy/` compose up, `docs/SETUP_SYDNEY.md`.
+2. **IBKR reality spike** on the paper gateway (item 1 above): LOC accepted / cut-off,
+   auction-sale funds, `orderRef` after restart, Flex timing, account tags, quotes.
+3. **Five reconciled paper dry runs** on a real IBKR paper gateway (sessions with
+   orders, ledger = broker to the unit and the cent each day; go-live item 2).
+4. **`/kill` drill from the owner's phone** (cancel within 60 s), plus `/pause`,
+   `/stop`, `/continue`, `/idmap`; re-arm needs 2FA (item 4).
+5. **Heartbeat and backups**: healthchecks dead-man 5 days, nightly encrypted
+   off-site copy, a restore drill (items 9-10).
+6. Runner on the server (APScheduler, Telegram polling) with the journal migrated
+   (`alembic -x db=journal upgrade journal@head`) and the deposits recorded.
 
 ## What the owner must provide (on the server, never in chat)
 
-IBKR Pro cash account with ASX permission and the paper account enabled (paper
-username/password typed into the server's Docker secret files; paper `DU` id into
-config); the always-on Sydney server with Tailscale; a Telegram bot token and the
-owner's chat id; the TOTP seed added to the owner's authenticator; later, the
-A$10,000 deposit and the IBKR precautions. See `docs/SETUP_SYDNEY.md`. Owner decisions
-still wanted: confirm the BF-D15 interpretations of the staged loss rule (open point 1).
+- **IBKR**: IBKR Pro cash account with ASX permission and the paper account enabled;
+  the paper username/password typed by the owner into the server's Docker secret
+  files; the paper `DU` id into config. Later the A$10,000 deposit and the precautions.
+  Pricing (report 91): IBKR **tiered** about A$710 a year at this book's turnover vs
+  **fixed** about A$845 — choose tiered. Tiger / moomoo charge about A$3 an order but
+  their APIs are unproven for this system (no paper-tested order path): not used.
+- **BinaryLane** server in Sydney (always on), with Tailscale.
+- **Telegram** bot token and the owner's chat id (secret file / config).
+- **Authenticator**: the TOTP seed added to the owner's authenticator app (secret file).
+
+Owner decisions still wanted: confirm the BF-D15 interpretations of the staged loss
+rule (open point 1) and the HGO -> KAN code change (open point 4).
