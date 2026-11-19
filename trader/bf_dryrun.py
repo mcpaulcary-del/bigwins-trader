@@ -104,6 +104,46 @@ def store_providers(
     return panel, closes, marks_from_panels(panel), lic.describe()
 
 
+Providers = tuple[PanelProvider, CloseProvider, CloseProvider, str]
+
+
+def mock_app(
+    cfg: BfastConfig,
+    providers: Providers,
+    sessions: Sequence[date],
+    start: date | None,
+    journal_path: str = ":memory:",
+    gw: MockGateway | None = None,
+    seed: str | None = None,
+) -> tuple[BfApp, MockGateway, str]:
+    """A ``BfApp`` on the mock gateway with a simulated owner's authenticator. Passing
+    the same ``gw``, ``journal_path`` and ``seed`` again is a restart: the new app has
+    only what the journal and the broker hold (nothing in memory carries over)."""
+    panel, closes, marks, note = providers
+    seed = seed or base64.b32encode(secrets.token_bytes(10)).decode()
+    chat = 1
+    fresh = gw is None
+    gw = gw or MockGateway(accounts=("DU0000001",), cash=float(cfg.live_emg2_20.capital_cap_aud))
+    broker = IbkrPaperBroker(
+        IbkrSettings(cfg.broker.host, cfg.broker.port, cfg.broker.client_id, "DU0000001"),
+        ib_factory=lambda: gw,
+    )
+    broker.connect()
+    j = Journal.sqlite(journal_path)
+    s = settings_from(cfg, frozenset({chat}), start, note)
+    sim = SimBroker(cash=s.capital_aud, half_spread=s.sim_half_spread)
+    if fresh:
+        for book in (s.book, s.sim_book):
+            j.add_cash(book, "DEPOSIT", s.capital_aud, "dry-run deposit")
+    else:  # restart: the twin's simulated broker is rebuilt from the journal
+        sim = SimBroker.from_journal(j, s.sim_book, s.sim_half_spread)
+    app = BfApp(
+        s, j, broker, sim, FakeTransport(), TotpVerifier(SecretValue(seed)), sessions, panel,
+        closes, marks,
+    )  # fmt: skip
+    return app, gw, seed
+
+
 def forward_store_dry_run(
     cfg: BfastConfig,
     store: Path,
@@ -111,25 +151,14 @@ def forward_store_dry_run(
     days: Sequence[date],
     decisions: Mapping[date, str],
     journal_path: str = ":memory:",
+    providers: Providers | None = None,
 ) -> tuple[DryRunSummary, BfApp, FakeTransport]:
-    panel, closes, marks, note = store_providers(cfg, store, sessions)
-    seed = base64.b32encode(secrets.token_bytes(10)).decode()  # the simulated owner's authenticator
-    chat = 1
-    gw = MockGateway(accounts=("DU0000001",), cash=float(cfg.live_emg2_20.capital_cap_aud))
-    broker = IbkrPaperBroker(
-        IbkrSettings(cfg.broker.host, cfg.broker.port, cfg.broker.client_id, "DU0000001"),
-        ib_factory=lambda: gw,
-    )
-    broker.connect()
-    j = Journal.sqlite(journal_path)
+    providers = providers or store_providers(cfg, store, sessions)
     start = min((d for d, k in decisions.items() if k == "S"), default=None)
-    s = settings_from(cfg, frozenset({chat}), start, note)
-    for book in (s.book, s.sim_book):
-        j.add_cash(book, "DEPOSIT", s.capital_aud, "dry-run deposit")
-    sim = SimBroker(cash=s.capital_aud, half_spread=s.sim_half_spread)
-    tr = FakeTransport()
-    app = BfApp(
-        s, j, broker, sim, tr, TotpVerifier(SecretValue(seed)), sessions, panel, closes, marks
+    app, gw, seed = mock_app(cfg, providers, sessions, start, journal_path)
+    tr = app.transport
+    assert isinstance(tr, FakeTransport)
+    summ = dry_run(
+        app, days, decisions, owner_approves_all(app, seed), mock_auction(gw, providers[1])
     )
-    summ = dry_run(app, days, decisions, owner_approves_all(app, seed), mock_auction(gw, closes))
     return summ, app, tr

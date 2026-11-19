@@ -574,6 +574,11 @@ class BfApp:
 
     def job_reconcile(self, day: date, now: datetime) -> None:
         r = reconcile_and_page(self.j, self.broker, self.s.book, self.transport, self.s.chats, now)
+        self.j.mark_job(
+            f"recon:{self.s.book}:{day}",
+            {"ok": r.ok, "breaks": list(r.breaks), "cash": str(self.j.cash(self.s.book))},
+            now,
+        )
         if not r.ok:
             self.log.append("RECON BREAK " + "; ".join(r.breaks))
         self._start_followup(day, now, r.ok)
@@ -656,6 +661,7 @@ class BfApp:
 
     def job_report(self, day: date, now: datetime) -> None:
         px = dict(self.marks(day))
+        stale = self._carry_marks(px, day, now)
         pos = self.j.positions(self.s.book)
         cash = self.j.cash(self.s.book)
         value = cash + sum((px.get(e, Decimal(0)) * q for e, q in pos.items()), Decimal(0))
@@ -711,10 +717,37 @@ class BfApp:
             commission_to_date=sum((f.commission for f in self.j.fills(self.s.book)), Decimal(0)),
             orders_today=orders,
             safety=self.j.safety_level().value,
-            flags=list(reading.alerts),
+            flags=[*stale, *reading.alerts],
             sim_value=sim_value,
         )
         self.say(daily_report(x))
+
+    def _carry_marks(self, px: dict[str, Decimal], day: date, now: datetime) -> list[str]:
+        """A held name with no mark today (suspended, missing from the day's feed, an
+        identity change) is valued at its last recorded mark, never at zero, so a data
+        gap cannot fake an L11 stage; the report flags it. Marks of held names are kept
+        in the journal (``marks:<day>``) for this."""
+        held = set(self.j.positions(self.s.book)) | set(self.j.positions(self.s.sim_book))
+        flags: list[str] = []
+        missing = sorted(e for e in held if e not in px)
+        if missing:
+            last: dict[str, tuple[str, str]] = {}
+            for key, rec in self.j.job_records("marks:"):
+                for e, v in rec.items():
+                    last[e] = (key.split(":", 1)[1], v)
+            for e in missing:
+                if e in last:
+                    px[e] = Decimal(last[e][1])
+                    flags.append(
+                        f"WARN: no mark for {e} on {day}; valued at its last mark "
+                        f"{last[e][1]} of {last[e][0]}"
+                    )
+                else:
+                    flags.append(f"PAGE: no mark ever recorded for held {e}; valued at zero")
+        if not self.j.job_done(f"marks:{day}"):
+            fresh = {e: str(px[e]) for e in sorted(held) if e in px and e not in missing}
+            self.j.mark_job(f"marks:{day}", fresh, now)
+        return flags
 
     def _latch_book_halts(
         self, reading: BookReading, before: set[str], day: date, now: datetime
@@ -999,6 +1032,8 @@ class DryRunSummary:
     safety: str
     messages: int
     pages: list[str]
+    recon: dict[str, bool] = field(default_factory=dict)  # session -> reconciled to the cent
+    l13_notes: dict[str, list[str]] = field(default_factory=dict)  # decision -> names
 
 
 def dry_run(
@@ -1026,4 +1061,8 @@ def dry_run(
         safety=app.j.safety_level().value,
         messages=len(getattr(app.transport, "outbox", [])),
         pages=[x for x in app.log if x.startswith(("PAGE", "RECON"))],
+        recon={
+            k.rsplit(":", 1)[1]: bool(r["ok"]) for k, r in app.j.job_records(f"recon:{app.s.book}:")
+        },
+        l13_notes={k.split(":", 1)[1]: list(r["diff"]) for k, r in app.j.job_records("l13:")},
     )

@@ -176,43 +176,6 @@ def test_app_never_builds_a_live_broker(bad: str) -> None:
         IbkrPaperBroker(IbkrSettings("gw", 4004, 21, bad), ib_factory=MockGateway)
 
 
-FWD = __import__("os").environ.get("TRADER_FORWARD_STORE")
-
-
-@pytest.mark.skipif(not FWD, reason="set TRADER_FORWARD_STORE to the record's EODHD store")
-def test_BF_dry_run_replays_30_oct_and_18_nov_record_data() -> None:
-    """End to end on recorded data against the mock gateway: start decision 30 Oct
-    (canary 2 Nov, the other 17 on 3 Nov after the canary reconciled), every session to
-    18 Nov with the closing auction at the recorded close, a regular decision on 18 Nov
-    for 19 Nov; reconciled to the cent every day; no page, no halt."""
-    from pathlib import Path
-
-    from tests.bf_support import asx_sessions, real_config
-    from trader.bf_dryrun import forward_store_dry_run
-
-    assert FWD
-    cfg, sess = real_config(), asx_sessions()
-    start, end = date(2026, 10, 30), date(2026, 11, 18)
-    days = [d for d in sess if start <= d <= end]
-    summ, app, tr = forward_store_dry_run(cfg, Path(FWD), sess, days, {start: "S", end: "R"})
-    assert summ.batches["EMG2_18_PAPER-2026-10-30-C"] == {Status.FILLED: 1}
-    assert app.j.batch("EMG2_18_PAPER-2026-10-30-C")["execution_date"] == date(2026, 11, 2)  # type: ignore[index]
-    assert app.j.batch("EMG2_18_PAPER-2026-10-30-S")["execution_date"] == date(2026, 11, 3)  # type: ignore[index]
-    start_buys = [
-        it for b in ("C", "S") for it, _ in app.j.intents_of(f"EMG2_18_PAPER-2026-10-30-{b}")
-    ]
-    assert len(start_buys) == 18 and all(it.value_at_ref >= 500 for it in start_buys)
-    assert summ.batches["EMG2_18_PAPER-2026-10-30-S"].get(Status.FILLED, 0) >= 14
-    sim_start = app.j.intents_of("EMG2_18_SIM-2026-10-30-S")
-    assert {it.entity for it, _ in sim_start} == {it.entity for it in start_buys}
-    assert app.j.batch("EMG2_18_PAPER-2026-11-18-R")["execution_date"] == date(2026, 11, 19)  # type: ignore[index]
-    assert summ.safety == "NORMAL" and not summ.pages
-    assert summ.positions == app.broker.positions()
-    assert abs(summ.cash - summ.broker_cash) < Decimal("0.01")
-    assert len([t for _, t in tr.outbox if t.startswith(PAPER_BANNER)]) == len(days)
-    assert any(t.startswith("Decision 2026-10-30") and "LIC list" in t for _, t in tr.outbox)
-
-
 # ---------------------------------------------------------------- carry, restart, data
 
 
@@ -656,6 +619,21 @@ def test_BF_D16_twin_latch_does_not_reach_the_broker_book() -> None:
     j.set_safety(SafetyLevel.KILLED, "owner /kill", "telegram:1")
     assert j.safety_level("EMG2_18_SIM") is SafetyLevel.HALTED_BUYS
     assert j.safety_level() is SafetyLevel.KILLED
+
+
+def test_BF_held_name_without_a_mark_is_valued_at_its_last_mark_not_zero() -> None:
+    """A held name missing from the day's data (suspension, feed gap: HGO on 17-18 Nov
+    2026 in the record) keeps its last recorded mark, so a gap cannot fake an L11 stage."""
+    app, gw, tr = _app(D0)
+    dry_run(app, DAYS[:4], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    gone = sorted(app.j.positions(app.s.book))[0]
+    marks = app.marks
+    last = marks(DAYS[3])[gone]
+    app.marks = lambda d: {e: v for e, v in marks(d).items() if e != gone}
+    app.job_report(DAYS[4], at(DAYS[4], "22:45"))
+    rep = tr.outbox[-1][1]
+    assert f"no mark for {gone} on {DAYS[4]}; valued at its last mark {last} of {DAYS[3]}" in rep
+    assert "no price" not in rep and app.j.safety_level() is SafetyLevel.NORMAL
 
 
 # ---------------------------------------------------------------- scheduler (piece 1c)
