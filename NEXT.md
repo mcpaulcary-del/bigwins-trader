@@ -1,4 +1,4 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3 and corporate actions)
 
 Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
 c07197c and deleted locally; **its remote copy could not be deleted from this session**
@@ -87,6 +87,33 @@ go-live checklist, by a reviewed code change.
   percentile on 18 Nov (digest `168fa642af30`). Run the data-mounted tests with
   `TRADER_BF_LIC_LIST` pointing at `LIC_list_frozen_v2.csv` (v1 is refused by the pin).
 
+## Corporate actions (BF-D23..D25, 19 Nov 2026; review finding)
+
+- Gate: ruff, format, mypy --strict, validate-config x2, pytest 507 passed (18 skipped),
+  BF coverage gate; record replay 5/5 with the data mounted (pins unchanged: no
+  calendar event of a held name in 30 Oct-18 Nov).
+- **Journal**: `bf_corporate_actions` (Alembic j0005) and `bf_identity.ratio`; positions,
+  cash, capital-cap cost and `Journal.tax_view` include dividends, specials, capital
+  returns (cost base; G1 above it), demergers (cost apportioned), in-specie receipts,
+  splits, disposals, cash in lieu. Existing journals: `upgrade journal@head`.
+- **Paper (and later live) book: IBKR's own records only** - Activity Flex XML files in
+  `data.flex_inbox` (`/data/flex/inbox`), read before each 16:30 reconciliation, booked
+  once each. **Twin + random twins: the calendar** (vendor dividends + the record's
+  `CORPORATE_ACTIONS.csv`, `data.corporate_actions_csv` / `$TRADER_BF_CA_CSV`; the CSV
+  overrides the vendor) on the ex-date.
+- **Reconciliation** tolerates a pending calendar event of the right size (until pay
+  date + 10 days) and halts on everything else; L13 explains recent demerger codes.
+- **BF-D24**: demerged / in-specie shares are sold at the next month-end decision
+  unless the new company is on T (rule L4 unchanged).
+- **BF-D25**: `/idmap OLD NEW [RATIO] <code>` confirms a code change with a ratio, or
+  maps a rename the vendor does not link (e.g. Platinum -> L1 Group).
+- Compose mounts two more paths: `RECORD_DIR` (the record's `68_forward_record`, read
+  only) and `FLEX_INBOX` (Flex XML of the paper account).
+- Still open: the Flex Web Service pull into the inbox is not scheduled (manual or a
+  cron `FlexClient` fetch until the reality spike settles Flex timing, O-3); IBKR's
+  exact ASX `CorporateAction` types/descriptions on paper are **unverified** (synthetic
+  fixtures); vendor split events are not yet applied to simulated holdings.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
@@ -103,6 +130,12 @@ go-live checklist, by a reviewed code change.
    books to follow.
 5. Raise the IBKR precaution "max order value" above the largest expected sell before
    go-live (BF-D3).
+6. **Corporate actions** (BF-D23..D25): record keeper keeps `CORPORATE_ACTIONS.csv`
+   current for held names (kind, ratio, and the class-ruling `cost_base_pct` /
+   `capital_per_share` / `franked_pct` where known; a `PROVISIONAL` / `UNCLASSIFIED`
+   report flag asks for them); owner confirms BF-D24 (sell demerged shares at the next
+   month-end unless on T) and adds Cash Transactions (with exDate/payDate) and
+   Corporate Actions to the paper Flex query.
 
 ## Next build steps, in order
 
@@ -147,7 +180,7 @@ go-live checklist, by a reviewed code change.
 | 11 | Amendments registered; code hashes pinned | Record keeper |
 | 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14, v2 BF-D20); a missing or changed list refuses every decision and order and pages (BF-D21, no fallback); owner review open |
 | 13 | Risk statement signed; 5% of investable assets | Owner |
-| 14 | Parcels for paper fills; short-term gains understood | Journal has fills; parcel/tax view open |
+| 14 | Parcels for paper fills; short-term gains understood | Journal has fills and corporate actions (dividends, franking, capital returns, demerger cost split; `tax_view`, BF-D23); FIFO parcel view open |
 | 15 | Owner reachable by 15:20 through April 2027 | Owner |
 | + | 100 random twins running (L11 test (b), staged-rule amendment registered) | Twins built and running (BF-D18); amendment registration with the record keeper |
 
@@ -156,7 +189,10 @@ go-live checklist, by a reviewed code change.
 1. **Server**: BinaryLane Sydney server (owner orders it), Docker, Tailscale, no
    inbound port, `deploy/` compose up, `docs/SETUP_SYDNEY.md`.
 2. **IBKR reality spike** on the paper gateway (item 1 above): LOC accepted / cut-off,
-   auction-sale funds, `orderRef` after restart, Flex timing, account tags, quotes.
+   auction-sale funds, `orderRef` after restart, Flex timing, account tags, quotes;
+   and the Flex query's Corporate Actions / Cash Transactions rows for an ASX dividend
+   (BF-D23 parser keys checked against a real statement), with the Flex pull into
+   `data.flex_inbox` scheduled.
 3. **Five reconciled paper dry runs** on a real IBKR paper gateway (sessions with
    orders, ledger = broker to the unit and the cent each day; go-live item 2).
 4. **`/kill` drill from the owner's phone** (cancel within 60 s), plus `/pause`,
@@ -179,4 +215,5 @@ go-live checklist, by a reviewed code change.
 - **Authenticator**: the TOTP seed added to the owner's authenticator app (secret file).
 
 Owner decisions still wanted: confirm the BF-D15 interpretations of the staged loss
-rule (open point 1) and the HGO -> KAN code change (open point 4).
+rule (open point 1), the HGO -> KAN code change (open point 4) and BF-D24 (sell
+demerged shares at the next month-end unless on T; open point 6).
