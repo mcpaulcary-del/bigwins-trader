@@ -1,0 +1,9 @@
+<FlexQueryResponse queryName="asx-trader ca (synthetic)" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DU1234567" fromDate="20210630" toDate="20210630" period="" whenGenerated="20210701;151200">
+      <CorporateActions>
+        <CorporateAction accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="EDV" conid="501234" reportDate="20210630" dateTime="20210630;202500" description="WOW(AU000000WOW2) SPINOFF  1 FOR 1 (EDV, ENDEAVOUR GROUP LTD, AU0000154833)" quantity="40" amount="0" proceeds="0" value="214.00" type="SO" transactionID="9100031" actionID="77031" levelOfDetail="DETAIL"/>
+      </CorporateActions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

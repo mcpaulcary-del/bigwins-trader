@@ -146,6 +146,9 @@ def test_SYS_13_floats_only_in_signal_modules() -> None:
         "tax.py",
         "money.py",
         "execution.py",
+        "corporate_actions.py",
+        "journal.py",
+        "reconcile.py",
         "broker",
         "data",
     ]

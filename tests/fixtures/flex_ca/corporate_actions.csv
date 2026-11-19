@@ -1,0 +1,4 @@
+code,ex_date,book_on,kind,value_per_share,distributed,source,entered,status,note,cost_base_pct,franked_pct,capital_per_share,pay_date
+CCC,2026-11-19,2026-11-19,capital return,0.40,,synthetic,2026-11-19,confirmed,"synthetic: vendor shows it as a dividend",,,,2026-11-26
+WOW,2021-06-24,2021-06-24,demerger (Endeavour Group shares),,EDV,synthetic,2026-11-19,confirmed,"synthetic WOW-2021-style: 1 EDV per 1 WOW; cost split synthetic",14.07,,,2021-06-30
+XYZ,2026-11-23,2026-11-23,in specie (Child shares),2.00,CHD,synthetic,2026-11-19,confirmed,"synthetic: 1 CHD per 4 XYZ",,100,0.50,2026-12-01

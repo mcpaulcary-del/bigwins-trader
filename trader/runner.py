@@ -7,13 +7,13 @@ in ``NEXT.md``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from trader.approval import ChatTransport, broadcast
 from trader.broker.base import Broker
 from trader.journal import Journal
-from trader.reconcile import ReconResult, reconcile
+from trader.reconcile import Expected, ReconResult, reconcile
 from trader.risk import SafetyLevel, worst
 
 
@@ -24,14 +24,18 @@ def reconcile_and_page(
     transport: ChatTransport,
     chats: Iterable[int],
     now: datetime,
+    pending: Sequence[Expected] = (),
 ) -> ReconResult:
     """Positions to the unit, cash to the cent; any break latches HALTED_INTEGRITY and
-    pages the owner in the same call (BW-RSK-27; BF4: "halts and pages within 5 minutes")."""
+    pages the owner in the same call (BW-RSK-27; BF4: "halts and pages within 5 minutes").
+    ``pending``: corporate actions IBKR may show before its Flex records reach the
+    journal (BF-D23); a difference they explain is reported, not a break."""
     r = reconcile(
         journal.positions(book),
         journal.cash(book),
         journal.map_codes(broker.positions()),  # BF-D19: a broker still on an old code
         broker.account().ledger_cash,
+        pending=pending,
     )
     if not r.ok:
         level = worst(journal.safety_level(), SafetyLevel.HALTED_INTEGRITY)

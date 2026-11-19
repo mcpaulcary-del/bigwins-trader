@@ -1,0 +1,10 @@
+<FlexQueryResponse queryName="asx-trader ca (synthetic)" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DU1234567" fromDate="20261125" toDate="20261125" period="" whenGenerated="20261126;151200">
+      <CashTransactions>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="" transactionID="9100001" type="Deposits/Withdrawals" amount="500.00" dateTime="20261125;101500" settleDate="20261125" description="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS"/>
+        <CashTransaction accountId="DU1234567" currency="AUD" symbol="AAA" transactionID="9100002" type="Dividends" amount="55.00" dateTime="20261125" settleDate="20261125" exDate="20261118" payDate="20261125" description="AAA(AU000000AAA1) CASH DIVIDEND AUD 0.55 PER SHARE - FULLY FRANKED (Ordinary Dividend)"/>
+      </CashTransactions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

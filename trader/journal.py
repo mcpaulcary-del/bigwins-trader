@@ -14,15 +14,19 @@ Rules (BW-EXE-06, CA-01 carried):
 * approvals, vetoes and safety-level changes are append-only rows; the current
   safety level is the latest ``bf_safety`` row;
 * the broker's bid/ask (and mid) just before each send is kept in ``bf_order_quotes``
-  (BF-D22), so live costs can be measured against the model from the first fill.
+  (BF-D22), so live costs can be measured against the model from the first fill;
+* dividends, capital returns, demerged shares and other corporate actions are
+  append-only ``bf_corporate_actions`` rows, one per (book, key) (BF-D23); positions,
+  cash and the cost base include them, and a code change may carry a share ratio
+  (``bf_identity.ratio``, BF-D25).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from decimal import Decimal
+from datetime import UTC, date, datetime, time
+from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -36,6 +40,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Table,
+    UniqueConstraint,
     create_engine,
     func,
     insert,
@@ -44,6 +49,8 @@ from sqlalchemy import (
 )
 
 from trader.canonical import canonical_json
+from trader.constants import ASX_TZ
+from trader.corporate_actions import Booking, CaKind, CostBook
 from trader.orders import OrderBatch, OrderIntent, OrderType, Side
 from trader.risk import SafetyLevel
 
@@ -154,11 +161,45 @@ identity = Table(
     Column("new_code", String(24), nullable=False),
     # PROPOSED (applied, owner to confirm) | CONFIRMED | REJECTED; the latest row wins
     Column("status", String(12), nullable=False),
-    Column("rule", String(8), nullable=False),  # A7b | A7c | OWNER
+    Column("rule", String(8), nullable=False),  # A7b | A7c | OWNER | FLEX
     Column("score", Numeric(8, 6)),
     Column("actor", String(64), nullable=False),
     Column("at", DateTime(timezone=True), nullable=False),
     Column("note", String(200), nullable=False),
+    # new shares per old share (BF-D25); NULL = 1 (a plain code change)
+    Column("ratio", Numeric(18, 8)),
+)
+
+# Corporate actions booked per book (BF-D23): IBKR's Flex records for broker books, the
+# vendor + record calendar for simulated books. Append-only; (book, key) unique.
+corporate_actions = Table(
+    "bf_corporate_actions",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("book", String(48), nullable=False),
+    Column("key", String(120), nullable=False),
+    Column("kind", String(16), nullable=False),
+    Column("code", String(24), nullable=False, index=True),
+    Column("ex_date", Date),
+    Column("pay_date", Date),
+    Column("held", Integer, nullable=False),
+    Column("cash", Numeric(18, 4), nullable=False),
+    Column("income", Numeric(18, 4), nullable=False),
+    Column("franked_pct", Numeric(7, 4)),
+    Column("franking_credit", Numeric(18, 4), nullable=False),
+    Column("cost_reduction", Numeric(18, 4), nullable=False),
+    Column("qty_change", Integer, nullable=False),
+    Column("new_code", String(24)),
+    Column("new_shares", Integer, nullable=False),
+    Column("child_cost", Numeric(18, 4)),
+    Column("cost_moved_pct", Numeric(9, 6)),
+    Column("ratio", Numeric(18, 8)),
+    Column("source", String(12), nullable=False),
+    Column("expected_key", String(120)),
+    Column("tax_class", String(16), nullable=False),
+    Column("at", DateTime(timezone=True), nullable=False),
+    Column("note", String(200), nullable=False),
+    UniqueConstraint("book", "key", name="uq_bf_corporate_actions_book_key"),
 )
 
 # The broker's quote at the moment each order is sent (BF-D22): the mid against which
@@ -637,18 +678,24 @@ class Journal:
         actor: str,
         note: str,
         at: datetime | None = None,
+        ratio: Decimal | None = None,
     ) -> None:
-        """Record a code change ``old -> new`` (PROPOSED / CONFIRMED / REJECTED)."""
+        """Record a code change ``old -> new`` (PROPOSED / CONFIRMED / REJECTED);
+        ``ratio`` new shares per old share (None = 1; BF-D25)."""
         if status not in ("PROPOSED", "CONFIRMED", "REJECTED") or old == new:
             raise JournalError(f"bad identity record {old}->{new} {status}")
+        if ratio is not None and ratio <= 0:
+            raise JournalError(f"bad ratio {ratio} for {old}->{new}")
+        r = None if ratio is None or ratio == 1 else ratio
         with self.engine.begin() as c:
             c.execute(
                 insert(identity).values(
                     old_code=old, new_code=new, status=status, rule=rule, score=score,
-                    actor=actor, at=at or utcnow(), note=note[:200],
+                    actor=actor, at=at or utcnow(), note=note[:200], ratio=r,
                 )
             )  # fmt: skip
-            self._event(c, "identity", old, None, status, {"new": new, "rule": rule}, at)
+            detail = {"new": new, "rule": rule} | ({"ratio": str(r)} if r is not None else {})
+            self._event(c, "identity", old, None, status, detail, at)
 
     def identity_records(self) -> dict[str, dict[str, Any]]:
         """The latest identity record of every old code."""
@@ -656,40 +703,119 @@ class Journal:
             rows = c.execute(select(identity).order_by(identity.c.id)).all()
         return {r.old_code: dict(r._mapping) for r in rows}
 
-    def identity_map(self) -> dict[str, str]:
-        """Old code -> the code it trades as now (applied: PROPOSED or CONFIRMED),
-        chains followed. Positions and holdings cost are reported under the new code."""
+    def identity_ratios(self) -> dict[str, tuple[str, Decimal]]:
+        """Old code -> (the code it trades as now, new shares per old share), applied
+        records (PROPOSED or CONFIRMED), chains followed (ratios multiply)."""
         step = {
-            o: str(r["new_code"])
+            o: (str(r["new_code"]), Decimal(str(r["ratio"])) if r.get("ratio") else Decimal(1))
             for o, r in self.identity_records().items()
             if r["status"] in ("PROPOSED", "CONFIRMED")
         }
-        out: dict[str, str] = {}
+        out: dict[str, tuple[str, Decimal]] = {}
         for o, first in step.items():
-            n, seen = first, {o}
+            n, k = first
+            seen = {o}
             while n in step and n not in seen:
                 seen.add(n)
-                n = step[n]
-            out[o] = n
+                n2, k2 = step[n]
+                n, k = n2, k * k2
+            out[o] = (n, k)
         return out
 
+    def identity_map(self) -> dict[str, str]:
+        """Old code -> the code it trades as now (applied: PROPOSED or CONFIRMED),
+        chains followed. Positions and holdings cost are reported under the new code."""
+        return {o: n for o, (n, _) in self.identity_ratios().items()}
+
     def map_codes(self, positions: Mapping[str, int]) -> dict[str, int]:
-        """Positions under the current codes (e.g. a broker that still shows the old)."""
-        m = self.identity_map()
-        out: dict[str, int] = {}
-        for e, q in positions.items():
-            k = m.get(e, e)
-            out[k] = out.get(k, 0) + q
-        return {e: q for e, q in sorted(out.items()) if q != 0}
+        """Positions under the current codes (e.g. a broker that still shows the old),
+        share counts by the code change's ratio (fractions dropped)."""
+        return _fold(positions.items(), self.identity_ratios())
+
+    # ------------------------------------------------------------ corporate actions (BF-D23)
+    def add_ca(self, book: str, b: Booking, at: datetime | None = None) -> bool:
+        """Book a corporate action once per (book, key); False when already booked."""
+        with self.engine.begin() as c:
+            q = select(corporate_actions.c.id).where(
+                corporate_actions.c.book == book, corporate_actions.c.key == b.key
+            )
+            if c.execute(q).first() is not None:
+                return False
+            c.execute(
+                insert(corporate_actions).values(
+                    book=book, key=b.key, kind=b.kind.value, code=b.code, ex_date=b.ex_date,
+                    pay_date=b.pay_date, held=b.held, cash=b.cash, income=b.income,
+                    franked_pct=b.franked_pct, franking_credit=b.franking_credit,
+                    cost_reduction=b.cost_reduction, qty_change=b.qty_change,
+                    new_code=b.new_code, new_shares=b.new_shares, child_cost=b.child_cost,
+                    cost_moved_pct=b.cost_moved_pct, ratio=b.ratio, source=b.source[:12],
+                    expected_key=b.expected_key, tax_class=b.tax_class,
+                    at=(at or utcnow()).astimezone(UTC), note=b.note[:200],
+                )
+            )  # fmt: skip
+            self._event(
+                c, "corporate_action", book, None, b.kind.value,
+                {"key": b.key, "code": b.code, "cash": str(b.cash), "new_code": b.new_code,
+                 "new_shares": b.new_shares, "qty_change": b.qty_change}, at,
+            )  # fmt: skip
+        return True
+
+    def ca_bookings(self, book: str | None = None) -> list[Booking]:
+        q = select(corporate_actions).order_by(corporate_actions.c.id)
+        if book is not None:
+            q = q.where(corporate_actions.c.book == book)
+        with self.engine.connect() as c:
+            rows = c.execute(q).all()
+
+        def dec(x: Any) -> Decimal | None:
+            return None if x is None else Decimal(str(x))
+
+        return [
+            Booking(
+                key=r.key, kind=CaKind(r.kind), code=r.code, ex_date=r.ex_date,
+                pay_date=r.pay_date, held=r.held, cash=Decimal(str(r.cash)),
+                income=Decimal(str(r.income)), franked_pct=dec(r.franked_pct),
+                franking_credit=Decimal(str(r.franking_credit)),
+                cost_reduction=Decimal(str(r.cost_reduction)), qty_change=r.qty_change,
+                new_code=r.new_code, new_shares=r.new_shares, child_cost=dec(r.child_cost),
+                cost_moved_pct=dec(r.cost_moved_pct), ratio=dec(r.ratio), source=r.source,
+                expected_key=r.expected_key, tax_class=r.tax_class, note=r.note,
+            )
+            for r in rows
+        ]  # fmt: skip
+
+    def ca_settled(self, book: str) -> set[str]:
+        """Calendar keys a booking of ``book`` settles (its own key or ``expected_key``)."""
+        out: set[str] = set()
+        for b in self.ca_bookings(book):
+            out.add(b.key)
+            if b.expected_key:
+                out.add(b.expected_key)
+        return out
+
+    def held_at(self, book: str, code: str, ex_date: date) -> int:
+        """Shares of ``code`` (or the code it trades as now) held at the close of the
+        session before ``ex_date``: the entitlement to an event with that ex-date."""
+        pos = self.positions(book, before=_sydney_midnight(ex_date))
+        return pos.get(code) or pos.get(self.identity_map().get(code, code), 0)
 
     # ------------------------------------------------------------ ledger views
-    def positions(self, book: str) -> dict[str, int]:
-        m = self.identity_map()
-        pos: dict[str, int] = {}
+    def positions(self, book: str, before: datetime | None = None) -> dict[str, int]:
+        """Shares by current code: fills, corporate actions (new shares, splits,
+        disposals) and code changes with their ratio. ``before``: as of that time."""
+        raw: list[tuple[str, Decimal]] = []
         for f in self.fills(book):
-            e = m.get(f.entity, f.entity)
-            pos[e] = pos.get(e, 0) + (f.qty if f.side is Side.BUY else -f.qty)
-        return {e: q for e, q in sorted(pos.items()) if q != 0}
+            if before is not None and _utc(f.executed_at) >= before:
+                continue
+            raw.append((f.entity, Decimal(f.qty if f.side is Side.BUY else -f.qty)))
+        for b in self.ca_bookings(book):
+            if before is not None and _effective(b) >= before:
+                continue
+            if b.qty_change:
+                raw.append((b.code, Decimal(b.qty_change)))
+            if b.new_code and b.new_shares and b.kind is not CaKind.CODE_CHANGE:
+                raw.append((b.new_code, Decimal(b.new_shares)))
+        return _fold(raw, self.identity_ratios())
 
     def has_cash_moves(self, book: str) -> bool:
         """Whether the book has any deposit or other cash record (it has been set up)."""
@@ -706,26 +832,87 @@ class Journal:
                 )
             ).scalar_one()
             total += Decimal(str(s))
+            s = c.execute(
+                select(func.coalesce(func.sum(corporate_actions.c.cash), 0)).where(
+                    corporate_actions.c.book == book
+                )
+            ).scalar_one()
+            total += Decimal(str(s))
         for f in self.fills(book):
             gross = f.price * f.qty
             total += (-gross if f.side is Side.BUY else gross) - f.commission
         return total.quantize(Decimal("0.0001"))
 
+    def cost_book(self, book: str) -> CostBook:
+        """Average cost by current code, fills and corporate actions in time order: a
+        capital return lowers the cost base (above it: G1), a demerger moves its share
+        of the parent's cost to the new shares, in-specie shares come in at their value,
+        a code change keeps the cost (one company; ratio applied to the count)."""
+        m = self.identity_ratios()
+        cb = CostBook()
+        stream: list[tuple[datetime, int, Any]] = []
+        for i, f in enumerate(self.fills(book)):
+            stream.append((_utc(f.executed_at), i, f))
+        for i, b in enumerate(self.ca_bookings(book)):
+            stream.append((_effective(b), -1_000_000 + i, b))  # before that day's fills
+        for _, _, x in sorted(stream, key=lambda t: (t[0], t[1])):
+            if isinstance(x, Booking):
+                if x.kind is CaKind.CODE_CHANGE:
+                    continue
+                code = m.get(x.code, (x.code, Decimal(1)))[0]
+                new = m.get(x.new_code, (x.new_code, Decimal(1)))[0] if x.new_code else None
+                cb.apply(x, code, new)
+                continue
+            e, k = m.get(x.entity, (x.entity, Decimal(1)))
+            if x.side is Side.BUY:
+                cb.buy(e, x.qty * k, x.price * x.qty + x.commission)
+            else:
+                cb.sell(e, x.qty * k)
+        return cb
+
     def holdings_cost(self, book: str) -> Decimal:
         """Average cost of open positions incl. commission (for the capital cap)."""
-        cost: dict[str, Decimal] = {}
-        qty: dict[str, int] = {}
-        m = self.identity_map()  # a code change keeps the cost (one company)
-        for f in self.fills(book):
-            e = m.get(f.entity, f.entity)
-            if f.side is Side.BUY:
-                cost[e] = cost.get(e, Decimal(0)) + f.price * f.qty + f.commission
-                qty[e] = qty.get(e, 0) + f.qty
-            elif qty.get(e):
-                avg = cost[e] / qty[e]
-                qty[e] -= f.qty
-                cost[e] = avg * qty[e]
-        return sum(cost.values(), Decimal(0)).quantize(Decimal("0.01"))
+        return self.cost_book(book).total().quantize(Decimal("0.01"))
+
+    def tax_view(self, book: str, fy_end: date) -> dict[str, Any]:
+        """BW-TAX-02 corporate-action lines of the year to 30 June ``fy_end``: dividends
+        and specials (income), franked amount and franking credits where the franking
+        is known (else "not counted"), capital returns (cost-base reductions; any part
+        above the cost base is a G1 capital gain), demergers / in-specie receipts and
+        what is still provisional or unclassified for the tax agent."""
+        start = date(fy_end.year - 1, 7, 1)
+        rows = [
+            b for b in self.ca_bookings(book)
+            if start <= (b.pay_date or b.ex_date or fy_end) <= fy_end
+        ]  # fmt: skip
+        z = Decimal(0)
+
+        def tot(xs: Iterable[Decimal]) -> str:
+            return str(sum(xs, z).quantize(Decimal("0.01")))
+
+        divs = [b for b in rows if b.kind in (CaKind.DIVIDEND, CaKind.IN_SPECIE)]
+        spec = [b for b in rows if b.kind is CaKind.SPECIAL]
+        inc = [*divs, *spec]
+        known = [b for b in inc if b.franked_pct is not None]
+        return {
+            "book": book,
+            "year": f"{start.isoformat()}..{fy_end.isoformat()}",
+            "dividends": tot(b.income for b in divs),
+            "specials": tot(b.income for b in spec),
+            "franked_amount": tot(b.income * (b.franked_pct or z) / 100 for b in known),
+            "franking_credits": tot(b.franking_credit for b in known),
+            "franking_not_counted": tot(b.income for b in inc if b.franked_pct is None),
+            "capital_returns": tot(b.cost_reduction for b in rows),
+            "withholding": tot(b.cash for b in rows if b.kind is CaKind.WITHHOLDING),
+            "g1_gains": str(self.cost_book(book).g1.quantize(Decimal("0.01"))),
+            "share_receipts": [
+                f"{b.kind.value} {b.code}->{b.new_code} {b.new_shares}"
+                for b in rows if b.new_code and b.kind is not CaKind.CODE_CHANGE
+            ],
+            "to_confirm": [
+                f"{b.key} {b.kind.value} {b.code}: {b.tax_class}" for b in rows if b.tax_class
+            ],
+        }  # fmt: skip
 
     # ------------------------------------------------------------ safety
     def safety_level(self, scope: str = "") -> SafetyLevel:
@@ -810,3 +997,31 @@ def _intent_from(r: Any) -> OrderIntent:
         prev_close=dec(r["prev_close"]),
         flags=tuple(r["flags"] or ()),
     )
+
+
+def _utc(t: datetime) -> datetime:
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
+
+
+def _sydney_midnight(d: date) -> datetime:
+    return datetime.combine(d, time(0, 0), ASX_TZ).astimezone(UTC)
+
+
+def _effective(b: Booking) -> datetime:
+    """A corporate action takes effect at the start of its ex-date (Sydney); without one,
+    of its pay or report date."""
+    d = b.ex_date or b.pay_date
+    return _sydney_midnight(d) if d is not None else datetime.min.replace(tzinfo=UTC)
+
+
+def _fold(
+    items: Iterable[tuple[str, Decimal | int]], ratios: Mapping[str, tuple[str, Decimal]]
+) -> dict[str, int]:
+    """Sum shares under the current codes; an old code's shares by the code change's
+    ratio, fractions dropped (cash in lieu comes as its own booking)."""
+    acc: dict[str, Decimal] = {}
+    for e, q in items:
+        n, k = ratios.get(e, (e, Decimal(1)))
+        acc[n] = acc.get(n, Decimal(0)) + Decimal(q) * k
+    out = {e: int(q.to_integral_value(ROUND_FLOOR)) for e, q in acc.items()}
+    return {e: q for e, q in sorted(out.items()) if q != 0}

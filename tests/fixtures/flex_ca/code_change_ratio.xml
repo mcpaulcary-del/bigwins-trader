@@ -1,0 +1,10 @@
+<FlexQueryResponse queryName="asx-trader ca (synthetic)" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DU1234567" fromDate="20261201" toDate="20261201" period="" whenGenerated="20261202;151200">
+      <CorporateActions>
+        <CorporateAction accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="OLD" conid="601001" reportDate="20261201" dateTime="20261201;202500" description="OLD(AU000000OLD1) SPLIT 1 FOR 10 (NEW, NEWCO LTD, AU000000NEW1)" quantity="-1005" amount="0" value="0" type="RS" transactionID="9100041" actionID="77041" levelOfDetail="DETAIL"/>
+        <CorporateAction accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="NEW" conid="601002" reportDate="20261201" dateTime="20261201;202500" description="OLD(AU000000OLD1) SPLIT 1 FOR 10 (NEW, NEWCO LTD, AU000000NEW1)" quantity="100" amount="0.45" value="0" type="RS" transactionID="9100042" actionID="77041" levelOfDetail="DETAIL"/>
+      </CorporateActions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

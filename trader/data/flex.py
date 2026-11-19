@@ -22,7 +22,8 @@ Flex for D is normally published only in the Sydney afternoon of the next day
 ``SINGLE_SOURCE`` (see ``quality``); the verdict is re-issued when it arrives.
 
 Booking cash transactions and trades into the ledger is M5 (BP-20); this module
-only parses them.
+only parses them. The B-fast journal books dividends, capital returns and corporate
+actions from them (``trader.corporate_actions``, BF-D23).
 """
 
 from __future__ import annotations
@@ -116,6 +117,32 @@ class FlexCashTransaction:
     settle_date: date | None
     symbol: str | None
     description: str
+    # The dividend's ex-date and payment date where the Flex query includes them (BF-D23;
+    # optional in IBKR's field list, so absent on older queries)
+    ex_date: date | None = None
+    pay_date: date | None = None
+    report_date: date | None = None
+
+
+@dataclass(frozen=True)
+class FlexCorporateAction:
+    """One row of the Flex "Corporate Actions" section (BF-D23). An action on several
+    securities (an issue change: the old code out, the new code in) has one row per
+    security with the same ``action_id``. ``type`` is IBKR's action code (SO spin-off,
+    IC issue change, RS/FS split, SD stock dividend, DI/ED rights, TC/TO tender, DW
+    delisted worthless...); ``quantity`` is signed (shares in > 0, out < 0)."""
+
+    transaction_id: str
+    action_id: str
+    type: str
+    symbol: str
+    con_id: str | None
+    quantity: Decimal
+    amount: Decimal  # cash credited (cash in lieu, a cash merger); 0 when none
+    value: Decimal | None
+    report_date: date | None
+    date_time: str | None
+    description: str
 
 
 @dataclass(frozen=True)
@@ -141,6 +168,7 @@ class FlexStatement:
     positions: tuple[FlexPosition, ...]
     cash_transactions: tuple[FlexCashTransaction, ...]
     trades: tuple[FlexTrade, ...]
+    corporate_actions: tuple[FlexCorporateAction, ...] = ()
 
 
 def _safe_xml(body: bytes) -> ET.Element:
@@ -151,6 +179,35 @@ def _safe_xml(body: bytes) -> ET.Element:
         return ET.fromstring(body)  # noqa: S314 - no DTD/entities allowed (checked above)
     except ET.ParseError as exc:
         raise FlexError("Flex: response is not well-formed XML") from exc
+
+
+def _corporate_actions(st: ET.Element) -> list[FlexCorporateAction]:
+    """The statement's ``CorporateAction`` rows (BF-D23)."""
+    actions = []
+    for a in st.iter("CorporateAction"):
+        if a.get("levelOfDetail", "DETAIL") not in ("DETAIL", "SUMMARY", ""):
+            continue
+        txn = a.get("transactionID") or ""
+        aid = a.get("actionID") or txn
+        if not aid:
+            raise FlexError("Flex: corporate action without actionID/transactionID")
+        aq = _num(a.get("quantity")) or Decimal(0)
+        actions.append(
+            FlexCorporateAction(
+                transaction_id=txn or f"{aid}:{a.get('symbol', '')}",
+                action_id=aid,
+                type=a.get("type", "").upper(),
+                symbol=a.get("symbol", ""),
+                con_id=a.get("conid"),
+                quantity=aq,
+                amount=_num(a.get("amount")) or _num(a.get("proceeds")) or Decimal(0),
+                value=_num(a.get("value")),
+                report_date=_d(a.get("reportDate")),
+                date_time=_dt(a.get("dateTime")),
+                description=a.get("description") or a.get("actionDescription") or "",
+            )
+        )
+    return actions
 
 
 def parse_statements(body: bytes) -> list[FlexStatement]:
@@ -200,8 +257,12 @@ def parse_statements(body: bytes) -> list[FlexStatement]:
                     settle_date=_d(c.get("settleDate")),
                     symbol=c.get("symbol") or None,
                     description=c.get("description", ""),
+                    ex_date=_d(c.get("exDate")),
+                    pay_date=_d(c.get("payDate")),
+                    report_date=_d(c.get("reportDate")),
                 )
             )
+        actions = _corporate_actions(st)
         trades = []
         for t in st.iter("Trade"):
             exec_id = t.get("ibExecID")
@@ -240,6 +301,7 @@ def parse_statements(body: bytes) -> list[FlexStatement]:
                 positions=tuple(positions),
                 cash_transactions=tuple(cash),
                 trades=tuple(trades),
+                corporate_actions=tuple(actions),
             )
         )
     if not out:

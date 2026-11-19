@@ -1,0 +1,10 @@
+<FlexQueryResponse queryName="asx-trader ca (synthetic)" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="DU1234567" fromDate="20261203" toDate="20261203" period="" whenGenerated="20261204;151200">
+      <CorporateActions>
+        <CorporateAction accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="PTM" conid="701001" reportDate="20261203" dateTime="20261203;202500" description="PTM(AU000000PTM6) CUSIP/ISIN CHANGE TO (L1G, L1 GROUP LTD, AU0000L1G001)" quantity="-500" amount="0" value="0" type="IC" transactionID="9100051" actionID="77051" levelOfDetail="DETAIL"/>
+        <CorporateAction accountId="DU1234567" currency="AUD" assetCategory="STK" symbol="L1G" conid="701002" reportDate="20261203" dateTime="20261203;202500" description="PTM(AU000000PTM6) CUSIP/ISIN CHANGE TO (L1G, L1 GROUP LTD, AU0000L1G001)" quantity="500" amount="0" value="0" type="IC" transactionID="9100052" actionID="77051" levelOfDetail="DETAIL"/>
+      </CorporateActions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

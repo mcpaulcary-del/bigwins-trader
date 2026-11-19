@@ -140,3 +140,30 @@ def test_BF_D22_order_quotes_migration_on_a_j0003_journal(tmp_path: Path) -> Non
     with eng.connect() as conn:
         assert compare_metadata(MigrationContext.configure(conn), md) == []
     eng.dispose()
+
+
+def test_BF_D23_corporate_actions_migration_on_a_j0004_journal(tmp_path: Path) -> None:
+    """A journal at j0004 gains ``bf_corporate_actions`` and ``bf_identity.ratio`` at
+    head (old identity rows read as ratio 1) and then matches the code's schema."""
+    url = f"sqlite:///{tmp_path / 'j4.db'}"
+    _upgrade(url, "j0004")
+    eng = create_engine(url)
+    assert "bf_corporate_actions" not in inspect(eng).get_table_names()
+    with eng.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO bf_identity (old_code, new_code, status, rule, actor, at, note) "
+                "VALUES ('HGO', 'KAN', 'PROPOSED', 'A7b', 'system', :t, '')"
+            ),
+            {"t": T0.isoformat(sep=" ")},
+        )
+    eng.dispose()
+    _upgrade(url, "journal@head")
+    eng = create_engine(url)
+    assert "ratio" in {c["name"] for c in inspect(eng).get_columns("bf_identity")}
+    with eng.connect() as conn:
+        assert compare_metadata(MigrationContext.configure(conn), md) == []
+    from decimal import Decimal
+
+    assert Journal(eng).identity_ratios() == {"HGO": ("KAN", Decimal(1))}
+    eng.dispose()
