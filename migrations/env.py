@@ -6,6 +6,8 @@ Two databases per instance (§12), two branches in this script directory:
   -> ``alembic -x db=ledger upgrade ledger@head``
 * ``market`` (revisions m0001..): ``market_<user>``
   -> ``alembic -x db=market upgrade market@head``
+* ``journal`` (revisions j0001..): the B-fast order journal (``bf_*``, BF-D9)
+  -> ``alembic -x db=journal upgrade journal@head``
 
 ``-x db=`` is required: it selects the target metadata and every v2.10
 revision checks it, so a branch can never be applied to the wrong database.
@@ -24,19 +26,24 @@ from alembic import context
 from sqlalchemy import MetaData, engine_from_config, pool
 
 from trader.data.models import MarketBase
+from trader.journal import md as journal_metadata
 from trader.ledger import LedgerBase
 
 config = context.config
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-_TARGETS: dict[str, MetaData] = {"ledger": LedgerBase.metadata, "market": MarketBase.metadata}
+_TARGETS: dict[str, MetaData] = {
+    "ledger": LedgerBase.metadata,
+    "market": MarketBase.metadata,
+    "journal": journal_metadata,
+}
 
 
 def _db() -> str:
     db = context.get_x_argument(as_dictionary=True).get("db") or config.attributes.get("db")
     if db not in _TARGETS:
-        raise RuntimeError("pass -x db=ledger or -x db=market (spec §12: two databases)")
+        raise RuntimeError("pass -x db=ledger, -x db=market or -x db=journal (spec §12; BF-D9)")
     return str(db)
 
 

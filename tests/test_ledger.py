@@ -123,9 +123,10 @@ def test_migrations_are_forward_only() -> None:
 
 
 def test_history_is_not_rewritten() -> None:
-    """The v1.x revisions 0001-0004 stay; v2.10 adds 0005 (ledger) and m0001/m0002 (market)."""
+    """The v1.x revisions 0001-0004 stay; v2.10 adds 0005 (ledger) and m0001/m0002
+    (market); B-fast adds the journal branch j0001/j0002 (BF-D9, BF-D16)."""
     names = sorted(p.name.split("_")[0] for p in (REPO / "migrations" / "versions").glob("*.py"))
-    assert names == ["0001", "0002", "0003", "0004", "0005", "m0001", "m0002"]
+    assert names == ["0001", "0002", "0003", "0004", "0005", "j0001", "j0002", "m0001", "m0002"]
     assert _migration("0005").down_revision == "0004"
     assert _migration("m0001").down_revision is None
 

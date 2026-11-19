@@ -61,9 +61,11 @@ jobs:
           TRADER_DB_APP_ROLE: trader_ci_app
         run: |
           psql "postgresql://ci_owner:ci_only_not_a_secret@localhost:5432/postgres" \
-            -c "CREATE DATABASE ledger_ci" -c "CREATE DATABASE market_ci"
+            -c "CREATE DATABASE ledger_ci" -c "CREATE DATABASE market_ci" \
+            -c "CREATE DATABASE journal_ci"
           uv run --locked alembic -x db=ledger -x url=${{ env.PG_BASE }}/ledger_ci upgrade ledger@head
           uv run --locked alembic -x db=market -x url=${{ env.PG_BASE }}/market_ci upgrade market@head
+          uv run --locked alembic -x db=journal -x url=${{ env.PG_BASE }}/journal_ci upgrade journal@head
 
       - name: Tests
         env:
