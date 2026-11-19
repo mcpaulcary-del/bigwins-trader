@@ -58,6 +58,12 @@ data:
                                             # BF-D21: required; no fallback list. Missing or
                                             # changed file => no decision, no order, owner paged
   history_sessions: 760
+  corporate_actions_csv: /data/forward/record/CORPORATE_ACTIONS.csv
+                                            # BF-D23: the record's 68_forward_record/CORPORATE_ACTIONS.csv
+                                            # (read-only mount; $TRADER_BF_CA_CSV overrides); corrects
+                                            # the vendor (capital return / special / in specie / demerger)
+  flex_inbox: /data/flex/inbox              # BF-D23: IBKR Activity Flex XML of the paper book; its
+                                            # dividends and corporate actions are booked from it
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0
 journal:

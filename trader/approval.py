@@ -27,15 +27,18 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import struct
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, time
+from decimal import Decimal
 from typing import Any, Protocol
 
 from trader.constants import ASX_TZ
+from trader.corporate_actions import CaError, parse_ratio
 from trader.journal import Journal, Status
 from trader.orders import Side
 from trader.risk import SafetyLevel
@@ -266,25 +269,48 @@ class ApprovalBot:
             return self._approval(cmd, args, actor, m.at)
         return f"unknown command {cmd}"
 
-    def _idmap(self, cmd: str, args: list[str], actor: str, at: datetime) -> str:
-        n = 3 if cmd == "/idmap" else 2
-        if len(args) != n or not self.verifier.verify(args[-1], at):
+    def _idmap(self, cmd: str, args: list[str], actor: str, at: datetime) -> str:  # noqa: PLR0911
+        """``/idmap OLD NEW [RATIO] <code>`` confirms a code change, or records one the
+        vendor data do not link (a rename such as Platinum -> L1 Group) with the share
+        ratio (``1:10`` = 1 new for 10 old; default 1; BF-D25); ``/idmap_reject OLD
+        <code>`` undoes one. Both need a valid one-time code."""
+        arity = len(args) in (3, 4) if cmd == "/idmap" else len(args) == 2
+        if not arity or not self.verifier.verify(args[-1], at):
             return f"refused: {cmd} needs the codes and a valid one-time code"
         old = args[0].upper()
         rec = self.journal.identity_records().get(old)
-        if rec is None:
-            return f"refused: no code change recorded for {old}"
-        new = str(rec["new_code"])
-        if cmd == "/idmap":
-            if args[1].upper() != new:
-                return f"refused: the recorded change is {old} -> {new}"
-            self.journal.add_identity(old, new, "CONFIRMED", "OWNER", None, actor, "owner", at)
-            return f"code change {old} -> {new} confirmed"
-        self.journal.add_identity(old, new, "REJECTED", "OWNER", None, actor, "owner undo", at)
-        return (
-            f"code change {old} -> {new} undone: {old} is carried again at its last mark "
-            "(review the holding)"
-        )
+        if cmd == "/idmap_reject":
+            if rec is None:
+                return f"refused: no code change recorded for {old}"
+            new = str(rec["new_code"])
+            self.journal.add_identity(old, new, "REJECTED", "OWNER", None, actor, "owner undo", at)
+            return (
+                f"code change {old} -> {new} undone: {old} is carried again at its last mark "
+                "(review the holding)"
+            )
+        new = args[1].upper()
+        try:
+            ratio = parse_ratio(args[2]) if len(args) == 4 else None
+        except CaError as e:
+            return f"refused: {e}"
+        if new == old or not re.fullmatch(r"[A-Z0-9]{1,6}", new):
+            return f"refused: bad new code {new!r}"
+        if rec is None and old not in self.journal.known_codes():
+            return f"refused: {old} is not held or traded by any book"
+        applied = rec is not None and rec["status"] in ("PROPOSED", "CONFIRMED")
+        if applied and rec is not None and rec["new_code"] != new:
+            return (
+                f"refused: the recorded change is {old} -> {rec['new_code']}; "
+                f"/idmap_reject {old} <code> first"
+            )
+        if ratio is None and applied and rec is not None and rec.get("ratio"):
+            ratio = Decimal(str(rec["ratio"]))  # confirming as proposed
+        note = "owner"
+        if applied and rec is not None and Decimal(str(rec.get("ratio") or 1)) != (ratio or 1):
+            note = f"owner; ratio replaces the {rec['status']} {rec.get('ratio') or 1}"
+        self.journal.add_identity(old, new, "CONFIRMED", "OWNER", None, actor, note, at, ratio)
+        k = f" ratio {ratio.normalize():f}" if ratio is not None and ratio != 1 else ""
+        return f"code change {old} -> {new}{k} confirmed"
 
     def _approval(self, cmd: str, args: list[str], actor: str, at: datetime) -> str:  # noqa: PLR0911
         if len(args) < 2:

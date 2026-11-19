@@ -59,8 +59,17 @@ from trader.approval import (
 )
 from trader.broker.base import Broker
 from trader.broker.paper_sim import SimBroker
+from trader.ca_book import (
+    CaSource,
+    book_calendar_day,
+    describe,
+    ingest_flex,
+    pending_expectations,
+)
 from trader.canonical import sha256_json
 from trader.constants import ASX_TZ
+from trader.corporate_actions import CaCalendar, CaKind
+from trader.data.flex import FlexError, FlexStatement
 from trader.execution import Executor
 from trader.identity_change import code_changes
 from trader.journal import TERMINAL, Journal, Status
@@ -94,7 +103,7 @@ from trader.orders import (
 )
 from trader.panel import PricePanel
 from trader.random_twins import SEED_BASE, RandomOrder, month_index, twin_books
-from trader.reconcile import compare_books
+from trader.reconcile import Expected, compare_books
 from trader.report import DailyInputs, daily_report
 from trader.risk import (
     BLOCKS_ALL,
@@ -227,6 +236,8 @@ class BfApp:
         twin_rank: Callable[[date], Decimal | None] | None = None,
         l12_stop: Callable[[date], str | None] | None = None,
         lic_guard: Callable[[], object] | None = None,
+        ca_source: CaSource | None = None,
+        flex: Callable[[date], Sequence[FlexStatement]] | None = None,
     ) -> None:
         """``closes(d)``: the closes of session d (empty while the day's data is not in);
         ``marks(d)``: the last known close of every name at d (valuation; defaults to
@@ -237,7 +248,10 @@ class BfApp:
         at d, if any (default: none). ``lic_guard()``: BF-D21, re-reads and checks the
         frozen LIC list against its pin and raises when it is missing or changed; it runs
         before every decision and every send (``trader-bf run`` and the dry run pass
-        ``lic_codes``; None, unit tests only, checks nothing)."""
+        ``lic_codes``; None, unit tests only, checks nothing). BF-D23 corporate actions:
+        ``ca_source(codes, start, end)``: the calendar (vendor dividends + the record's
+        CORPORATE_ACTIONS.csv) for those codes; ``flex(d)``: IBKR Activity Flex statements
+        available on d (the broker book's dividends and corporate actions)."""
         self.s = s
         self.lic_guard = lic_guard
         self.j = journal
@@ -249,6 +263,8 @@ class BfApp:
         self.closes = closes
         self.marks = marks or marks_from_panels(panels)
         self.l12_stop = l12_stop or (lambda d: None)
+        self.ca_source = ca_source
+        self.flex = flex
         self.now = datetime.now(UTC)
         self.ex = Executor(
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
@@ -272,7 +288,7 @@ class BfApp:
                 journal, rb, name, limits=s.limits, approval_deadline="23:59", safety_scope=name
             )
             self.rnd.append((name, seed, ex, rb))
-        self._idmap_seen = journal.identity_map()  # BF-D19: code changes applied so far
+        self._idmap_seen = journal.identity_ratios()  # BF-D19/D25: code changes applied so far
         if twin_rank is None and self.rnd:
             twin_rank = self.twin_percentile
         self.twin_rank = twin_rank or (lambda d: None)
@@ -603,7 +619,7 @@ class BfApp:
         times, then a sell is paged. A carried order needs approval again (L8)."""
         closes: Mapping[str, Decimal] | None = None  # read only when an order is carried
         band = self.s.order_params.limit_band
-        idmap = self.j.identity_map()  # BF-D19: an order of an old code goes on the new
+        idmap = self.j.identity_ratios()  # BF-D19/D25: an old code's order goes on the new
         new: list[OrderIntent] = []
         keys: list[str] = []
         for it, st in self._all_intents(book):
@@ -623,10 +639,11 @@ class BfApp:
                 continue
             if closes is None:
                 closes = self.closes(day)
-            ent = idmap.get(it.entity, it.entity)
+            ent, ratio = idmap.get(it.entity, (it.entity, Decimal(1)))
             ref = closes.get(ent) or it.ref_price
             if sell:
-                lim, qty = round_to_step(ref * (1 - band), Side.SELL), rest
+                lim = round_to_step(ref * (1 - band), Side.SELL)
+                qty = int(rest * ratio)  # shares of the new code (fractions dropped)
             else:
                 lim = round_to_step(ref * (1 + band), Side.BUY)
                 qty = int(rest * it.limit_price // lim)  # never above the original value
@@ -667,15 +684,129 @@ class BfApp:
             )
 
     def job_reconcile(self, day: date, now: datetime) -> None:
-        r = reconcile_and_page(self.j, self.broker, self.s.book, self.transport, self.s.chats, now)
+        self._ingest_flex(day, now)
+        pending: tuple[Expected, ...] = ()
+        cal = self._calendar(self.j.positions(self.s.book), day)
+        if cal is not None:  # BF-D23: IBKR may show an event before its Flex record
+            pending = tuple(pending_expectations(self.j, self.s.book, cal, day))
+        r = reconcile_and_page(
+            self.j, self.broker, self.s.book, self.transport, self.s.chats, now, pending
+        )
         self.j.mark_job(
             f"recon:{self.s.book}:{day}",
-            {"ok": r.ok, "breaks": list(r.breaks), "cash": str(self.j.cash(self.s.book))},
+            {
+                "ok": r.ok,
+                "breaks": list(r.breaks),
+                "explained": list(r.explained),
+                "cash": str(self.j.cash(self.s.book)),
+            },
             now,
         )
         if not r.ok:
             self.log.append("RECON BREAK " + "; ".join(r.breaks))
+        for x in r.explained:
+            self._ca_note(day, now, f"INFO reconciled with a pending corporate action: {x}")
         self._start_followup(day, now, r.ok)
+
+    # ------------------------------------------------------------ corporate actions (BF-D23)
+    def _held_codes(self) -> frozenset[str]:
+        books = (self.s.book, *(b for b, _ in self._sim_brokers()))
+        return frozenset(e for b in books for e in self.j.positions(b))
+
+    def _calendar(self, codes: Mapping[str, int] | frozenset[str], day: date) -> CaCalendar | None:
+        if self.ca_source is None:
+            return None
+        return self.ca_source(frozenset(codes), day - timedelta(days=120), day)
+
+    def _ca_note(self, day: date, now: datetime, line: str) -> None:
+        """A line for the day's report (kept in the journal: ``ca-note:<day>``)."""
+        if line not in self._ca_lines(day):
+            self.j.mark_job(f"ca-note:{day}", {"line": line}, now)
+
+    def _ca_lines(self, day: date) -> list[str]:
+        return [str(r["line"]) for k, r in self.j.job_records(f"ca-note:{day}") if "line" in r]
+
+    def _ingest_flex(self, day: date, now: datetime) -> None:
+        """The broker book's dividends, capital returns and corporate actions from IBKR's
+        own records (Activity Flex), once each; a code change IBKR reports is applied as
+        PROPOSED with its ratio and the owner is paged to confirm (``/idmap``)."""
+        if self.flex is None:
+            return
+        try:
+            sts = list(self.flex(day))
+        except (FlexError, OSError) as e:  # Flex for D-1 arrives in the afternoon (R37)
+            self._ca_note(day, now, f"INFO Flex statements not read today: {e}")
+            return
+        if not sts:
+            return
+        cal = self._calendar(self._held_codes(), day) or CaCalendar()
+        px = dict(self.marks(day)) if any(st.corporate_actions for st in sts) else {}
+        res = ingest_flex(self.j, self.s.book, sts, cal, px, now)
+        for b in res.booked:
+            self._ca_note(day, now, f"INFO {self.s.book} booked from IBKR: {describe(b)}")
+        if res.booked:
+            self.say(
+                f"{self.s.book}: corporate actions booked from IBKR's records:\n"
+                + "\n".join(describe(b) for b in res.booked)
+            )
+        for x in res.identity:
+            old, new = x.split(" -> ")[0], x.split(" -> ")[1].split()[0]
+            self.say(
+                f"PAGE code change reported by IBKR: {x}. Holdings are carried under {new} "
+                f"(share count by the ratio, cost kept). Confirm: /idmap {old} {new} "
+                f"<ratio> <code>. Undo: /idmap_reject {old} <code>."
+            )
+
+    def _ca_sim(self, day: date, now: datetime, closes: Mapping[str, Decimal]) -> None:
+        """The simulated books' corporate actions of the day from the calendar (vendor
+        dividends + the record's CSV; BW-UNI-23: on the ex-date, on the holding at the
+        close before); an event on a non-session date is booked on the next session."""
+        held = self._held_codes()
+        cal = self._calendar(held, day)
+        if cal is None:
+            return
+        prev = max((d for d in self.sessions if d < day), default=day - timedelta(days=1))
+        evs = cal.between(prev + timedelta(days=1), day)
+        known = self.j.identity_records()
+        for ev in evs:
+            if (
+                ev.kind is CaKind.CODE_CHANGE
+                and ev.new_code
+                and ev.code in held
+                and ev.code not in known
+            ):
+                self.j.add_identity(
+                    ev.code, ev.new_code, "PROPOSED", ev.source[:8], None, "calendar",
+                    f"{ev.key}: {ev.note}"[:200], now, ratio=ev.ratio,
+                )  # fmt: skip
+                self.say(
+                    f"PAGE code change {ev.code} -> {ev.new_code} (ratio "
+                    f"{ev.ratio or 1}) from the corporate-action calendar; carried as "
+                    f"{ev.new_code}. Confirm: /idmap {ev.code} {ev.new_code} "
+                    f"{ev.ratio or 1} <code>. Undo: /idmap_reject {ev.code} <code>."
+                )
+            if ev.kind is CaKind.DIVIDEND and ev.source == "VENDOR" and ev.per_share:
+                c = closes.get(ev.code)
+                if ev.code in held and c and ev.per_share >= c / 10:
+                    self._ca_note(
+                        day, now,
+                        f"WARN vendor dividend {ev.code} A${ev.per_share} is "
+                        f"{ev.per_share / c * 100:.0f}% of its close: a special or a capital "
+                        "return? Classify it in CORPORATE_ACTIONS.csv",
+                    )  # fmt: skip
+        rest = [e for e in evs if e.kind is not CaKind.CODE_CHANGE]
+        sims = dict(self._sim_brokers())
+        got = book_calendar_day(self.j, list(sims), rest, closes, now)
+        for book in {b for b, _ in got}:
+            sb = sims[book]
+            sb.cash += sum((x.cash for b, x in got if b == book), Decimal(0))
+            sb.holdings = dict(self.j.positions(book))
+        for b, x in got:
+            if b == self.s.sim_book:
+                self._ca_note(day, now, f"INFO {b} booked from the calendar: {describe(x)}")
+        n_rnd = len({b for b, _ in got if b != self.s.sim_book})
+        if n_rnd:
+            self._ca_note(day, now, f"INFO corporate actions booked in {n_rnd} random twin(s)")
 
     def _start_followup(self, day: date, now: datetime, recon_ok: bool) -> None:
         """L6: the other start buys go the session after the canary fills and the book
@@ -720,6 +851,7 @@ class BfApp:
                 return False
             self.say(f"PAGE no closes for {day}: the twin is not advanced today")
             return True
+        self._ca_sim(day, now, closes)  # BF-D23: before the auction, on yesterday's holdings
         self._code_changes(day, now, closes)
         self.sim.advance(day, closes)
         self.ex_sim.collect_fills(now, session_closed=True)
@@ -729,7 +861,7 @@ class BfApp:
             ex.collect_fills(now, session_closed=True)
             self._carry(name, ex, rb, "auto", day, now)
         r = compare_books(
-            self.j.positions(self.s.sim_book), self.j.positions(self.s.book), self._explained()
+            self.j.positions(self.s.sim_book), self.j.positions(self.s.book), self._explained(day)
         )
         if not r.ok:
             lvl = worst(self.j.safety_level(), SafetyLevel.HALTED_INTEGRITY)
@@ -740,10 +872,12 @@ class BfApp:
             )
         return True
 
-    def _explained(self) -> set[str]:
+    def _explained(self, day: date | None = None) -> set[str]:
         """L13: names whose holdings difference an order explains: an order of either
         book that did not fill (unapproved, vetoed, held, expired, rejected, pending),
-        or a name on which the two books' decisions differed (recorded at decide)."""
+        or a name on which the two books' decisions differed (recorded at decide); and
+        (BF-D23) the codes of a corporate action of the last 70 days, which the twin
+        books on the ex-date and the broker book when IBKR's records arrive."""
         out = {
             it.entity
             for book in (self.s.book, self.s.sim_book)
@@ -752,6 +886,16 @@ class BfApp:
         }
         for _, rec in self.j.job_records("l13:"):
             out.update(rec.get("diff", []))
+        if day is not None:
+            lo = day - timedelta(days=70)
+            for book in (self.s.book, self.s.sim_book):
+                for b in self.j.ca_bookings(book):
+                    if b.new_code and (b.ex_date or b.pay_date or day) >= lo:
+                        out.update({b.code, b.new_code})
+            cal = self._calendar(self._held_codes(), day)
+            for ev in cal.between(lo, day) if cal is not None else ():
+                if ev.new_code:
+                    out.update({ev.code, ev.new_code})
         planned = {k.split(":", 1)[1] for k, r in self.j.job_records("start-done:") if "batch" in r}
         for key, rec in self.j.job_records(f"start:{self.s.book}:"):
             if key.split(":", 1)[1] not in planned:  # L6: the other start buys wait for the
@@ -787,11 +931,21 @@ class BfApp:
                 f"twice). Confirm: /idmap {c.old} {c.new} <code>. Undo: /idmap_reject "
                 f"{c.old} <code>."
             )
-        m = self.j.identity_map()
+        m = self.j.identity_ratios()
         if m != self._idmap_seen:  # applied, confirmed or undone: simulated books follow
             for b, sb in self._sim_brokers():
                 sb.holdings = dict(self.j.positions(b))
             self._idmap_seen = m
+
+    def _ca_tax_flags(self) -> list[str]:
+        """Bookings whose tax treatment waits for a figure (a demerger's cost split, an
+        in-specie distribution's income/capital split): flagged until superseded."""
+        return [
+            f"WARN tax: {b.kind.value} {b.code}->{b.new_code} is {b.tax_class}; enter the "
+            "class-ruling figure in CORPORATE_ACTIONS.csv (cost_base_pct / capital_per_share)"
+            for b in self.j.ca_bookings(self.s.book)
+            if b.tax_class
+        ]
 
     def _code_change_flags(self) -> list[str]:
         return [
@@ -928,7 +1082,13 @@ class BfApp:
             commission_to_date=sum((f.commission for f in self.j.fills(self.s.book)), Decimal(0)),
             orders_today=orders,
             safety=self.j.safety_level().value,
-            flags=[*stale, *reading.alerts, *self._code_change_flags()],
+            flags=[
+                *stale,
+                *reading.alerts,
+                *self._code_change_flags(),
+                *self._ca_lines(day),
+                *self._ca_tax_flags(),
+            ],
             sim_value=sim_value,
             random_twins=self._rnd_line(day, now),
         )

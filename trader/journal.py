@@ -793,6 +793,14 @@ class Journal:
                 out.add(b.expected_key)
         return out
 
+    def known_codes(self) -> set[str]:
+        """Every code any book has traded or received (for an owner's ``/idmap``)."""
+        with self.engine.connect() as c:
+            out = {r[0] for r in c.execute(select(fills.c.entity).distinct())}
+            for r in c.execute(select(corporate_actions.c.code, corporate_actions.c.new_code)):
+                out.update(x for x in r if x)
+        return out
+
     def held_at(self, book: str, code: str, ex_date: date) -> int:
         """Shares of ``code`` (or the code it trades as now) held at the close of the
         session before ``ex_date``: the entitlement to an event with that ex-date."""

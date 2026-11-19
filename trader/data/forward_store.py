@@ -30,6 +30,7 @@ import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,7 @@ class ForwardStore:
         if not (self.root / "manifest.tsv").is_file():
             raise FileNotFoundError(f"no manifest.tsv under {self.root}")
         self._latest: dict[tuple[str, str], Path] = {}
+        self._bulk_div: dict[date, list[dict[str, Any]]] | None = None
         with (self.root / "manifest.tsv").open(newline="", encoding="utf-8") as f:
             for r in csv.DictReader(f, delimiter="\t"):
                 if r.get("http") == "200" and r.get("file"):
@@ -270,6 +272,34 @@ class ForwardStore:
             close=close[:, keep], ret=ret[:, keep], tv=tv[:, keep],
             sec_class={c: cls[c] for c in codes}, aliases=aliases,
         )  # fmt: skip
+
+    def dividend_rows(
+        self, codes: Iterable[str], start: date, end: date
+    ) -> list[tuple[str, date, Decimal, date | None]]:
+        """Vendor dividends ``(code, ex-date, unadjusted value, payment date)`` of
+        ``codes`` with ex-date in [start, end] (per-symbol history plus the bulk feed;
+        AUD only). The vendor gives no franking and no kind: a capital return or a
+        special comes as an ordinary dividend (BF-D23: the record's CSV corrects it)."""
+        if self._bulk_div is None:
+            self._bulk_div = self._bulk("bulk_div")
+        out: dict[tuple[str, date], tuple[str, date, Decimal, date | None]] = {}
+        for code in sorted(set(codes)):
+            rows = [(x, x.get("date")) for x in self._events("div", f"{code}.AU")]
+            rows += [
+                (x, str(d)) for d, xs in self._bulk_div.items() for x in xs if x.get("code") == code
+            ]
+            for x, ds in rows:
+                if x.get("currency") not in (None, "AUD") or not ds:
+                    continue
+                ex = date.fromisoformat(str(ds)[:10])
+                v = x.get("unadjustedValue") or x.get("value") or x.get("dividend")
+                if not (start <= ex <= end) or v in (None, ""):
+                    continue
+                pay = x.get("paymentDate")
+                out[(code, ex)] = (
+                    code, ex, Decimal(str(v)), date.fromisoformat(str(pay)[:10]) if pay else None,
+                )  # fmt: skip
+        return [out[k] for k in sorted(out)]
 
     def _events(self, kind: str, sym: str) -> list[dict[str, Any]]:
         p = self._latest.get((kind, sym))

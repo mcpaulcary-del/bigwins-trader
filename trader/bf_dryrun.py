@@ -33,10 +33,11 @@ from trader.bf_app import (
     mock_auction,
     owner_approves_all,
 )
-from trader.bfast_config import BfastConfig, LicListError, lic_codes
+from trader.bfast_config import BfastConfig, LicListError, corporate_actions_csv, lic_codes
 from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
 from trader.broker.mock_gateway import MockGateway
 from trader.broker.paper_sim import SimBroker
+from trader.ca_book import CaSource, calendar_source
 from trader.data.forward_store import ForwardStore
 from trader.journal import Journal
 from trader.panel import PricePanel
@@ -119,6 +120,13 @@ def store_providers(
 Providers = tuple[PanelProvider, CloseProvider, CloseProvider, str]
 
 
+def ca_source_from(cfg: BfastConfig, store: Path) -> CaSource:
+    """BF-D23: the corporate-action calendar: the forward store's vendor dividends of the
+    held codes, corrected by the record's CORPORATE_ACTIONS.csv."""
+    fs = ForwardStore(store)
+    return calendar_source(fs.dividend_rows, corporate_actions_csv(cfg))
+
+
 def mock_app(
     cfg: BfastConfig,
     providers: Providers,
@@ -128,6 +136,7 @@ def mock_app(
     gw: MockGateway | None = None,
     seed: str | None = None,
     random_twins: int | None = None,
+    ca_source: CaSource | None = None,
 ) -> tuple[BfApp, MockGateway, str]:
     """A ``BfApp`` on the mock gateway with a simulated owner's authenticator. Passing
     the same ``gw``, ``journal_path`` and ``seed`` again is a restart: the new app has
@@ -152,7 +161,7 @@ def mock_app(
         sim = SimBroker.from_journal(j, s.sim_book, s.sim_half_spread)
     app = BfApp(
         s, j, broker, sim, FakeTransport(), TotpVerifier(SecretValue(seed)), sessions, panel,
-        closes, marks, lic_guard=lambda: lic_codes(cfg),
+        closes, marks, lic_guard=lambda: lic_codes(cfg), ca_source=ca_source,
     )  # fmt: skip
     return app, gw, seed
 
@@ -170,8 +179,9 @@ def forward_store_dry_run(
     providers = providers or store_providers(cfg, store, sessions)
     start = min((d for d, k in decisions.items() if k == "S"), default=None)
     app, gw, seed = mock_app(
-        cfg, providers, sessions, start, journal_path, random_twins=random_twins
-    )
+        cfg, providers, sessions, start, journal_path, random_twins=random_twins,
+        ca_source=ca_source_from(cfg, store),
+    )  # fmt: skip
     tr = app.transport
     assert isinstance(tr, FakeTransport)
     summ = dry_run(

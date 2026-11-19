@@ -155,9 +155,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     """The long-running paper process: scheduler + Telegram + IBKR paper gateway."""
     from trader.approval import TelegramTransport, TotpVerifier
     from trader.bf_app import BfApp
-    from trader.bf_dryrun import settings_from, store_providers
+    from trader.bf_dryrun import ca_source_from, settings_from, store_providers
     from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
     from trader.broker.paper_sim import SimBroker
+    from trader.ca_book import flex_inbox
     from trader.scheduler import run_forever
     from trader.secrets import read_secret
 
@@ -192,6 +193,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         closes,
         marks,
         lic_guard=lambda: lic_codes(cfg),  # BF-D21: checked before every decision and send
+        ca_source=ca_source_from(cfg, cfg.data.forward_store),  # BF-D23
+        flex=flex_inbox(cfg.data.flex_inbox) if cfg.data.flex_inbox else None,
     )
     run_forever(app)
     return 0

@@ -120,6 +120,13 @@ class DataCfg(_M):
     # frozen file refuses every decision and every order (fail closed, owner paged)
     lic_list_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     history_sessions: int = Field(ge=300)
+    # BF-D23: the record keeper's CORPORATE_ACTIONS.csv (capital returns, specials,
+    # demergers, in-specie, code changes; overrides the vendor's dividends); env
+    # TRADER_BF_CA_CSV overrides the path; a missing file means vendor dividends only
+    corporate_actions_csv: Path | None = None
+    # IBKR Activity Flex statements (XML) of the broker book, read before each
+    # reconciliation: its dividends and corporate actions are booked from them
+    flex_inbox: Path | None = None
 
 
 class TelegramCfg(_M):
@@ -188,6 +195,7 @@ class BfastConfig(_M):
         )
 
 
+CA_CSV_ENV = "TRADER_BF_CA_CSV"  # overrides ``data.corporate_actions_csv`` (BF-D23)
 LIC_LIST_ENV = "TRADER_BF_LIC_LIST"  # overrides ``data.lic_list`` (the frozen list's path)
 
 
@@ -245,3 +253,9 @@ def lic_codes(cfg: BfastConfig) -> LicList:
 
 def load_bfast_config(path: Path) -> BfastConfig:
     return BfastConfig.model_validate(load_yaml(path.read_text(encoding="utf-8")))
+
+
+def corporate_actions_csv(cfg: BfastConfig) -> Path | None:
+    """BF-D23: the record's CORPORATE_ACTIONS.csv (``$TRADER_BF_CA_CSV`` wins)."""
+    env = os.environ.get(CA_CSV_ENV)
+    return Path(env) if env else cfg.data.corporate_actions_csv

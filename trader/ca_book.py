@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from trader.corporate_actions import (
     Booking,
@@ -24,10 +25,18 @@ from trader.corporate_actions import (
     book_event,
     bookings_from_flex,
     expectations,
+    load_ca_csv,
+    vendor_events,
 )
-from trader.data.flex import FlexStatement
+from trader.data.flex import FlexError, FlexStatement, parse_statements
 from trader.journal import Journal
 from trader.reconcile import Expected
+
+# (codes, start, end) -> the corporate-action calendar of those codes in [start, end]
+CaSource = Callable[[frozenset[str], date, date], CaCalendar]
+VendorRows = Callable[
+    [frozenset[str], date, date], Sequence[tuple[str, date, Decimal, date | None]]
+]
 
 
 @dataclass(frozen=True)
@@ -126,3 +135,37 @@ def pending_expectations(j: Journal, book: str, cal: CaCalendar, today: date) ->
     records have not yet settled."""
     evs = cal.between(today - timedelta(days=120), today)
     return expectations(evs, lambda c, d: j.held_at(book, c, d), j.ca_settled(book), today)
+
+
+def calendar_source(vendor: VendorRows | None, csv_path: Path | None) -> CaSource:
+    """Vendor dividends of the asked codes merged with the record's
+    ``CORPORATE_ACTIONS.csv`` (re-read on every call, so an entry the record keeper adds
+    is used the same day; a missing file is no events, a malformed one raises)."""
+
+    def source(codes: frozenset[str], start: date, end: date) -> CaCalendar:
+        own = []
+        if csv_path is not None and csv_path.is_file():
+            own = [e for e in load_ca_csv(csv_path) if start <= e.ex_date <= end]
+        rows = vendor(codes, start, end) if vendor is not None and codes else []
+        return CaCalendar.merged(vendor_events(rows), own)
+
+    return source
+
+
+def flex_inbox(directory: Path) -> Callable[[date], list[FlexStatement]]:
+    """Activity Flex statements saved as XML files in ``directory`` (by the Flex Web
+    Service pull or by hand). Every file is read on every call; booking is idempotent,
+    so a statement read twice books nothing twice. A file that does not parse raises."""
+
+    def read(day: date) -> list[FlexStatement]:
+        if not directory.is_dir():
+            return []
+        out: list[FlexStatement] = []
+        for p in sorted(directory.glob("*.xml")):
+            try:
+                out += parse_statements(p.read_bytes())
+            except FlexError as e:
+                raise FlexError(f"{p.name}: {e}") from e
+        return out
+
+    return read
