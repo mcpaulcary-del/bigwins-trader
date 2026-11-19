@@ -56,6 +56,7 @@ def _app(
     random_twins: int = 0,
     journal: Journal | None = None,
     gw: MockGateway | None = None,
+    lic_guard: Callable[[], object] | None = None,
 ) -> tuple[BfApp, MockGateway, FakeTransport]:
     """A fresh app; with ``journal`` and ``gw`` of an earlier app, a restart."""
     restart = journal is not None
@@ -73,7 +74,16 @@ def _app(
         sim = SimBroker(cash=Decimal(10000), half_spread=s.sim_half_spread)
     tr = FakeTransport()
     app = BfApp(
-        s, j, broker, sim, tr, TotpVerifier(SecretValue(SEED)), PANEL.dates, _panel, _closes
+        s,
+        j,
+        broker,
+        sim,
+        tr,
+        TotpVerifier(SecretValue(SEED)),
+        PANEL.dates,
+        _panel,
+        _closes,
+        lic_guard=lic_guard,
     )
     return app, gw, tr
 
@@ -763,3 +773,71 @@ def test_scheduler_non_session_days_only_poll_telegram() -> None:
     assert run_once(app, at(sat, "23:00")) == []
     assert app.j.safety_level() is SafetyLevel.PAUSED
     assert any("PAUSED" in t for _, t in tr.outbox)
+
+
+class _LicFile:
+    """BF-D21 test double for ``lic_codes``: the frozen LIC list is there or not."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+        self.calls = 0
+
+    def __call__(self) -> None:
+        from trader.bfast_config import LicListError
+
+        self.calls += 1
+        if not self.ok:
+            raise LicListError("frozen LIC list config/lic_list.csv is missing or unreadable")
+
+
+def test_BF_D21_missing_lic_list_no_decision_no_order_owner_paged() -> None:
+    """Fail closed: without the frozen list nothing is decided or sent (no 5-code
+    fallback), the broker book is latched HALTED_INTEGRITY and the owner is paged."""
+    guard = _LicFile(ok=False)
+    app, gw, tr = _app(D0, lic_guard=guard)
+    dry_run(app, DAYS[:3], {}, owner_approves_all(app, SEED), mock_auction(gw, _closes))
+    assert guard.calls > 0
+    assert not gw.placed
+    assert not app.j.batches_of(app.s.book) and not app.j.batches_of(app.s.sim_book)
+    assert app.j.safety_level() is SafetyLevel.HALTED_INTEGRITY
+    pages = [t for _, t in tr.outbox if t.startswith("PAGE BF-D21")]
+    assert pages and all("No decision is made and no order is sent" in t for t in pages)
+    assert len(pages) == len(set(pages))  # once per day and step, not every retry
+    rec = app.j.job_records(f"decide:{app.s.book}:{D0}")
+    assert rec and "BF-D21" in str(rec[0][1])
+
+
+def test_BF_D21_decision_retried_until_the_list_is_restored() -> None:
+    guard = _LicFile(ok=False)
+    app, _, tr = _app(D0, lic_guard=guard)
+    assert app.job_decide(D0, at(D0, "22:20"), "S") is False  # refused, retried later
+    assert not app.j.batches_of(app.s.book)
+    assert any(t.startswith("PAGE BF-D21") for _, t in tr.outbox)
+    guard.ok = True  # restored before the retry: the decision is made, the latch stays
+    assert app.job_decide(D0, at(D0, "23:00"), "S") is True
+    assert app.j.batches_of(app.s.book)
+    assert app.j.safety_level() is SafetyLevel.HALTED_INTEGRITY  # the owner re-arms
+
+
+def test_BF_D21_list_lost_after_the_decision_blocks_every_send() -> None:
+    guard = _LicFile(ok=True)
+    app, gw, tr = _app(D0, lic_guard=guard)
+    approve = owner_approves_all(app, SEED)
+    app.run_day(D0, owner=approve, auction=mock_auction(gw, _closes))
+    assert app.j.batches_of(app.s.book)  # decided with the list present
+    guard.ok = False
+    app.run_day(DAYS[1], owner=approve, auction=mock_auction(gw, _closes))
+    assert not gw.placed  # the approved canary is not sent
+    assert not app.j.positions(app.s.sim_book)  # nor the twin's orders: books stay in step
+    assert app.j.safety_level() is SafetyLevel.HALTED_INTEGRITY
+    assert any(t.startswith("PAGE BF-D21") and "(send," in t for _, t in tr.outbox)
+
+
+def test_BF_D21_start_up_pages_a_missing_lic_list() -> None:
+    from trader.scheduler import start_up
+
+    app, _, tr = _app(None, lic_guard=_LicFile(ok=False))
+    pages = start_up(app, at(DAYS[0], "09:00"))
+    assert any("BF-D21" in p for p in pages)
+    assert any(t.startswith("PAGE BF-D21") for _, t in tr.outbox)
+    assert app.j.safety_level() is SafetyLevel.HALTED_INTEGRITY

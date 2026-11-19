@@ -33,7 +33,7 @@ from trader.bf_app import (
     mock_auction,
     owner_approves_all,
 )
-from trader.bfast_config import BfastConfig, lic_codes
+from trader.bfast_config import BfastConfig, LicListError, lic_codes
 from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
 from trader.broker.mock_gateway import MockGateway
 from trader.broker.paper_sim import SimBroker
@@ -86,13 +86,17 @@ def store_providers(
     etp: frozenset[str] = frozenset()
     if cfg.data.etp_list.is_file():
         etp = frozenset(x.strip() for x in cfg.data.etp_list.read_text().splitlines() if x.strip())
-    lic = lic_codes(cfg)
+    try:
+        note = lic_codes(cfg).describe()
+    except LicListError as e:  # BF-D21: the app starts, pages and refuses to decide
+        note = f"LIC list REFUSED (BF-D21): {e}"
     fs = ForwardStore(store)
     cache: dict[date, tuple[float, PricePanel]] = {}
 
     def panel(d: date) -> PricePanel:
         hit = cache.get(d)
         if hit is None or (refresh_seconds is not None and clock() - hit[0] > refresh_seconds):
+            lic = lic_codes(cfg)  # BF-D21: re-checked on every build; raises, never falls back
             p = fs.build_panel(
                 d, sessions, history=cfg.data.history_sessions, etp_codes=etp, lic_codes=lic.codes
             )
@@ -109,7 +113,7 @@ def store_providers(
             if not np.isnan(c)
         }
 
-    return panel, closes, marks_from_panels(panel), lic.describe()
+    return panel, closes, marks_from_panels(panel), note
 
 
 Providers = tuple[PanelProvider, CloseProvider, CloseProvider, str]
@@ -148,7 +152,7 @@ def mock_app(
         sim = SimBroker.from_journal(j, s.sim_book, s.sim_half_spread)
     app = BfApp(
         s, j, broker, sim, FakeTransport(), TotpVerifier(SecretValue(seed)), sessions, panel,
-        closes, marks,
+        closes, marks, lic_guard=lambda: lic_codes(cfg),
     )  # fmt: skip
     return app, gw, seed
 

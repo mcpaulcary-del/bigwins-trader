@@ -55,7 +55,8 @@ data:
                                             # excludes LICs/funds by this list only (no name words);
                                             # $TRADER_BF_LIC_LIST overrides the path (e.g. the record file)
   lic_list_sha256: af441f284b2dedfd7ffb13833907a6e635c9bab834a99ce949014b705fe36582
-  lic_list_fallback: config/lic_list_candidates.csv  # only if the frozen list is missing
+                                            # BF-D21: required; no fallback list. Missing or
+                                            # changed file => no decision, no order, owner paged
   history_sessions: 760
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0

@@ -226,6 +226,7 @@ class BfApp:
         marks: CloseProvider | None = None,
         twin_rank: Callable[[date], Decimal | None] | None = None,
         l12_stop: Callable[[date], str | None] | None = None,
+        lic_guard: Callable[[], object] | None = None,
     ) -> None:
         """``closes(d)``: the closes of session d (empty while the day's data is not in);
         ``marks(d)``: the last known close of every name at d (valuation; defaults to
@@ -233,8 +234,12 @@ class BfApp:
         ``twin_rank(d)``: the twin's percentile among its 100 random twins since the
         start (None, the default, while the random twins are not running: the test
         then fails safe and buys stay paused); ``l12_stop(d)``: the L12 stop rule met
-        at d, if any (default: none)."""
+        at d, if any (default: none). ``lic_guard()``: BF-D21, re-reads and checks the
+        frozen LIC list against its pin and raises when it is missing or changed; it runs
+        before every decision and every send (``trader-bf run`` and the dry run pass
+        ``lic_codes``; None, unit tests only, checks nothing)."""
         self.s = s
+        self.lic_guard = lic_guard
         self.j = journal
         self.broker = broker
         self.sim = sim
@@ -347,6 +352,52 @@ class BfApp:
             buys_sent_today_aud=buys,
         )
 
+    def lic_list_refused(self, day: date, now: datetime, step: str) -> str | None:
+        """BF-D21: None when the frozen LIC list is present and is the registered file.
+        Otherwise the reason: the broker book is latched HALTED_INTEGRITY (no order of
+        any kind until the owner re-arms) and the owner is paged once per day and step.
+        There is no fallback list; the caller makes no decision and sends no order."""
+        if self.lic_guard is None:
+            return None
+        try:
+            self.lic_guard()
+        except Exception as e:  # any failure to read or check the list fails closed
+            why = f"{type(e).__name__}: {e}"[:240]
+        else:
+            return None
+        key = f"bfd21:{day}:{step}"
+        if not self.j.job_done(key):
+            self.j.mark_job(key, {"why": why}, now)
+            lvl = worst(self.j.safety_level(), SafetyLevel.HALTED_INTEGRITY)
+            self.j.set_safety(lvl, f"BF-D21 LIC list refused: {why}"[:180], "bfd21", now)
+            self.say(
+                f"PAGE BF-D21 the frozen LIC list is refused ({step}, {day}): {why}. "
+                "No decision is made and no order is sent (fail closed; there is no "
+                "fallback list). Restore the registered LIC_list_frozen_v2.csv (SHA-256 "
+                "pinned as data.lic_list_sha256), then re-arm."
+            )
+        return why
+
+    def _decision_refused(
+        self, day: date, now: datetime, kinds: Mapping[str, str | None]
+    ) -> bool | None:
+        """None to go on; else the job's result: True when no book has a decision due.
+        BF-D21: when the frozen LIC list is refused, False (retried until
+        ``RETRY_UNTIL``, the owner may restore the file), then True (no decision today,
+        recorded for every book that had one due)."""
+        if not any(kinds.values()):
+            return True
+        why = self.lic_list_refused(day, now, "decision")
+        if why is None:
+            return None
+        if now < at(day, RETRY_UNTIL):
+            return False
+        for book, *_ in self._books():
+            key = f"decide:{book}:{day}"
+            if kinds[book] is not None and not self.j.job_done(key):
+                self.j.mark_job(key, {"refused": "BF-D21 LIC list: " + why}, now)
+        return True
+
     def _books(self) -> tuple[tuple[str, Executor, Broker, str], ...]:
         return (
             (self.s.book, self.ex, self.broker, self.s.approval_mode),
@@ -389,8 +440,9 @@ class BfApp:
 
     def job_decide(self, day: date, now: datetime, kind: str | None = None) -> bool:
         kinds = {book: kind or self.decision_kind(day, book) for book, *_ in self._books()}
-        if not any(kinds.values()):
-            return True
+        refused = self._decision_refused(day, now, kinds)  # BF-D21: before any panel
+        if refused is not None:
+            return refused
         panel = self.panels(day)
         liq = liquidity_table(panel)
         tv20 = {
@@ -516,6 +568,8 @@ class BfApp:
         return out
 
     def job_submit(self, day: date, now: datetime) -> None:
+        if self.lic_list_refused(day, now, "send") is not None:
+            return  # BF-D21: no order of any book is sent (the twins stay in step)
         for book, ex, broker, _ in self._books():
             for bid, final in self._active(book, day):
                 b = self.j.batch(bid)

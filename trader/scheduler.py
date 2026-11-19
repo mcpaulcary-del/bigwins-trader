@@ -74,6 +74,9 @@ def start_up(app: BfApp, now: datetime) -> list[str]:
     pages = app.ex.recover(now)
     for p in pages:
         app.say("PAGE " + p)
+    why = app.lic_list_refused(now.astimezone(ASX_TZ).date(), now, "start-up")  # BF-D21
+    if why is not None:
+        pages.append("BF-D21 LIC list refused: " + why)
     return pages
 
 

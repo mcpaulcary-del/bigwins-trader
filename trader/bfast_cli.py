@@ -21,7 +21,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from trader.bfast_config import lic_codes, load_bfast_config
+from trader.bfast_config import LicListError, lic_codes, load_bfast_config
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
 from trader.journal import Journal
@@ -43,6 +43,18 @@ def _journal(url: str | None) -> Journal:
     return Journal(create_engine(url)) if url else Journal.sqlite("bf_journal.sqlite3")
 
 
+def cmd_validate_config(args: argparse.Namespace) -> int:
+    cfg = load_bfast_config(args.config)
+    try:
+        lic = lic_codes(cfg)  # BF-D21: the frozen LIC list must be there and match its pin
+    except LicListError as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 2
+    print(f"ok: book {cfg.book}, mode {cfg.mode}, cap A${cfg.live_emg2_20.capital_cap_aud}")
+    print(lic.describe())
+    return 0
+
+
 def cmd_emg2_list(args: argparse.Namespace) -> int:
     from trader.data.forward_store import ForwardStore
     from trader.lines.emg2 import BookState, decide_emg2_20, emg2_list
@@ -52,7 +64,10 @@ def cmd_emg2_list(args: argparse.Namespace) -> int:
     etp: frozenset[str] = frozenset()
     if cfg.data.etp_list.is_file():
         etp = frozenset(x.strip() for x in cfg.data.etp_list.read_text().splitlines() if x.strip())
-    lic_list = lic_codes(cfg)
+    try:
+        lic_list = lic_codes(cfg)  # BF-D21: no list, no picks (no fallback)
+    except LicListError as e:
+        raise SystemExit(f"REFUSED (BF-D21): {e}") from e
     lic = lic_list.codes
     print(lic_list.describe(), file=sys.stderr)
     panel = ForwardStore(store).build_panel(
@@ -176,6 +191,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         panel,
         closes,
         marks,
+        lic_guard=lambda: lic_codes(cfg),  # BF-D21: checked before every decision and send
     )
     run_forever(app)
     return 0
@@ -218,9 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--journal")
     a = ap.parse_args(argv)
     if a.cmd == "validate-config":
-        cfg = load_bfast_config(a.config)
-        print(f"ok: book {cfg.book}, mode {cfg.mode}, cap A${cfg.live_emg2_20.capital_cap_aud}")
-        return 0
+        return cmd_validate_config(a)
     if a.cmd == "emg2-list":
         return cmd_emg2_list(a)
     if a.cmd == "dry-run":

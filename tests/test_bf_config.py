@@ -21,7 +21,11 @@ def _raw() -> dict:  # type: ignore[type-arg]
     return out
 
 
-def test_repo_config_validates_and_matches_engine_defaults() -> None:
+def test_repo_config_validates_and_matches_engine_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRADER_BF_LIC_LIST", raising=False)
+    monkeypatch.chdir(CFG.parent.parent)  # data.lic_list is relative to the repository
     c = load_bfast_config(CFG)
     assert c.mode == "paper" and c.broker.allow_live is False and c.broker.port == 4004
     assert c.risk_limits() == RiskLimits()
@@ -67,34 +71,94 @@ def test_run_refuses_without_a_paper_account_or_chat(tmp_path: Path) -> None:
         main(["run", "--config", str(p)])
 
 
-def test_BF_D6_lic_list_prefers_the_frozen_record_file(
+def test_BF_D21_lic_list_fails_closed_without_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from trader.bfast_config import LIC_LIST_ENV, lic_codes
+    """BF-D21: only the pinned frozen file is accepted; missing, changed, empty or
+    undecodable is a ``LicListError`` (never the 5-code candidates file)."""
+    import hashlib
+
+    from trader.bfast_config import LIC_LIST_ENV, LicListError, lic_codes
 
     monkeypatch.delenv(LIC_LIST_ENV, raising=False)
+    good = b"code,name,reason\nAFI,a,b\nARG,c,d\n"
     raw = _raw()
-    raw["data"]["lic_list"] = str(tmp_path / "LIC_list_frozen.csv")
-    raw["data"]["lic_list_fallback"] = str(tmp_path / "cand.csv")
-    raw["data"]["lic_list_sha256"] = None
+    frozen = tmp_path / "LIC_list_frozen_v2.csv"
+    raw["data"]["lic_list"] = str(frozen)
+    raw["data"]["lic_list_sha256"] = hashlib.sha256(good).hexdigest()
     cfg = BfastConfig.model_validate(raw)
-    with pytest.raises(FileNotFoundError):
-        lic_codes(cfg)  # never silently without a list
-    (tmp_path / "cand.csv").write_text("code,name\nFGG,x\n")
-    got = lic_codes(cfg)
-    assert got.codes == {"FGG"} and got.path == tmp_path / "cand.csv" and not got.frozen
-    assert "CANDIDATES" in got.describe()
-    (tmp_path / "LIC_list_frozen.csv").write_text("code,name,reason\nAFI,a,b\nARG,c,d\n")
-    got = lic_codes(cfg)
-    assert got.codes == {"AFI", "ARG"} and got.frozen
-    other = tmp_path / "elsewhere.csv"
-    other.write_text("code,name,reason\nWAR,w,x\n")
-    monkeypatch.setenv(LIC_LIST_ENV, str(other))
-    assert lic_codes(cfg).codes == {"WAR"}
-    (tmp_path / "LIC_list_frozen.csv").write_text("code,name,reason\n")
-    monkeypatch.delenv(LIC_LIST_ENV)
-    with pytest.raises(ValueError, match="no codes"):
+    (tmp_path / "cand.csv").write_text("code,name\nFGG,x\n")  # a candidates file is ignored
+    with pytest.raises(LicListError, match="missing"):
         lic_codes(cfg)
+    frozen.write_bytes(good)
+    got = lic_codes(cfg)
+    assert got.codes == {"AFI", "ARG"} and got.path == frozen
+    assert got.sha256 == raw["data"]["lic_list_sha256"] and "frozen record list" in got.describe()
+    other = tmp_path / "elsewhere.csv"
+    other.write_bytes(good)
+    monkeypatch.setenv(LIC_LIST_ENV, str(other))  # another path, the same registered bytes
+    assert lic_codes(cfg).path == other
+    monkeypatch.delenv(LIC_LIST_ENV)
+    frozen.write_bytes(good + b"WAR,w,x\n")
+    with pytest.raises(LicListError, match="not the registered"):
+        lic_codes(cfg)
+    empty = b"code,name,reason\n"  # pinned but empty: still refused
+    frozen.write_bytes(empty)
+    cfg2 = BfastConfig.model_validate(
+        {**raw, "data": {**raw["data"], "lic_list_sha256": hashlib.sha256(empty).hexdigest()}}
+    )
+    with pytest.raises(LicListError, match="no codes"):
+        lic_codes(cfg2)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("lic_list_sha256", None),  # the pin is required
+        ("lic_list_fallback", "config/lic_list_candidates.csv"),  # no fallback any more
+    ],
+)
+def test_BF_D21_config_requires_the_pin_and_has_no_fallback(key: str, value: object) -> None:
+    raw = _raw()
+    if value is None:
+        del raw["data"][key]
+    else:
+        raw["data"][key] = value
+    with pytest.raises(ValidationError):
+        BfastConfig.model_validate(raw)
+
+
+def test_BF_D21_validate_config_and_emg2_list_refuse_a_missing_lic_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from trader.bfast_config import LIC_LIST_ENV
+
+    monkeypatch.setenv(LIC_LIST_ENV, str(tmp_path / "gone.csv"))
+    raw = json.loads(json.dumps(_raw(), default=str))
+    p = tmp_path / "c.yaml"
+    p.write_text(json.dumps(raw))
+    assert main(["validate-config", "--config", str(p)]) == 2
+    with pytest.raises(SystemExit, match="BF-D21"):
+        main(["emg2-list", "--asof", "2026-11-30", "--config", str(p), "--store", str(tmp_path)])
+
+
+def test_BF_D21_store_providers_refuse_to_build_a_panel_without_the_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+
+    from trader.bf_dryrun import store_providers
+    from trader.bfast_config import LIC_LIST_ENV, LicListError
+
+    (tmp_path / "manifest.tsv").write_text("kind\tdate\tpath\n")
+    monkeypatch.setenv(LIC_LIST_ENV, str(tmp_path / "gone.csv"))
+    cfg = load_bfast_config(CFG)
+    panel, _, _, note = store_providers(cfg, tmp_path, [date(2026, 11, 30)])
+    assert note.startswith("LIC list REFUSED (BF-D21)")
+    with pytest.raises(LicListError):
+        panel(date(2026, 11, 30))
 
 
 def test_BF_D6_record_lic_list_covers_the_names_the_name_rule_misses() -> None:
@@ -115,19 +179,19 @@ def test_BF_D6_repo_lic_list_is_the_registered_frozen_file(
     (SHA-256 pinned in ``config/bfast.yaml``, ledger seq 62, BF-D20): 69 codes = the 46 of
     v1 (ledger seq 39) including the five the old name rule missed, plus the 23 traded LICs
     the old name rule alone excluded. A file that differs from the pin is refused."""
-    from trader.bfast_config import LIC_LIST_ENV, lic_codes
+    from trader.bfast_config import LIC_LIST_ENV, LicListError, lic_codes
 
     monkeypatch.delenv(LIC_LIST_ENV, raising=False)
     root = Path(__file__).resolve().parent.parent
     monkeypatch.chdir(root)
     cfg = load_bfast_config(CFG)
     got = lic_codes(cfg)
-    assert got.frozen and got.path == Path("config/lic_list.csv") and len(got.codes) == 69
+    assert got.path == Path("config/lic_list.csv") and len(got.codes) == 69
     assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= got.codes
     assert {"AFI", "ARG", "MFF", "BKI", "AUI", "DJW", "AIQ"} <= got.codes  # BF-D20 additions
     assert not {"PNI", "PMV", "NGI", "AEF", "RG1", "NZK", "CIW"} & got.codes  # companies
     edited = tmp_path / "edited.csv"
     edited.write_bytes((root / "config" / "lic_list.csv").read_bytes() + b"XYZ,x,y\n")
     monkeypatch.setenv(LIC_LIST_ENV, str(edited))
-    with pytest.raises(ValueError, match="not the registered"):
+    with pytest.raises(LicListError, match="not the registered"):
         lic_codes(cfg)

@@ -145,7 +145,7 @@ go-live checklist, by a reviewed code change.
 | 9 | Backups, restore, no inbound port (scan) | Open (compose has no published ports) |
 | 10 | Dead-man heartbeat 5 days | Open |
 | 11 | Amendments registered; code hashes pinned | Record keeper |
-| 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14); owner review open |
+| 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14, v2 BF-D20); a missing or changed list refuses every decision and order and pages (BF-D21, no fallback); owner review open |
 | 13 | Risk statement signed; 5% of investable assets | Owner |
 | 14 | Parcels for paper fills; short-term gains understood | Journal has fills; parcel/tax view open |
 | 15 | Owner reachable by 15:20 through April 2027 | Owner |

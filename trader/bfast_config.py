@@ -116,8 +116,9 @@ class DataCfg(_M):
     random_seed_base: int = Field(default=8550000, ge=8550000, le=8550000)
     etp_list: Path
     lic_list: Path
-    lic_list_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    lic_list_fallback: Path
+    # BF-D21: the pin is required and there is no fallback list; a missing or changed
+    # frozen file refuses every decision and every order (fail closed, owner paged)
+    lic_list_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     history_sessions: int = Field(ge=300)
 
 
@@ -190,43 +191,56 @@ class BfastConfig(_M):
 LIC_LIST_ENV = "TRADER_BF_LIC_LIST"  # overrides ``data.lic_list`` (the frozen list's path)
 
 
-def read_codes(path: Path) -> frozenset[str]:
-    """First column of a CSV with a header row (``code,...``); blank lines skipped."""
-    rows = path.read_text(encoding="utf-8").splitlines()[1:]
-    codes = frozenset(r.split(",")[0].strip().upper() for r in rows if r.strip())
+def read_codes(path: Path, text: str | None = None) -> frozenset[str]:
+    """First column of a CSV with a header row (``code,...``); blank lines skipped.
+    ``text``: the file's contents already read (so the codes are those of the bytes
+    that were hashed)."""
+    body = path.read_text(encoding="utf-8") if text is None else text
+    codes = frozenset(r.split(",")[0].strip().upper() for r in body.splitlines()[1:] if r.strip())
     if not codes:
         raise ValueError(f"{path}: no codes (an empty list would exclude no LIC)")
     return codes
+
+
+class LicListError(RuntimeError):
+    """BF-D21: the frozen LIC list is missing, empty or not the registered file. No
+    decision may be made and no order sent until it is restored (fail closed)."""
 
 
 @dataclass(frozen=True)
 class LicList:
     codes: frozenset[str]
     path: Path
-    frozen: bool  # False: the candidates file stands in (go-live checklist item 12 open)
+    sha256: str
 
     def describe(self) -> str:
-        what = "frozen record list" if self.frozen else "CANDIDATES (not frozen; BF-D6 open)"
-        return f"LIC list: {what} {self.path} ({len(self.codes)} codes)"
+        return (
+            f"LIC list: frozen record list {self.path} ({len(self.codes)} codes, "
+            f"sha256 {self.sha256[:12]}...)"
+        )
 
 
 def lic_codes(cfg: BfastConfig) -> LicList:
-    """BF-D6: the record keeper's frozen LIC list (``data.lic_list``, or the path in
-    ``$TRADER_BF_LIC_LIST``) when it exists, checked against ``data.lic_list_sha256``
-    when that is set, else ``data.lic_list_fallback`` (the candidates). Neither file, or
-    an empty one, is an error: the class filter must never run silently without its
-    list; a frozen file that differs from the pin is refused."""
+    """BF-D6 / BF-D20 / BF-D21: the record keeper's frozen LIC list (``data.lic_list``, or
+    the path in ``$TRADER_BF_LIC_LIST``), byte for byte the registered file
+    (``data.lic_list_sha256``). Missing, unreadable, empty or different from the pin is a
+    ``LicListError``: there is no fallback list (the 5-code candidates file would let
+    the traditional LICs into the class), so callers refuse to decide or send."""
     env = os.environ.get(LIC_LIST_ENV)
     frozen = Path(env) if env else cfg.data.lic_list
-    if frozen.is_file():
-        pin = cfg.data.lic_list_sha256
-        got = hashlib.sha256(frozen.read_bytes()).hexdigest()
-        if pin is not None and got != pin:  # the registered file, byte for byte
-            raise ValueError(f"{frozen}: sha256 {got[:12]}... is not the registered {pin[:12]}...")
-        return LicList(read_codes(frozen), frozen, True)
-    if cfg.data.lic_list_fallback.is_file():
-        return LicList(read_codes(cfg.data.lic_list_fallback), cfg.data.lic_list_fallback, False)
-    raise FileNotFoundError(f"no LIC list: neither {frozen} nor {cfg.data.lic_list_fallback}")
+    pin = cfg.data.lic_list_sha256
+    try:
+        raw = frozen.read_bytes()
+    except OSError as e:
+        raise LicListError(f"frozen LIC list {frozen} is missing or unreadable ({e})") from e
+    got = hashlib.sha256(raw).hexdigest()
+    if got != pin:  # the registered file, byte for byte
+        raise LicListError(f"{frozen}: sha256 {got[:12]}... is not the registered {pin[:12]}...")
+    try:
+        codes = read_codes(frozen, raw.decode("utf-8"))
+    except ValueError as e:  # UnicodeDecodeError included  # a pinned empty file is still refused
+        raise LicListError(str(e)) from e
+    return LicList(codes, frozen, got)
 
 
 def load_bfast_config(path: Path) -> BfastConfig:
