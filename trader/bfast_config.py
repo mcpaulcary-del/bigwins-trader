@@ -50,7 +50,9 @@ class ExecutionCfg(_M):
     submit_at: str
     fallback_send_at: str
     fallback_cancel_at: str
-    approval_mode: Literal["per_order", "batch", "auto"]
+    # L8: every broker-book order needs the owner's approval; "auto" (BW-APR-02) is
+    # refused here so an unapproved order can never be sent (only the twin auto-approves)
+    approval_mode: Literal["per_order", "batch"]
     approval_deadline: str
     buy_funds_wait_sessions: int = Field(ge=0, le=4)
 

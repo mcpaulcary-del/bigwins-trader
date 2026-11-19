@@ -15,6 +15,14 @@ Telegram between jobs so that ``/pause`` and ``/kill`` act within seconds.
 * At start-up ``Executor.recover`` adopts broker orders of intents left in SENDING
   (never resends).
 Non-session days run nothing but the Telegram poll.
+
+The day, as wired in ``bf_app.DAY_JOBS``: owner ticks at 10:30 and 12:30, a reminder of
+unapproved orders at 14:30, the approval deadline at 15:20 (a later ``/ok`` is refused),
+``submit`` at 15:45 sends only orders the owner approved -- every other order of the
+day lapses (``LAPSED_NO_APPROVAL``) and is never sent later or automatically (L8; the
+config schema has no ``auto`` mode for the broker book) -- fills at 16:20, reconciliation
+at 16:30, the twin at 22:15, the decision at 22:20 on an ASX month-end (or the L6 start
+day) with its orders for the next session (the order day), and the report at 22:45.
 """
 
 from __future__ import annotations

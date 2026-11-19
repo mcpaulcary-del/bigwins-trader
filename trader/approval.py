@@ -210,6 +210,7 @@ class ApprovalBot:
     verifier: TotpVerifier
     allowed_chats: frozenset[int]
     on_kill: Callable[[], int] | None = None  # cancels open orders; returns the count
+    approval_deadline: str = "15:20"  # L8, config ``execution.approval_deadline``
 
     def handle_all(self) -> int:
         n = 0
@@ -258,8 +259,13 @@ class ApprovalBot:
             return f"unknown batch {batch_id}"
         if not self.verifier.verify(code, at):
             return "refused: invalid or reused code"
-        if b["execution_date"] is not None and at > deadline(b["execution_date"]):
-            return "refused: past the approval deadline (15:20); the batch lapses"
+        if b["execution_date"] is not None and at > deadline(
+            b["execution_date"], self.approval_deadline
+        ):
+            return (
+                f"refused: past the approval deadline ({self.approval_deadline}); "
+                "unapproved orders lapse"
+            )
         intents = {it.seq: (it, st) for it, st in self.journal.intents_of(batch_id)}
         if cmd == "/approve":
             if b["approval_mode"] != "batch":

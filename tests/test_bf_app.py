@@ -2,19 +2,29 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Mapping
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import numpy as np
 import pytest
 
 from tests.bf_support import synthetic_panel
 from trader.approval import FakeTransport, TotpVerifier, totp
-from trader.bf_app import AppSettings, BfApp, at, dry_run, mock_auction, owner_approves_all
+from trader.bf_app import (
+    DAY_JOBS,
+    AppSettings,
+    BfApp,
+    at,
+    dry_run,
+    mock_auction,
+    owner_approves_all,
+)
 from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
 from trader.broker.mock_gateway import MockGateway
 from trader.broker.paper_sim import SimBroker
+from trader.constants import ASX_TZ
 from trader.journal import Journal, Status
 from trader.lines.emg2 import Emg2_20Params
 from trader.panel import PricePanel
@@ -426,3 +436,122 @@ def test_BW_RSK_29_owner_loss_rule_nav_below_6000_pauses_buys_keeps_holdings_unt
     resume(d)  # the owner resumes while still below the floor: honoured
     report("5800")
     assert app.j.safety_level() is SafetyLevel.NORMAL and high() == 2
+
+
+# ---------------------------------------------------------------- scheduler (piece 1c)
+
+
+def _drive(
+    app: BfApp,
+    gw: MockGateway,
+    days: list[date],
+    owner: dict[tuple[date, str], list[str]] | None = None,
+) -> list[str]:
+    """Run the real scheduler loop (``run_forever``) on a fake clock: every 10 minutes
+    from 09:00 to 23:50 of each day; the mock exchange runs its closing auction at 16:10;
+    the owner's messages arrive at the given (day, HH:MM)."""
+    from trader.approval import Incoming
+    from trader.scheduler import run_forever
+
+    ticks = [at(d, "09:00") + timedelta(minutes=10 * k) for d in days for k in range(90)]
+    auction = mock_auction(gw, _closes)
+    pos = {"i": 0}
+    ran: list[str] = []
+
+    def clock() -> datetime:
+        return ticks[pos["i"]]
+
+    def sleep(_: float) -> None:
+        pos["i"] += 1
+        if pos["i"] >= len(ticks):
+            return
+        t = ticks[pos["i"]]
+        d = t.astimezone(ASX_TZ).date()
+        hhmm = t.astimezone(ASX_TZ).strftime("%H:%M")
+        if hhmm == "16:10" and app.is_session(d):
+            auction(d)
+        for k, text in enumerate((owner or {}).get((d, hhmm), [])):
+            app.transport_inject(Incoming(CHAT, text, t + timedelta(seconds=31 * k)))
+
+    def stop() -> bool:
+        return pos["i"] >= len(ticks)
+
+    orig = app.j.mark_job
+
+    def spy(key: str, detail: Mapping[str, Any] | None = None, at: datetime | None = None) -> None:
+        if key.count(":") >= 2 and key[:4].isdigit():
+            ran.append(key)
+        orig(key, detail, at)
+
+    app.j.mark_job = spy  # type: ignore[method-assign]
+    run_forever(app, clock=clock, sleep=sleep, stop=stop)
+    return ran
+
+
+def _month_end_window() -> tuple[date, list[date]]:
+    m = next(d for d in DAYS[5:] if PANEL.dates[PANEL.dates.index(d) + 1].month != d.month)
+    k = PANEL.dates.index(m)
+    return m, list(PANEL.dates[k - 1 : k + 3])
+
+
+def test_scheduler_month_end_decision_then_order_day_unapproved_orders_expire() -> None:
+    """Daily ticks run every session; the EMG2-18 decision runs only at the month-end
+    (22:20), its orders are for the next session (the order day); with no /ok by the
+    15:20 deadline nothing is sent (never auto-executed), the orders lapse at 15:45, a
+    late /ok is refused, and the simulated twin is not held back."""
+    app, gw, tr = _app(None)
+    m, days = _month_end_window()
+    x = days[2]
+    late = at(x, "15:30")
+    ran = _drive(app, gw, days, {(x, "15:30"): [f"/ok EMG2_18_PAPER-{m}-R all {totp(SEED, late)}"]})
+    for d in days:  # every job once per session, in order
+        assert [k.split(":", 3)[3] for k in ran if k.startswith(f"{d}:")] == [
+            n for _, n in DAY_JOBS
+        ]
+    assert [b for b, _ in app.j.batches_of(app.s.book)] == [f"EMG2_18_PAPER-{m}-R"]
+    assert app.j.batch(f"EMG2_18_PAPER-{m}-R")["execution_date"] == x  # type: ignore[index]
+    assert not gw.placed  # never auto-executed
+    sts = {st for _, st in app.j.intents_of(f"EMG2_18_PAPER-{m}-R")}
+    # L10 (A$4,500 of buys on a normal day) rejects some at plan; the rest lapse unapproved
+    assert Status.LAPSED in sts and sts <= {Status.LAPSED, Status.RISK_REJECTED}
+    assert any("past the approval deadline (15:20)" in t for _, t in tr.outbox)
+    assert any(t.startswith("Reminder:") for _, t in tr.outbox)  # 14:30 on the order day
+    assert len(app.j.positions(app.s.sim_book)) >= 5  # the twin bought (auto; L10 A$4,500)
+
+
+def test_scheduler_order_day_sends_only_approved_orders_once() -> None:
+    """The owner approves two orders by number at 11:00 of the order day: exactly those
+    two go to the (mock) paper gateway at 15:45, once; the rest lapse."""
+    app, gw, _ = _app(None)
+    m, days = _month_end_window()
+    x = days[2]
+    t = at(x, "11:00")
+    bid = f"EMG2_18_PAPER-{m}-R"
+    owner = {
+        (x, "11:00"): [
+            f"/ok {bid} 1 {totp(SEED, t)}",
+            f"/ok {bid} 2 {totp(SEED, t + timedelta(seconds=31))}",
+        ]
+    }
+    _drive(app, gw, days, owner)
+    sts = {it.seq: st for it, st in app.j.intents_of(bid)}
+    assert {o.orderRef for _, o in gw.placed} == {
+        it.client_order_id for it, _ in app.j.intents_of(bid) if it.seq in (1, 2)
+    }
+    assert all(
+        st in (Status.LAPSED, Status.RISK_REJECTED) for s, st in sts.items() if s not in (1, 2)
+    )
+    assert sts[1] in (Status.FILLED, Status.EXPIRED) and sts[2] in (Status.FILLED, Status.EXPIRED)
+
+
+def test_scheduler_non_session_days_only_poll_telegram() -> None:
+    from trader.approval import Incoming
+    from trader.scheduler import due_jobs, run_once
+
+    app, _, tr = _app(None)
+    sat = date(2024, 2, 3)
+    assert not app.is_session(sat) and due_jobs(app, at(sat, "23:00")) == []
+    app.transport_inject(Incoming(CHAT, "/pause", at(sat, "10:00")))
+    assert run_once(app, at(sat, "23:00")) == []
+    assert app.j.safety_level() is SafetyLevel.PAUSED
+    assert any("PAUSED" in t for _, t in tr.outbox)

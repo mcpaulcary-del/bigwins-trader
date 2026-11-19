@@ -38,6 +38,7 @@ def test_repo_config_validates_and_matches_engine_defaults() -> None:
         (("live_emg2_20", "min_parcel_aud"), 400),
         (("risk", "order_value_max_aud"), 5000),
         (("risk", "unknown_key"), 1),
+        (("execution", "approval_mode"), "auto"),  # L8: never auto-execute
     ],
 )
 def test_BW_EXE_09_live_or_looser_settings_do_not_validate(

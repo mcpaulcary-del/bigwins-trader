@@ -219,7 +219,11 @@ class BfApp:
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
         )
         self.ex_sim = Executor(journal, sim, s.sim_book, limits=s.limits, approval_deadline="23:59")
-        self.bot = ApprovalBot(journal, transport, verifier, s.chats, on_kill=self._kill)
+        self.bot = ApprovalBot(
+            journal, transport, verifier, s.chats, self._kill, s.approval_deadline
+        )
+        if s.approval_mode not in ("per_order", "batch"):  # L8: the broker book never
+            raise ValueError(f"approval_mode {s.approval_mode!r}: owner approval required")
         self.log: list[str] = []
 
     # ------------------------------------------------------------ calendar helpers

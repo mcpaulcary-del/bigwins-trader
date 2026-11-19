@@ -62,8 +62,8 @@ services:
       - ${REF_DIR:?path holding etp_list.txt}:/data/ref:ro
       - traderout:/app/out
     networks: [internal, egress]
-    # The scheduler (runner) is B-fast step NEXT-3; until then the container idles and
-    # jobs are run with `docker compose run --rm trader trader-bf ...`.
+    # `trader-bf run` (scheduler + Telegram + paper gateway) exists; the container stays
+    # idle until the reality spike and the piece-2 dry runs pass, then the command changes.
     command: ["sh", "-c", "trader-bf validate-config && exec sleep infinity"]
 
 networks:
