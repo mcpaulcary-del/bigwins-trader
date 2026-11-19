@@ -39,7 +39,10 @@ MILESTONES: dict[str, tuple[str, ...]] = {
 ORDER = ("M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10")
 PREFIXES = "SYS|DAT|PRT|RSK|EXE|LED|TAX|USR|MON|VAL|OPS|INF|RND|SIZ|MKT|ENG|USE|BP|STR|ADP|FUT"
 # "_" is a word character, so test_OPS_10_x has no \b before OPS: use lookarounds.
-ID_RE = re.compile(rf"(?<![A-Za-z])({PREFIXES})[-_](\d{{2}})(?!\d)")
+# FD v3.0 IDs are "BW-<AREA>-<nn>", a separate namespace that may reuse v2.10 numbers
+# (including withdrawn ones), so the v2.10 pattern skips anything preceded by "BW-".
+ID_RE = re.compile(rf"(?<![A-Za-z])(?<!BW[-_])({PREFIXES})[-_](\d{{2}})(?!\d)")
+BW_RE = re.compile(r"(?<![A-Za-z])BW[-_]([A-Z]{2,3})[-_](\d{2})(?!\d)")
 
 # Withdrawn requirement IDs (v2.10 change log CL-C and CL-F). Built from ranges so that
 # this file itself contains no withdrawn ID literal.

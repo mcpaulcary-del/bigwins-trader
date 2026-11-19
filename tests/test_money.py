@@ -149,9 +149,14 @@ def test_SYS_13_floats_only_in_signal_modules() -> None:
         "broker",
         "data",
     ]
+    # Signal-input adapters build float panels for signal maths (SYS-13 allows floats
+    # there); they hold no money. Listed explicitly so nothing else slips through.
+    signal_inputs = {root / "data" / "forward_store.py", root / "data" / "identity.py"}
     for name in money_layers:
         p = root / name
         for f in [p] if p.is_file() else sorted(p.rglob("*.py")):
+            if f in signal_inputs:
+                continue
             tree = ast.parse(f.read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
