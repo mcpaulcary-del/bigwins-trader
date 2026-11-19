@@ -74,7 +74,9 @@ class Executor:
                 self.journal.set_status(
                     coid, Status.RISK_OK, {"reasons": list(r.reasons)}, qty=r.intent.qty
                 )
-            elif r.verdict is Verdict.HOLD:
+            elif r.verdict is Verdict.HOLD or (
+                r.intent.side is Side.BUY and "CASH_SHORT" in r.reasons
+            ):  # L7: a buy waits for settled funds (or a gap) instead of failing
                 self.journal.set_status(coid, Status.HELD, {"reasons": list(r.reasons)})
             else:
                 self.journal.set_status(coid, Status.RISK_REJECTED, {"reasons": list(r.reasons)})
@@ -86,8 +88,14 @@ class Executor:
         return out
 
     # ------------------------------------------------------------ send time
-    def submit(self, batch_id: str, ctx: RiskContext, now: datetime) -> SendReport:
-        """Send every approved, risk-OK intent of the batch once."""
+    def submit(
+        self, batch_id: str, ctx: RiskContext, now: datetime, *, final_day: bool = True
+    ) -> SendReport:
+        """Send every approved, risk-OK intent of the batch once.
+
+        Held intents (``GAP_HOLD``, or a buy short of settled cash while the day's sells
+        settle: L7 / BW-EXE-05 / O-2) are retried on later sessions; on the batch's
+        ``final_day`` anything still not sendable is rejected for good."""
         rep = SendReport()
         b = self.journal.batch(batch_id)
         if b is None:
@@ -99,7 +107,7 @@ class Executor:
         pending = [
             (it, st)
             for it, st in self.journal.intents_of(batch_id)
-            if st in (Status.RISK_OK, Status.APPROVED)
+            if st in (Status.RISK_OK, Status.APPROVED, Status.HELD)
         ]
         for it, st in pending:
             if it.seq not in ok:
@@ -109,7 +117,9 @@ class Executor:
                         it.client_order_id, Status.LAPSED, {"why": "no approval"}, now
                     )
                 continue
-            if st == Status.RISK_OK:
+            if st == Status.HELD:
+                self.journal.set_status(it.client_order_id, Status.RISK_OK, {"retry": True}, now)
+            if st in (Status.HELD, Status.RISK_OK):
                 self.journal.set_status(it.client_order_id, Status.APPROVED, at=now)
         to_send = [it for it, st in self.journal.intents_of(batch_id) if st == Status.APPROVED]
         risk = check_intents(to_send, ctx, self.limits)  # send-time breaker
@@ -119,7 +129,10 @@ class Executor:
         for r in risk.results:
             coid = r.intent.client_order_id
             if not r.sendable:
-                to = Status.HELD if r.verdict is Verdict.HOLD else Status.RISK_REJECTED
+                wait = r.verdict is Verdict.HOLD or (
+                    r.intent.side is Side.BUY and "CASH_SHORT" in r.reasons
+                )
+                to = Status.HELD if wait and not final_day else Status.RISK_REJECTED
                 self.journal.set_status(coid, to, {"reasons": list(r.reasons)}, now)
                 rep.rejected.append((coid, ",".join(r.reasons)))
                 continue
@@ -131,7 +144,7 @@ class Executor:
 
         assert isinstance(it, OrderIntent)
         coid = it.client_order_id
-        self.journal.set_status(coid, Status.SENDING, {"qty": it.qty}, now, qty=None)
+        self.journal.set_status(coid, Status.SENDING, {"qty": it.qty}, now, qty=it.qty)
         self.crash("after_persist", coid)
         req = OrderRequest(
             coid, self.broker.account_id, it.entity, it.side, it.qty, it.order_type, it.limit_price

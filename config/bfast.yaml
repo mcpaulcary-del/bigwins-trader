@@ -2,8 +2,8 @@
 # PAPER ONLY in this build. Nothing secret lives here (tokens and seeds are Docker
 # secrets); unknown keys are rejected.
 version: 1
-book: EMG2_20_PAPER
-line: EMG2_20
+book: EMG2_18_PAPER
+line: EMG2_18           # owner decision BF-D1: 18 names at about A$550 (EMG2-18)
 mode: paper                     # the only accepted value in this build
 broker:
   host: gw-paper                # docker-compose service name of IB Gateway (paper)
@@ -22,7 +22,7 @@ execution:
   buy_funds_wait_sessions: 4    # L7 / O-2
 live_emg2_20:
   capital_cap_aud: 10000
-  slots: 20
+  slots: 18                     # name count (BF-D1); 10,000/18 = A$555 parcels
   min_parcel_aud: 500
   cash_reserve_aud: 50
   skip_lottery: true
@@ -43,8 +43,11 @@ risk:
   real_money_floor: 0.60
 data:
   forward_store: /data/forward/eodhd        # read-only mount of $B/bigwins_forward/data/eodhd
+  sim_book: EMG2_18_SIM                     # simulated twin (L13)
+  sim_half_spread: 0.005                    # L9 start spread, a side
   etp_list: /data/ref/etp_list.txt
-  lic_list: config/lic_list.csv
+  lic_list: /data/record/LIC_list_frozen.csv     # record keeper's frozen list (BF-D6)
+  lic_list_fallback: config/lic_list_candidates.csv  # used only until the frozen list exists
   history_sessions: 760
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0

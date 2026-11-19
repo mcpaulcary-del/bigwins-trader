@@ -58,7 +58,7 @@ ignore = [
 "migrations/**" = ["E501", "N999", "S608"]  # role names validated by regex
 # Verbatim ports of report 85's T6 research code (golden references): keep its names.
 "tests/bf_support.py" = ["N806"]
-"tests/fake_ib.py" = ["N802", "N803"]  # mirrors ib_async method and argument names
+"trader/broker/mock_gateway.py" = ["N802", "N803"]  # mirrors ib_async method and argument names
 "scripts/golden/*" = ["N806", "N999", "E501"]
 
 [tool.ruff.format]

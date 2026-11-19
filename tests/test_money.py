@@ -155,6 +155,7 @@ def test_SYS_13_floats_only_in_signal_modules() -> None:
     # The IBKR wire boundary: ib_async takes float prices; ``wire_price`` converts and
     # refuses any price that does not round-trip exactly.
     signal_inputs.add(root / "broker" / "ibkr.py")
+    signal_inputs.add(root / "broker" / "mock_gateway.py")  # stands in for the gateway (floats)
     for name in money_layers:
         p = root / name
         for f in [p] if p.is_file() else sorted(p.rglob("*.py")):

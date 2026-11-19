@@ -31,7 +31,7 @@ def reconcile_and_page(
         journal.positions(book),
         journal.cash(book),
         broker.positions(),
-        broker.account().settled_cash,
+        broker.account().ledger_cash,
     )
     if not r.ok:
         level = worst(journal.safety_level(), SafetyLevel.HALTED_INTEGRITY)

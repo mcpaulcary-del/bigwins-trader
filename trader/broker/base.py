@@ -95,6 +95,11 @@ class AccountSnapshot:
     settled_cash: Decimal
     available_funds: Decimal
     net_liquidation: Decimal
+    total_cash: Decimal | None = None  # settled + unsettled; reconciliation compares this
+
+    @property
+    def ledger_cash(self) -> Decimal:
+        return self.total_cash if self.total_cash is not None else self.settled_cash
 
 
 @dataclass(frozen=True)

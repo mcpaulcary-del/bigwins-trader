@@ -196,7 +196,7 @@ def emg2_list(panel: PricePanel, params: Emg2Params | None = None) -> Emg2List:
 
 @dataclass(frozen=True)
 class Emg2_20Params:  # noqa: N801 - the line's registered name
-    slots: int = 20
+    slots: int = 18  # owner decision BF-D1 (19 Nov 2026): EMG2-18, about A$550 a name
     min_parcel_aud: Decimal = Decimal(500)
     cash_reserve_aud: Decimal = Decimal(50)
     capital_cap_aud: Decimal = Decimal(10000)

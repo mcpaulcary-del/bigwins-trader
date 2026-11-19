@@ -139,7 +139,7 @@ def test_rule14_data_block_keeps_holdings() -> None:
 
 # ---------------------------------------------------------------- EMG2-20 (L1-L5)
 
-LOOSE = Emg2_20Params(skip_lottery=False, cash_reserve_aud=Decimal(0))
+LOOSE = Emg2_20Params(slots=20, skip_lottery=False, cash_reserve_aud=Decimal(0))  # the 20-name text
 
 
 def test_L3_L5_start_twenty_parcels(panel: PricePanel) -> None:
@@ -154,13 +154,33 @@ def test_L3_L5_start_twenty_parcels(panel: PricePanel) -> None:
 
 def test_L5_literal_reserve_makes_every_start_buy_too_small(panel: PricePanel) -> None:
     """Spec defect BF-D1 (docs/DECISIONS.md): with A$10,000, n = 20 and the A$50 reserve,
-    the equal share is A$497.50 < A$500, so the literal L5 sends nothing at the start."""
+    the equal share is A$497.50 < A$500, so the 20-name text sends nothing at the start.
+    The owner chose 18 names (EMG2-18) instead: see the tests below."""
     d = decide_emg2_20(
         panel, BookState("B", Decimal(10000)), replace(LOOSE, cash_reserve_aud=Decimal(50))
     )
     reasons = {s.reason for s in d.skipped}
     assert (
         not d.buys and "MIN_PARCEL" in reasons and reasons <= {"MIN_PARCEL", "NO_CLOSE", "BID_PEG"}
+    )
+
+
+def test_BF_D1_emg2_18_default_parcels_clear_500_after_costs(panel: PricePanel) -> None:
+    """EMG2-18 (owner decision 19 Nov 2026): A$10,000, 18 names, A$50 reserve -> A$552.77
+    each, and every order clears A$500 at the reference after A$6.60 and the +3% band."""
+    from trader.orders import build_orders
+
+    p = Emg2_20Params(skip_lottery=False)
+    assert p.slots == 18
+    d = decide_emg2_20(panel, BookState("B", Decimal(10000)), p)
+    assert d.slots == 18 and d.parcel == Decimal("555.55")
+    assert len(d.buys) == 18 and {b.value_aud for b in d.buys} == {Decimal("552.77")}
+    assert sum(b.value_aud for b in d.buys) <= Decimal(10000) - Decimal(50)
+    b = build_orders(d)
+    assert len(b.intents) == 18 and not [s for s in b.skipped if s[1] == "MIN_PARCEL"]
+    assert all(
+        i.value_at_ref >= 500 and i.value_at_limit + Decimal("6.60") <= Decimal("552.77")
+        for i in b.intents
     )
 
 
@@ -208,6 +228,33 @@ def test_L1_cash_above_cap_never_invested(panel: PricePanel) -> None:
     held = _hold(panel, t[:19], 600)  # ~A$11,400 held, above the A$10,000 cap
     d = decide_emg2_20(panel, BookState("B", Decimal(3000), held), LOOSE)
     assert not d.buys and not d.sells
+
+
+FWD = os.environ.get("TRADER_FORWARD_STORE")
+
+
+@pytest.mark.skipif(not FWD, reason="set TRADER_FORWARD_STORE to the record's EODHD store")
+def test_BF_D1_real_30_oct_list_every_pick_becomes_an_order_over_500() -> None:
+    """The real 30 Oct 2026 list (forward store, FD defaults, EMG2-18): every pick becomes
+    a whole-share order worth at least A$500 at the close after commission, band and reserve."""
+    import exchange_calendars as xc
+
+    from trader.data.forward_store import ForwardStore
+    from trader.orders import build_orders
+
+    assert FWD
+    sess = [
+        x.date() for x in xc.get_calendar("XASX", start="2022-01-01", end="2026-12-31").sessions
+    ]
+    panel = ForwardStore(Path(FWD)).build_panel(date(2026, 10, 30), sess)
+    d = decide_emg2_20(panel, BookState("EMG2_18_PAPER", Decimal(10000)))
+    assert len(d.buys) == 18 and len(emg2_list(panel).targets) >= 40
+    b = build_orders(d)
+    assert len(b.intents) == 18, b.skipped
+    for i in b.intents:
+        assert i.value_at_ref >= 500
+        assert i.value_at_limit + Decimal("6.60") <= Decimal("552.77")
+    assert sum(i.value_at_limit + Decimal("6.60") for i in b.intents) <= Decimal(9950)
 
 
 @pytest.mark.skipif(not GOLDEN, reason="set TRADER_EMG2_GOLDEN_DIR to the T6 golden slabs")

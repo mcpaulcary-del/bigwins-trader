@@ -64,7 +64,7 @@ def daily_report(x: DailyInputs) -> str:
     )
     if x.sim_value is not None:
         lines.append(
-            f"Simulated twin EMG2_20_SIM A${x.sim_value.quantize(CENT)} "
+            f"Simulated twin A${x.sim_value.quantize(CENT)} "
             f"(difference A${(value - x.sim_value).quantize(CENT)})"
         )
     if x.a200_value is not None:

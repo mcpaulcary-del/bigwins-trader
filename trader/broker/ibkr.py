@@ -232,7 +232,11 @@ class IbkrPaperBroker:
         if settled is None or "AvailableFunds" not in vals or "NetLiquidation" not in vals:
             raise BrokerRejectedError(f"account values missing: {sorted(vals)}")
         return AccountSnapshot(
-            self.s.account_id, settled, vals["AvailableFunds"], vals["NetLiquidation"]
+            self.s.account_id,
+            settled,
+            vals["AvailableFunds"],
+            vals["NetLiquidation"],
+            vals.get("TotalCashValue"),
         )
 
     def executions(self) -> list[Execution]:

@@ -102,8 +102,11 @@ class RiskCfg(_M):
 
 class DataCfg(_M):
     forward_store: Path
+    sim_book: str
+    sim_half_spread: Decimal = Field(ge=0, le=Decimal("0.02"))
     etp_list: Path
     lic_list: Path
+    lic_list_fallback: Path
     history_sessions: int = Field(ge=300)
 
 
@@ -118,7 +121,7 @@ class JournalCfg(_M):
 class BfastConfig(_M):
     version: Literal[1]
     book: str
-    line: Literal["EMG2_20"]
+    line: Literal["EMG2_18", "EMG2_20"]
     mode: Literal["paper"]
     broker: BrokerCfg
     execution: ExecutionCfg
@@ -170,6 +173,20 @@ class BfastConfig(_M):
             day_move_halt=r.day_move.halt,
             real_money_floor=r.real_money_floor,
         )
+
+
+def read_codes(path: Path) -> frozenset[str]:
+    """First column of a CSV with a header row (``code,...``); blank lines skipped."""
+    rows = path.read_text(encoding="utf-8").splitlines()[1:]
+    return frozenset(r.split(",")[0].strip() for r in rows if r.strip())
+
+
+def lic_codes(cfg: BfastConfig) -> tuple[frozenset[str], Path | None]:
+    """BF-D6: the record keeper's frozen LIC list when it exists, else the candidates."""
+    for p in (cfg.data.lic_list, cfg.data.lic_list_fallback):
+        if p.is_file():
+            return read_codes(p), p
+    return frozenset(), None
 
 
 def load_bfast_config(path: Path) -> BfastConfig:

@@ -233,14 +233,14 @@ def test_BF3_paper_dry_run_engine_to_fills_reconciled() -> None:
     p = synthetic_panel()
     dec = decide_emg2_20(
         p,
-        BookState(BOOK, Decimal(10600)),
-        Emg2_20Params(skip_lottery=False, capital_cap_aud=Decimal(10600)),
+        BookState(BOOK, Decimal(10000)),
+        Emg2_20Params(skip_lottery=False),
     )
     tv = {e: Decimal(10**7) for e in p.entities}
     batch = build_orders(dec, tv_med20=tv)
     assert batch.intents
-    j, sim = Journal.sqlite(), SimBroker(cash=Decimal(10600))
-    j.add_cash(BOOK, "DEPOSIT", Decimal(10600), "paper deposit")
+    j, sim = Journal.sqlite(), SimBroker(cash=Decimal(10000))
+    j.add_cash(BOOK, "DEPOSIT", Decimal(10000), "paper deposit")
     ex = Executor(j, sim, BOOK)
     ctx = RiskContext(
         now=T_SEND.astimezone(UTC),
@@ -250,7 +250,7 @@ def test_BF3_paper_dry_run_engine_to_fills_reconciled() -> None:
         safety=SafetyLevel.NORMAL,
         start_day=True,
         positions={},
-        settled_cash=Decimal(10600),
+        settled_cash=Decimal(10000),
     )
     ex.plan(batch, "per_order", X, ctx)
     bot, _ = _bot(j)

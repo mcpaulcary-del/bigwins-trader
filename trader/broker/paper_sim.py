@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Any
 
 from trader.broker.base import (
     AccountSnapshot,
@@ -94,6 +95,38 @@ class SimBroker:
         if c is None:
             return None
         return BrokerQuote(symbol, c, c, c, c, datetime.now(UTC))
+
+    @classmethod
+    def from_journal(
+        cls,
+        journal: Any,
+        book: str,
+        half_spread: Decimal = Decimal(0),
+        account_id: str = "DUSIM0001",
+    ) -> SimBroker:
+        """Rebuild the simulated book after a restart: cash and positions from the journal,
+        and the orders the journal says were sent but not yet settled."""
+        sb = cls(
+            account_id=account_id,
+            cash=journal.cash(book),
+            half_spread=half_spread,
+            holdings=dict(journal.positions(book)),
+        )
+        for it, _ in journal.intents_in(["SENT", "PARTIAL"]):
+            if it.book == book:
+                sb.place(
+                    OrderRequest(
+                        it.client_order_id,
+                        account_id,
+                        it.entity,
+                        it.side,
+                        it.qty,
+                        it.order_type,
+                        it.limit_price,
+                    )
+                )
+        sb.place_calls = 0
+        return sb
 
     # -------------------------------------------------------------- simulation clock
     def advance(self, day: date, closes: dict[str, Decimal]) -> list[Execution]:

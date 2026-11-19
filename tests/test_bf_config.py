@@ -49,3 +49,31 @@ def test_BW_EXE_09_live_or_looser_settings_do_not_validate(
     node[path[-1]] = value
     with pytest.raises(ValidationError):
         BfastConfig.model_validate(raw)
+
+
+def test_run_refuses_without_a_paper_account_or_chat(tmp_path: Path) -> None:
+    import json
+
+    raw = json.loads(json.dumps(_raw(), default=str))  # YAML is a superset of JSON
+    p = tmp_path / "c.yaml"
+    p.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="account_id"):
+        main(["run", "--config", str(p)])
+    raw["broker"]["account_id"] = "DU1234567"
+    p.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="allowed_chat_ids"):
+        main(["run", "--config", str(p)])
+
+
+def test_lic_list_prefers_the_frozen_record_file(tmp_path: Path) -> None:
+    from trader.bfast_config import lic_codes
+
+    raw = _raw()
+    raw["data"]["lic_list"] = str(tmp_path / "LIC_list_frozen.csv")
+    raw["data"]["lic_list_fallback"] = str(tmp_path / "cand.csv")
+    (tmp_path / "cand.csv").write_text("code,name\nFGG,x\n")
+    codes, src = lic_codes(BfastConfig.model_validate(raw))
+    assert codes == {"FGG"} and src == tmp_path / "cand.csv"
+    (tmp_path / "LIC_list_frozen.csv").write_text("code,name,reason\nAFI,a,b\nARG,c,d\n")
+    codes, src = lic_codes(BfastConfig.model_validate(raw))
+    assert codes == {"AFI", "ARG"} and src == tmp_path / "LIC_list_frozen.csv"

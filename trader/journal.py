@@ -323,6 +323,20 @@ class Journal:
             q = select(batches.c.batch_id).where(batches.c.execution_date == execution_date)
             return [r[0] for r in c.execute(q.order_by(batches.c.batch_id))]
 
+    def batches_of(self, book: str) -> list[tuple[str, date | None]]:
+        with self.engine.connect() as c:
+            q = select(batches.c.batch_id, batches.c.execution_date).where(batches.c.book == book)
+            return [(r[0], r[1]) for r in c.execute(q.order_by(batches.c.batch_id))]
+
+    def job_done(self, key: str) -> bool:
+        with self.engine.connect() as c:
+            q = select(events.c.id).where(events.c.kind == "job", events.c.ref == key)
+            return c.execute(q).first() is not None
+
+    def mark_job(self, key: str, detail: Mapping[str, Any] | None = None) -> None:
+        with self.engine.begin() as c:
+            self._event(c, "job", key, None, "DONE", detail)
+
     def intents_of(self, batch_id: str) -> list[tuple[OrderIntent, str]]:
         with self.engine.connect() as c:
             rows = c.execute(
@@ -364,6 +378,24 @@ class Journal:
                 vals["qty"] = qty
             c.execute(update(intents).where(intents.c.client_order_id == coid).values(**vals))
             self._event(c, "intent", coid, frm, to, detail, at)
+
+    def sent_between(self, book: str, start: datetime, end: datetime) -> tuple[int, Decimal]:
+        """Orders sent (SENDING) for ``book`` in [start, end) and the buy value at limit."""
+        n, buys = 0, Decimal(0)
+        with self.engine.connect() as c:
+            q = select(events.c.ref, events.c.at).where(
+                events.c.kind == "intent", events.c.to_status == Status.SENDING
+            )
+            rows = list(c.execute(q))
+        for ref, raw in rows:
+            at = raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+            if not ref.startswith(book + "-") or not (start <= at < end):
+                continue
+            it, _ = self.intent(ref)
+            n += 1
+            if it.side is Side.BUY:
+                buys += it.value_at_limit
+        return n, buys
 
     # ------------------------------------------------------------ approvals
     def add_approval(
