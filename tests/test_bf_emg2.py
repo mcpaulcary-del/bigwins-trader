@@ -123,6 +123,49 @@ def test_BW_UNI_03_class_filter_excludes_lic_and_funds() -> None:
     assert victims[0] not in t2 and victims[1] not in t2 and victims[2] in t2
 
 
+def _with(p: PricePanel, **kw: object) -> PricePanel:
+    f = {k: getattr(p, k) for k in ("as_of", "dates", "entities", "close", "ret", "tv")}
+    return PricePanel(**(f | {"sec_class": dict(p.sec_class)} | kw))
+
+
+def test_BW_UNI_11_BF_D20_lic_and_funds_left_out_of_the_traded_value_ranks(
+    panel: PricePanel,
+) -> None:
+    """BW-UNI-11 as amended (BF-D20, AMENDMENT_class_rule_fix.md): ranks among ORD + REIT
+    only; a LIC or fund is not ranked and the names below it move up one place."""
+    from trader.universe import RANKED_CLASSES, liquidity_table
+
+    assert frozenset({"ORD", "REIT"}) == RANKED_CLASSES
+    base = liquidity_table(panel).tv_rank
+    top = int(np.nanargmin(base))
+    cls = dict(panel.sec_class)
+    for kind in ("LIC", "FUND"):
+        cls[panel.entities[top]] = kind
+        rk = liquidity_table(_with(panel, sec_class=cls)).tv_rank
+        assert np.isnan(rk[top])
+        others = ~np.isnan(base)
+        others[top] = False
+        assert np.array_equal(rk[others], base[others] - 1)
+
+
+def test_BW_UNI_11_BF_D20_sessions_without_a_row_are_ignored_in_the_medians(
+    panel: PricePanel,
+) -> None:
+    """The EMG2 table's medians (AMENDMENT_shadow_EMG2.md s2, paper_emg2.table) ignore a
+    session without a row; they are not counted as zero (BF-D20)."""
+    from trader.lines.emg2 import emg2_inputs
+
+    assert Emg2Params().zero_fill_listed is False
+    j = 7
+    tv = panel.tv.copy()
+    tv[-252::3, j] = np.nan
+    want = float(np.nanmedian(tv[-252:, j]))
+    m = {
+        x.entity: x for x in emg2_inputs(_with(panel, tv=tv), replace(Emg2Params(), band_hi=10**6))
+    }
+    assert m[panel.entities[j]].tv_med252 == pytest.approx(want)
+
+
 def test_rule3_ties_broken_by_higher_tv_med252() -> None:
     mem = [Emg2Input(f"E{k}", 301.0 + k, 1e6 + k, k // 2, 0.1, 0.9) for k in range(10)]
     _, t = select_band_c(mem, Emg2Params())
@@ -288,6 +331,40 @@ def test_BF_D1_real_30_oct_list_every_pick_becomes_an_order_over_500() -> None:
     r = check_intents(build_orders(d, params=cfg.order_params(), tv_med20=tv).intents, ctx,
                       cfg.risk_limits())  # fmt: skip
     assert all(x.sendable for x in r.results), [x.reasons for x in r.results]
+
+
+@pytest.mark.skipif(not FWD, reason="set TRADER_FORWARD_STORE to the record's EODHD store")
+def test_BF_D20_record_30_oct_and_18_nov_lists_equal_the_paper_emg2_18_ref_lists() -> None:
+    """BF-D20 (owner decision "Share-list fixes", AMENDMENT_class_rule_fix.md, ledger seq
+    62-63): on the record's data the live EMG2-18 target list T of 30 Oct and 18 Nov 2026
+    equals the paper record's EMG2_18_REF list (paper_emg2.table, class rule v2) exactly,
+    names and order. The paper lists are the record's ``class_rule_fix_T_<date>.csv``
+    (copied with their SHA-256 into ``tests/fixtures/emg2_18_ref_lists.json``; checked
+    against the record file too when ``TRADER_BF_LIC_LIST`` points into the record)."""
+    import csv
+    import hashlib
+
+    from tests.bf_support import asx_sessions, real_config
+    from trader.bf_dryrun import store_providers
+
+    assert FWD
+    fx = json.loads((Path(__file__).parent / "fixtures" / "emg2_18_ref_lists.json").read_text())
+    rec = Path(os.environ.get("TRADER_BF_LIC_LIST", "/nonexistent")).parent
+    cfg = real_config()
+    panel, _, _, note = store_providers(cfg, Path(FWD), asx_sessions())
+    assert "69 codes" in note
+    for d, want in fx["lists"].items():
+        f = rec / f"class_rule_fix_T_{d}.csv"
+        if f.is_file():
+            assert hashlib.sha256(f.read_bytes()).hexdigest() == fx["source_sha256"][d]
+            text = f.read_text(encoding="utf-8").splitlines()
+            rows = [r["code"] for r in csv.DictReader(text) if r["rule"] == "v2_after"]
+            assert rows == want
+        lst = emg2_list(panel(date.fromisoformat(d)))
+        assert lst.data_block is None
+        assert list(lst.targets) == want, d
+        assert "RG1" in lst.targets  # Regal Partners: an operating company, back in
+        assert not {"AFI", "ARG", "MFF", "BKI", "AUI", "DJW"} & {r.entity for r in lst.band_c}
 
 
 @pytest.mark.skipif(not GOLDEN, reason="set TRADER_EMG2_GOLDEN_DIR to the T6 golden slabs")

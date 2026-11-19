@@ -30,8 +30,13 @@ from trader.data.identity import (
     [
         ("BHP", "Common Stock", "BHP Group", "ORD"),
         ("ABC_old", "Common Stock", "Old Co", "ORD"),
+        # BF-D20: LIC only by the frozen list (here AFI), never by words in the name
         ("AFI", "Common Stock", "Australian Foundation Investment Co", "LIC"),
-        ("PUB", "Common Stock", "Republic Mining", "ORD"),  # "LIC" inside a word is not a LIC
+        ("AFI_old", "Common Stock", "Australian Foundation Investment Co", "LIC"),
+        ("PNI", "Common Stock", "Pinnacle Investment Management Group", "ORD"),
+        ("RG1", "Common Stock", "Regal Partners Global Investments Ltd", "ORD"),
+        ("ZZZ", "Common Stock", "Some LIC Capital Fund Investments", "ORD"),
+        ("PUB", "Common Stock", "Republic Mining", "ORD"),
         ("SCG", "Common Stock", "Scentre Property Group", "REIT"),
         ("VAS", "ETF", "Vanguard", "FUND"),
         ("XYZ", "Common Stock", "listed as ETP", "FUND"),
@@ -40,7 +45,10 @@ from trader.data.identity import (
     ],
 )
 def test_BW_UNI_03_security_class(code: str, vtype: str, name: str, want: str) -> None:
-    assert security_class(code, vtype, name, etp_codes=frozenset({"XYZ"})) == want
+    got = security_class(
+        code, vtype, name, etp_codes=frozenset({"XYZ"}), lic_codes=frozenset({"AFI"})
+    )
+    assert got == want
 
 
 def test_BW_UNI_01_code_reuse_after_200_day_gap() -> None:
@@ -132,6 +140,8 @@ def test_forward_store_builds_panel_read_only(tmp_path: Path) -> None:
     before = sorted((p, p.stat().st_mtime_ns) for p in tmp_path.rglob("*"))
     fs = ForwardStore(tmp_path)
     p = fs.build_panel(sess[-1], sess, history=20)
+    assert p.sec_class == {"AAA": "ORD", "BBB": "ORD"}  # BF-D20: no name-word rule
+    p = fs.build_panel(sess[-1], sess, history=20, lic_codes=frozenset({"BBB"}))
     assert p.as_of == sess[-1] and p.close.shape == (20, 2)
     assert p.sec_class == {"AAA": "ORD", "BBB": "LIC"}
     assert p.close[-1, 0] == 2.0 and np.isnan(p.close[-1, 1])

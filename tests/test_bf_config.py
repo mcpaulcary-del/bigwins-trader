@@ -111,9 +111,10 @@ def test_BF_D6_record_lic_list_covers_the_names_the_name_rule_misses() -> None:
 def test_BF_D6_repo_lic_list_is_the_registered_frozen_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``config/lic_list.csv`` is the record's ``LIC_list_frozen.csv`` byte for byte (SHA-256
-    pinned in ``config/bfast.yaml``, ledger seq 39): 46 codes including the five the name
-    rule misses. A file that differs from the pin is refused, never used silently."""
+    """``config/lic_list.csv`` is the record's ``LIC_list_frozen_v2.csv`` byte for byte
+    (SHA-256 pinned in ``config/bfast.yaml``, ledger seq 62, BF-D20): 69 codes = the 46 of
+    v1 (ledger seq 39) including the five the old name rule missed, plus the 23 traded LICs
+    the old name rule alone excluded. A file that differs from the pin is refused."""
     from trader.bfast_config import LIC_LIST_ENV, lic_codes
 
     monkeypatch.delenv(LIC_LIST_ENV, raising=False)
@@ -121,8 +122,10 @@ def test_BF_D6_repo_lic_list_is_the_registered_frozen_file(
     monkeypatch.chdir(root)
     cfg = load_bfast_config(CFG)
     got = lic_codes(cfg)
-    assert got.frozen and got.path == Path("config/lic_list.csv") and len(got.codes) == 46
+    assert got.frozen and got.path == Path("config/lic_list.csv") and len(got.codes) == 69
     assert {"FGG", "FGX", "PGF", "WAR", "PCX"} <= got.codes
+    assert {"AFI", "ARG", "MFF", "BKI", "AUI", "DJW", "AIQ"} <= got.codes  # BF-D20 additions
+    assert not {"PNI", "PMV", "NGI", "AEF", "RG1", "NZK", "CIW"} & got.codes  # companies
     edited = tmp_path / "edited.csv"
     edited.write_bytes((root / "config" / "lic_list.csv").read_bytes() + b"XYZ,x,y\n")
     monkeypatch.setenv(LIC_LIST_ENV, str(edited))

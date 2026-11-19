@@ -129,16 +129,19 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     # HGO's last mark (1.045) is no longer used: KAN's close values the holding
     assert not any("no mark for HGO" in t for t in reports)
     assert "KAN" in reports[-1] and "code change HGO -> KAN not confirmed" in reports[-1]
-    assert reports[-1].count("Value A$10004.76") == 1
+    # BF-D20 (class rule v2, LICs left out of the ranks): the start buys RG1 in place of AMI
+    assert "RG1" in {it.entity for it in start_buys} and "AMI" not in summ.positions
+    assert reports[-1].count("Value A$10022.36") == 1
     assert not any("no price" in t for t in reports)
-    # BF-D18 golden: the 100 random twins on the record data (18 Nov 2026)
+    # BF-D18 golden: the 100 random twins on the record data (18 Nov 2026); re-pinned for
+    # BF-D20 (the class fix changes band C, so the twins' draws and the twin's book move)
     assert len(app.rnd) == 100 and app.rnd[0][:2] == ("EMG2_18_RND_s001", 8550001)
     rnd = dict(app.j.job_records("rnd:2026-11-18"))["rnd:2026-11-18"]
-    assert rnd["sim"] == "9856.9547" and rnd["percentile"] == "41.0"
-    assert app.twin_rank(END) == Decimal("41.0")
+    assert rnd["sim"] == "9887.8987" and rnd["percentile"] == "49.0"
+    assert app.twin_rank(END) == Decimal("49.0")
     digest = hashlib.sha256(json.dumps(rnd["values"]).encode()).hexdigest()
-    assert digest == "23843130ca83954e49c8acc281a2ecc91c5c378c427f35175e5ecadd656d9f2c"
-    assert "Simulated twin at the 41.0 percentile of 100 random twins" in reports[-1]
+    assert digest == "168fa642af3098d030230c4f5c470c9dc415612d3837a6215d7382d9a4a45a05"
+    assert "Simulated twin at the 49.0 percentile of 100 random twins" in reports[-1]
 
 
 def _auction_without(

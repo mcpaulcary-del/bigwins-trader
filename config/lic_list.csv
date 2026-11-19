@@ -1,20 +1,39 @@
 code,name,reason
+ACQ,Acorn Capital Investment Fund Ltd,listed investment company
+AFI,Australian Foundation Investment Company Ltd,listed investment company
+AIQ,Alternative Investment Trust,listed investment trust
 ALI,Argo Global Listed Infrastructure Ltd,listed investment company
 AMH,Amcil Ltd,listed investment company
+ARG,Argo Investments Ltd,listed investment company
+AUI,Australian United Investment Company Ltd,listed investment company
+BKI,BKI Investment Company Ltd,listed investment company
+BTI,Bailador Technology Investments Ltd,listed investment company (technology holdings)
 CAM,Clime Capital Ltd,listed investment company
+CD1,CD Private Equity Fund I,listed private-equity fund
 CDM,Cadence Capital Ltd,listed investment company
+CDO,Cadence Opportunities Fund Ltd,listed investment company
+CIN,Carlton Investments Ltd,listed investment company
+DJW,Djerriwarrh Investments Ltd,listed investment company
 DN1,Dominion Income Trust 1,listed investment trust (credit)
 FGG,Future Generation Global Ltd,listed investment company
 FGX,Future Generation Australia Ltd,listed investment company
+FPC,Fat Prophets Global Contrarian Fund Ltd,listed investment company
+FSI,Flagship Investments Ltd,listed investment company
 GCI,Gryphon Capital Income Trust,listed investment trust (credit)
+GFL,Global Masters Fund Ltd,listed investment company (fund of funds)
 GLS,L1 Global Long Short Fund Limited,listed investment company
 GVF,Staude Capital Global Value Fund Ltd,listed investment company
+HM1,Hearts and Minds Investments Ltd,listed investment company
+KIT,Kapstream Investment Trust,listed investment trust (fixed income)
 KKC,KKR Credit Income Fund,listed investment trust (credit)
 LF1,La Trobe Private Credit Fund,listed investment trust (credit)
 LGF,L1 Gold Fund Ltd,listed investment company
 LRT,Lowell Resources Fund,listed investment fund
 LSF,L1 Long Short Fund Ltd,listed investment company
 LSX,Lion Selection Group Ltd,listed investment company (resource investments)
+MEC,Morphic Ethical Equities Fund Ltd,listed investment company
+MFF,MFF Capital Investments Ltd,listed investment company
+MIR,Mirrabooka Investments Ltd,listed investment company
 MOT,Metrics Income Opportunities Trust,listed investment trust (credit)
 MXT,Metrics Master Income Trust,listed investment trust (credit)
 NCC,Naos Emerging Opportunities,listed investment company
@@ -24,13 +43,17 @@ PCX,Pengana Global Private Credit Trust,listed investment trust (credit)
 PE1,Pengana Private Equity Trust,listed investment trust
 PGF,PM Capital Global Opportunities Fund Ltd,listed investment company
 PIA,Pengana International Equities Ltd,listed investment company
+PIC,Perpetual Equity Investment Company Ltd,listed investment company
 PL8,Plato Income Maximiser Ltd,listed investment company
 QRI,Qualitas Real Estate Income Fund,"listed investment trust (real-estate credit, not a property trust)"
 REV,Revolution Private Credit,listed investment trust (credit)
+RF1,Regal Investment Fund,listed investment trust
+RG8,Regal Asian Investments Ltd,listed investment company
 RYD,Ryder Capital Ltd,listed investment company
 SB2,Salter Brothers Emerging Companies,listed investment company
 SEC,Spheria Emerging Companies Ltd,listed investment company
 SET,Solaris Australian Eq Income,listed investment fund
+SNC,Sandon Capital Investments Ltd,listed investment company
 TCF,360 Capital Mortgage REIT,"listed mortgage (credit) trust, not a property trust"
 TGF,Tribeca Global Natural Resources Ltd,listed investment company
 TOP,Thorney Opportunities Ltd,listed investment company

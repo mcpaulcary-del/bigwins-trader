@@ -49,7 +49,10 @@ class Emg2Params:
     traded_within: int = 5
     s3_min_valid: int = 200
     rank_scope: RankScope = "fd"
-    zero_fill_listed: bool = True
+    # BF-D20: a session without a row is ignored in the medians, as the registered EMG2
+    # table (``AMENDMENT_shadow_EMG2.md`` s2, ``paper_emg2.table``): the live list equals
+    # the paper twins' list. (Zero-filling such sessions moved ranks near the band edges.)
+    zero_fill_listed: bool = False
     class_filter: bool = True
     tie_break_tv: bool = True
 
@@ -280,8 +283,9 @@ def _dec_price(x: float) -> Decimal:
 
 
 def lottery_flags(panel: PricePanel, p: Emg2_20Params) -> dict[str, bool]:
-    """FD §8.6 lottery class: age < 504 sessions, close < A$0.20 or ``tv_med63`` < A$250k."""
-    liq = liquidity_table(panel)
+    """FD §8.6 lottery class: age < 504 sessions, close < A$0.20 or ``tv_med63`` < A$250k.
+    ``tv_med63`` as the EMG2 table computes it (sessions without a row ignored; BF-D20)."""
+    liq = liquidity_table(panel, zero_fill_listed=False)
     close = recent_close(panel, 5)
     age = age_sessions(panel)
     out: dict[str, bool] = {}

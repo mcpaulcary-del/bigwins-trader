@@ -4,8 +4,10 @@ Pure functions ported from the record's reference code (``bigwins_forward/code/
 bw13_prep.py``: rules v1.3 A4, A7(b), A8; Amendment v1.5 ``_old`` codes; Amendment
 v1.6 A7(c) daily-return duplicate test).
 
-* ``security_class`` (BW-UNI-03, EMG2 amendment §2): ``ORD`` / ``REIT`` / ``LIC`` /
-  ``FUND`` / ``OTHER``. ``DUAL`` needs first-seen market cap and is not assigned in
+* ``security_class`` (BW-UNI-03, EMG2 amendment §2 as amended by
+  ``AMENDMENT_class_rule_fix.md``, BF-D20): ``ORD`` / ``REIT`` / ``LIC`` / ``FUND`` /
+  ``OTHER``. ``LIC`` = on the record keeper's frozen LIC list (exact codes); no test on
+  words in the name. ``DUAL`` needs first-seen market cap and is not assigned in
   B-fast (it is "flagged, kept", so it never changes a list).
 * ``cut_code_reuse`` (BW-UNI-01, A8): a gap of more than 200 calendar days between
   consecutive closes starts a new entity; the forward panel keeps the current one.
@@ -24,7 +26,6 @@ import numpy as np
 import numpy.typing as npt
 
 OLD_RE = re.compile(r"^[A-Z0-9]{3}_old[0-9]*$")
-LIC_NAME_RE = re.compile(r"\bINVESTMENTS?\b|\bCAPITAL FUND\b|\bLIC\b")
 REIT_NAME_RE = re.compile(r"\bREIT\b|\bPROPERTY (TRUST|FUND|GROUP)\b|\bPROPERTIES\b")
 FUND_TYPES = frozenset({"ETF", "FUND", "MUTUAL FUND"})
 
@@ -44,7 +45,7 @@ def security_class(
         return "FUND"
     if vendor_type != "Common Stock" or not (len(code) == 3 or OLD_RE.match(code)):
         return "OTHER"
-    if base in lic_codes or LIC_NAME_RE.search(upper):
+    if base in lic_codes:  # BF-D20: the exact frozen list only, never words in the name
         return "LIC"
     if REIT_NAME_RE.search(upper):
         return "REIT"

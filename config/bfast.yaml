@@ -50,10 +50,11 @@ data:
   random_prefix: EMG2_18_RND
   random_seed_base: 8550000                 # seed = base + i (AMENDMENT_live_EMG2_20)
   etp_list: /data/ref/etp_list.txt
-  lic_list: config/lic_list.csv             # verbatim copy of the record's LIC_list_frozen.csv
-                                            # (BF-D6; ledger seq 39); $TRADER_BF_LIC_LIST
-                                            # overrides the path (e.g. the record file itself)
-  lic_list_sha256: 68775b0a4a2e86075312c42fde9da7bf9265b0c02f27ee1bb7d28ca46b8bc275
+  lic_list: config/lic_list.csv             # verbatim copy of the record's LIC_list_frozen_v2.csv
+                                            # (BF-D20; ledger seq 62; 69 codes); the class rule
+                                            # excludes LICs/funds by this list only (no name words);
+                                            # $TRADER_BF_LIC_LIST overrides the path (e.g. the record file)
+  lic_list_sha256: af441f284b2dedfd7ffb13833907a6e635c9bab834a99ce949014b705fe36582
   lic_list_fallback: config/lic_list_candidates.csv  # only if the frozen list is missing
   history_sessions: 760
 telegram:

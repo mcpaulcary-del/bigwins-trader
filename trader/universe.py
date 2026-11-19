@@ -1,9 +1,12 @@
 """Liquidity ranks and bands (FD v3.0 §5.2, BW-UNI-10 to BW-UNI-12). Pure.
 
 ``tv_rank`` = rank of ``tv_med252`` (largest = 1, ties averaged) among the rank
-population. The FD population is entities of class ``ORD``, ``REIT`` or ``LIC`` that
-traded in the last 5 sessions (BW-UNI-11). Report 85's T6 ranked every entity of its
-file with a ``tv_med252`` (``rank_scope="all"``); the golden test uses that scope.
+population. The FD population is entities of class ``ORD`` or ``REIT`` that traded in
+the last 5 sessions (BW-UNI-11 as amended by ``AMENDMENT_class_rule_fix.md``, BF-D20:
+listed investment companies and funds are left out of the ranks, as the paper record's
+EMG2 table does, so the live book and its paper twins rank the same population).
+Report 85's T6 ranked every entity of its file with a ``tv_med252``
+(``rank_scope="all"``); the golden test uses that scope.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from trader.features import BoolArray, avg_rank, traded_within, tv_median
 from trader.panel import FloatArray, PricePanel
 
 RankScope = Literal["fd", "all"]
-RANKED_CLASSES = frozenset({"ORD", "REIT", "LIC"})
+RANKED_CLASSES = frozenset({"ORD", "REIT"})  # BF-D20 (was ORD, REIT and LIC)
 BANDS: tuple[tuple[str, int, int], ...] = (("A", 1, 100), ("B", 101, 300), ("C", 301, 600))
 
 

@@ -67,7 +67,7 @@ go-live checklist, by a reviewed code change.
   resumes automatically** (go-live blocker closed). Golden: a twin given rule 3's order
   equals `EMG2_18_SIM` to the cent; record replay 30 Oct-18 Nov pinned: on 18 Nov the
   twin (A$9,856.95 with HGO carried as KAN) is at the 41.0 percentile of its 100
-  random twins (values digest `23843130ca83`).
+  random twins (values digest `23843130ca83`); re-pinned for BF-D20 below.
 - **Journal under Alembic** (branch `journal`: j0001 baseline, j0002 `bf_safety.scope`
   (BF-D16), j0003 `bf_identity`); test on SQLite (and Postgres where available); CI
   migrates `journal_ci`. Existing journals: `alembic -x db=journal stamp j0001`, then
@@ -76,6 +76,16 @@ go-live checklist, by a reviewed code change.
   trading code is carried under the new code (HGO -> KAN on 16 Nov 2026 in the
   record), never bought twice, reconciled against a broker still on the old code, owner
   paged to confirm `/idmap OLD NEW <code>` or undo `/idmap_reject OLD <code>`.
+
+## Share-list fixes (BF-D20, 19 Nov 2026; owner decision, AMENDMENT_class_rule_fix.md)
+
+- Class `LIC` by the frozen list only (`config/lic_list.csv` = record `LIC_list_frozen_v2.csv`,
+  69 codes, pin `af441f28...`); no name words. Ranks among ORD + REIT (BW-UNI-11 amended);
+  medians ignore sessions without a row, as the registered EMG2 table. The live T on
+  30 Oct and 18 Nov 2026 equals the paper EMG2_18_REF list exactly (test with the record
+  mounted). Record replay re-pinned: start buys RG1 instead of AMI; twin at the 49.0
+  percentile on 18 Nov (digest `168fa642af30`). Run the data-mounted tests with
+  `TRADER_BF_LIC_LIST` pointing at `LIC_list_frozen_v2.csv` (v1 is refused by the pin).
 
 ## Owner / record keeper points still open
 
