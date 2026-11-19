@@ -123,3 +123,20 @@ def test_BF_D16_scope_migration_on_postgres() -> None:
         with admin.connect() as c:
             c.execute(text(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
         admin.dispose()
+
+
+def test_BF_D22_order_quotes_migration_on_a_j0003_journal(tmp_path: Path) -> None:
+    """A journal at j0003 (before BF-D22) gains ``bf_order_quotes`` at head and then
+    matches the code's schema; the code records quotes in it."""
+    url = f"sqlite:///{tmp_path / 'j3.db'}"
+    _upgrade(url, "j0003")
+    eng = create_engine(url)
+    assert "bf_order_quotes" not in inspect(eng).get_table_names()
+    eng.dispose()
+    _upgrade(url, "journal@head")
+    eng = create_engine(url)
+    cols = {c["name"] for c in inspect(eng).get_columns("bf_order_quotes")}
+    assert {"client_order_id", "bid", "ask", "last", "mid", "quote_time", "at", "source"} <= cols
+    with eng.connect() as conn:
+        assert compare_metadata(MigrationContext.configure(conn), md) == []
+    eng.dispose()

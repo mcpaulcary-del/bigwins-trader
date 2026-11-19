@@ -9,7 +9,9 @@ Invariants (tested with crash injection):
 * so there is at most one broker order per intent, whatever crashes where;
 * no intent is sent without an approval valid at the deadline (per-order or batch
   mode), and the breaker runs again at send time;
-* ``kill()`` latches ``KILLED`` and cancels every open order of the book.
+* ``kill()`` latches ``KILLED`` and cancels every open order of the book;
+* the broker's quote just before each send is journalled (``bf_order_quotes``,
+  BF-D22); a missing or failed quote never blocks the order.
 """
 
 from __future__ import annotations
@@ -151,6 +153,7 @@ class Executor:
 
         assert isinstance(it, OrderIntent)
         coid = it.client_order_id
+        self._record_quote(it, now)
         self.journal.set_status(coid, Status.SENDING, {"qty": it.qty}, now, qty=it.qty)
         self.crash("after_persist", coid)
         req = OrderRequest(
@@ -173,6 +176,27 @@ class Executor:
         )
         self.journal.set_status(coid, Status.SENT, {"perm_id": st.perm_id}, now)
         rep.sent.append(coid)
+
+    def _record_quote(self, it: object, now: datetime) -> None:
+        """Keep the broker's quote (bid, ask, mid) at the moment of the order (BF-D22).
+
+        A quote that is missing or fails is recorded as such and never blocks the order."""
+        from trader.orders import OrderIntent
+
+        assert isinstance(it, OrderIntent)
+        note = ""
+        try:
+            q = self.broker.quote(it.entity)
+        except Exception as e:  # the quote is information only: never block the order
+            q, note = None, f"quote failed: {type(e).__name__}: {e}"
+        if q is None:
+            self.journal.record_order_quote(
+                it, None, None, None, None, type(self.broker).__name__, note or "no quote", now
+            )
+            return
+        self.journal.record_order_quote(
+            it, q.bid, q.ask, q.last, q.time, type(self.broker).__name__, note, now
+        )
 
     # ------------------------------------------------------------ after a crash or restart
     def recover(self, now: datetime) -> list[str]:

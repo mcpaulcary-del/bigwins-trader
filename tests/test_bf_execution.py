@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from ib_async import Contract, Ticker
 
 from tests.bf_support import synthetic_panel
 from tests.fake_ib import FakeIB
@@ -263,3 +265,78 @@ def test_BF3_paper_dry_run_engine_to_fills_reconciled() -> None:
     assert {st for _, st in j.intents_of(batch.batch_id)} == {Status.FILLED}
     r = reconcile(j.positions(BOOK), j.cash(BOOK), sim.positions(), sim.account().settled_cash)
     assert r.ok, r.breaks
+
+
+@dataclass
+class _QuoteIB(FakeIB):
+    """Mock gateway with a chosen bid/ask, or a market-data failure (BF-D22)."""
+
+    bid: float = 0.995
+    ask: float = 1.005
+    fail: bool = False
+
+    def reqTickers(self, *cs: Contract, regulatorySnapshot: bool = False) -> list[Ticker]:  # noqa: N803
+        if self.fail:
+            raise TimeoutError("no market data")
+        out = super().reqTickers(*cs)
+        for t in out:
+            t.bid, t.ask = self.bid, self.ask
+        return out
+
+
+def _ibkr(f: FakeIB) -> IbkrPaperBroker:
+    broker = IbkrPaperBroker(IbkrSettings("gw", 4004, 11, "DU1234567"), ib_factory=lambda: f)
+    broker.connect()
+    return broker
+
+
+def test_BF_D22_mid_at_order_time_is_journalled_for_every_send() -> None:
+    """The broker's bid/ask just before each send is kept with its mid (cost ratio of
+    AMENDMENT_adopt_rule_v3: fill price against the mid at order time)."""
+    j, f = Journal.sqlite(), _QuoteIB(bid=0.995, ask=1.005)
+    broker = _ibkr(f)
+    ex = Executor(j, broker, BOOK)
+    b = _batch(2, 0)
+    ex.plan(b, "auto", X, _ctx(broker))
+    rep = ex.submit(b.batch_id, _ctx(broker), T_SEND)
+    assert len(rep.sent) == 2 == len(f.placed)
+    for it in b.intents:
+        (r,) = j.order_quotes(it.client_order_id)
+        assert (r["book"], r["entity"], r["side"]) == (BOOK, it.entity, it.side.value)
+        assert r["source"] == "IbkrPaperBroker" and r["note"] == ""
+        assert j.mid_at_order(it.client_order_id) == Decimal("1")
+        assert r["at"].replace(tzinfo=UTC) == T_SEND.astimezone(UTC)
+        assert j.intent(it.client_order_id)[1] == Status.SENT
+
+
+def test_BF_D22_missing_or_failed_quote_never_blocks_the_order() -> None:
+    j, f = Journal.sqlite(), _QuoteIB(fail=True)
+    broker = _ibkr(f)
+    ex = Executor(j, broker, BOOK)
+    b = _batch(1, 0)
+    ex.plan(b, "auto", X, _ctx(broker))
+    rep = ex.submit(b.batch_id, _ctx(broker), T_SEND)
+    coid = b.intents[0].client_order_id
+    assert rep.sent == [coid] and len(f.placed) == 1
+    (r,) = j.order_quotes(coid)
+    assert r["mid"] is None and r["note"].startswith("quote failed: TimeoutError")
+    assert j.mid_at_order(coid) is None
+    # a crossed quote gives no mid either, and the order still goes
+    f.fail, f.bid, f.ask = False, 1.01, 1.00
+    b2 = _batch(1, 0, d=date(2026, 12, 31))
+    ex.plan(b2, "auto", X, _ctx(broker))
+    rep2 = ex.submit(b2.batch_id, _ctx(broker), T_SEND)
+    (r2,) = j.order_quotes(b2.intents[0].client_order_id)
+    assert rep2.sent and r2["mid"] is None and r2["note"] == "no two-sided quote"
+    assert Decimal(str(r2["bid"])) == Decimal("1.01")
+
+
+def test_BF_D22_simulated_books_record_their_reference_quote() -> None:
+    j, sim = Journal.sqlite(), _sim()
+    sim.last_close = {"B0": Decimal("1.00"), "S0": Decimal("2.00")}
+    ex = Executor(j, sim, BOOK)
+    b = _batch(1, 1)
+    ex.plan(b, "auto", X, _ctx(sim))
+    ex.submit(b.batch_id, _ctx(sim), T_SEND)
+    got = {r["entity"]: (r["mid"], r["source"]) for r in j.order_quotes()}
+    assert got == {"B0": (Decimal(1), "SimBroker"), "S0": (Decimal(2), "SimBroker")}

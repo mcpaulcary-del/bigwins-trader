@@ -12,7 +12,9 @@ Rules (BW-EXE-06, CA-01 carried):
 * status changes only along ``TRANSITIONS``; every change appends a ``bf_events``
   row (append-only audit); rows are never deleted;
 * approvals, vetoes and safety-level changes are append-only rows; the current
-  safety level is the latest ``bf_safety`` row.
+  safety level is the latest ``bf_safety`` row;
+* the broker's bid/ask (and mid) just before each send is kept in ``bf_order_quotes``
+  (BF-D22), so live costs can be measured against the model from the first fill.
 """
 
 from __future__ import annotations
@@ -156,6 +158,28 @@ identity = Table(
     Column("score", Numeric(8, 6)),
     Column("actor", String(64), nullable=False),
     Column("at", DateTime(timezone=True), nullable=False),
+    Column("note", String(200), nullable=False),
+)
+
+# The broker's quote at the moment each order is sent (BF-D22): the mid against which
+# AMENDMENT_adopt_rule_v3 measures the realised cost per trade ("fill price against the
+# mid at order time"). Append-only; one row per send attempt; a missing or failed quote
+# is recorded as such (mid NULL) and never blocks the order.
+order_quotes = Table(
+    "bf_order_quotes",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_order_id", String(96), nullable=False, index=True),
+    Column("book", String(48), nullable=False),
+    Column("entity", String(24), nullable=False),
+    Column("side", String(4), nullable=False),
+    Column("bid", Numeric(18, 4)),
+    Column("ask", Numeric(18, 4)),
+    Column("last", Numeric(18, 4)),
+    Column("mid", Numeric(18, 6)),
+    Column("quote_time", DateTime(timezone=True)),
+    Column("at", DateTime(timezone=True), nullable=False),
+    Column("source", String(40), nullable=False),  # broker class, e.g. IbkrPaperBroker
     Column("note", String(200), nullable=False),
 )
 
@@ -560,6 +584,48 @@ class Journal:
             )
             self._event(c, "cash", book, None, kind, {"amount": str(amount), "note": note}, at)
 
+    # ------------------------------------------------------------ quote at order time (BF-D22)
+    def record_order_quote(
+        self,
+        it: OrderIntent,
+        bid: Decimal | None,
+        ask: Decimal | None,
+        last: Decimal | None,
+        quote_time: datetime | None,
+        source: str,
+        note: str = "",
+        at: datetime | None = None,
+    ) -> Decimal | None:
+        """Append the broker's quote taken just before ``it`` is sent; returns the mid
+        (``mid_of(bid, ask)``; None when there is no usable two-sided quote)."""
+        mid = mid_of(bid, ask)
+        if mid is None and not note:
+            note = "no two-sided quote"
+        with self.engine.begin() as c:
+            c.execute(
+                insert(order_quotes).values(
+                    client_order_id=it.client_order_id, book=it.book, entity=it.entity,
+                    side=it.side.value, bid=bid, ask=ask, last=last, mid=mid,
+                    quote_time=None if quote_time is None else quote_time.astimezone(UTC),
+                    at=(at or utcnow()).astimezone(UTC), source=source[:40], note=note[:200],
+                )
+            )  # fmt: skip
+        return mid
+
+    def order_quotes(self, coid: str | None = None) -> list[dict[str, Any]]:
+        q = select(order_quotes).order_by(order_quotes.c.id)
+        if coid is not None:
+            q = q.where(order_quotes.c.client_order_id == coid)
+        with self.engine.connect() as c:
+            return [dict(r._mapping) for r in c.execute(q)]
+
+    def mid_at_order(self, coid: str) -> Decimal | None:
+        """The mid of the latest quote recorded when ``coid`` was sent (None if none)."""
+        rows = self.order_quotes(coid)
+        if not rows or rows[-1]["mid"] is None:
+            return None
+        return Decimal(str(rows[-1]["mid"])).normalize()
+
     # ------------------------------------------------------------ identity (code changes)
     def add_identity(
         self,
@@ -690,6 +756,13 @@ class Journal:
 
     def digest_of(self, obj: Any) -> str:
         return canonical_json(obj)
+
+
+def mid_of(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
+    """(bid + ask) / 2 for a usable two-sided quote (both > 0, ask >= bid), else None."""
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    return (bid + ask) / 2
 
 
 def _intent_row(it: OrderIntent) -> dict[str, Any]:
