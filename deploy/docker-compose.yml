@@ -55,14 +55,16 @@ services:
       TZ: Australia/Sydney
       # password-free URL; the password is read from the db_password secret (S-03)
       TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/ledger_bf_paper
-    secrets: [db_password, telegram_bot_token, totp_seed, eodhd_api_token, healthchecks_url]
+    secrets: [db_password, telegram_bot_token, totp_seed, eodhd_api_token, healthchecks_url,
+              ibkr_flex_token, ibkr_flex_query_id]  # BF-D27: Flex download (read at each pull)
     volumes:
       - ../config:/app/config:ro
       - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
       - ${REF_DIR:?path holding etp_list.txt}:/data/ref:ro
       # BF-D23: the record's 68_forward_record (CORPORATE_ACTIONS.csv) and the Flex inbox
       - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro
-      - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox:ro
+      # BF-D27: writable, the scheduled Flex Web Service download writes the statements
+      - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
       - traderout:/app/out
     networks: [internal, egress]
     # `trader-bf run` (scheduler + Telegram + paper gateway) exists; the container stays
@@ -72,7 +74,7 @@ services:
 networks:
   internal:
     internal: true        # no internet: gateway<->trader<->db only
-  egress: {}              # trader only: Telegram, EODHD, healthchecks (outbound)
+  egress: {}              # trader only: Telegram, EODHD, IBKR Flex, healthchecks (outbound)
 
 volumes:
   pgdata: {}
@@ -85,3 +87,5 @@ secrets:
   totp_seed: {file: ./secrets/totp_seed}
   eodhd_api_token: {file: ./secrets/eodhd_api_token}
   healthchecks_url: {file: ./secrets/healthchecks_url}
+  ibkr_flex_token: {file: ./secrets/ibkr_flex_token}        # BF-D27: Flex Web Service token
+  ibkr_flex_query_id: {file: ./secrets/ibkr_flex_query_id}  # the paper Activity Flex query

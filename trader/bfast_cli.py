@@ -20,12 +20,16 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from trader.bfast_config import LicListError, lic_codes, load_bfast_config
+from trader.bfast_config import BfastConfig, LicListError, lic_codes, load_bfast_config
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
 from trader.journal import Journal
 from trader.risk import SafetyLevel
+
+if TYPE_CHECKING:
+    from trader.flex_pull import FlexPuller
 
 DEFAULT_CONFIG = Path("config/bfast.yaml")
 
@@ -151,6 +155,20 @@ def _journal_from_config(url_env: str) -> Journal:
     return Journal(create_engine(url))
 
 
+def flex_puller(cfg: BfastConfig) -> FlexPuller | None:
+    """BF-D27: the scheduled Flex download, token and query id from the Docker secrets."""
+    from trader.data.store import RawStore
+    from trader.flex_pull import FlexPuller
+
+    fp, inbox = cfg.data.flex_pull, cfg.data.flex_inbox
+    if fp is None or inbox is None:
+        return None
+    return FlexPuller(
+        inbox, RawStore(fp.raw_dir, "owner"), lookback_days=fp.lookback_days,
+        max_days=fp.max_days, attempts=fp.attempts, backoff_s=fp.backoff_seconds,
+    )  # fmt: skip
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """The long-running paper process: scheduler + Telegram + IBKR paper gateway."""
     from trader.approval import TelegramTransport, TotpVerifier
@@ -195,6 +213,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         lic_guard=lambda: lic_codes(cfg),  # BF-D21: checked before every decision and send
         ca_source=ca_source_from(cfg, cfg.data.forward_store),  # BF-D23
         flex=flex_inbox(cfg.data.flex_inbox) if cfg.data.flex_inbox else None,
+        flex_pull=flex_puller(cfg),  # BF-D27
     )
     run_forever(app)
     return 0

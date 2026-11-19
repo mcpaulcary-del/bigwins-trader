@@ -71,6 +71,7 @@ from trader.constants import ASX_TZ
 from trader.corporate_actions import CaCalendar, CaKind
 from trader.data.flex import FlexError, FlexStatement
 from trader.execution import Executor
+from trader.flex_pull import FLEX_PAGE_SLOT, FLEX_PULL_SLOTS, FlexPuller
 from trader.identity_change import code_changes
 from trader.journal import TERMINAL, Journal, Status
 from trader.lines.emg2 import (
@@ -121,17 +122,23 @@ from trader.universe import liquidity_table
 PanelProvider = Callable[[date], PricePanel]
 CloseProvider = Callable[[date], Mapping[str, Decimal]]
 
-DAY_JOBS: tuple[tuple[str, str], ...] = (
-    ("10:30", "tick"),
-    ("12:30", "tick"),
-    ("14:30", "remind"),
-    ("15:20", "tick"),
-    ("15:45", "submit"),
-    ("16:20", "collect"),
-    ("16:30", "reconcile"),
-    ("22:15", "sim"),
-    ("22:20", "decide"),
-    ("22:45", "report"),
+DAY_JOBS: tuple[tuple[str, str], ...] = tuple(
+    sorted(
+        (
+            ("10:30", "tick"),
+            ("12:30", "tick"),
+            ("14:30", "remind"),
+            ("15:20", "tick"),
+            ("15:45", "submit"),
+            ("16:20", "collect"),
+            ("16:30", "reconcile"),
+            ("22:15", "sim"),
+            ("22:20", "decide"),
+            ("22:45", "report"),
+            *((t, "flex_pull") for t in FLEX_PULL_SLOTS),  # BF-D27: before the 16:30 recon
+        ),
+        key=lambda j: j[0],
+    )
 )
 RETRY_UNTIL = "23:40"  # sim / decide wait for the day's closes until then (rule 14)
 OWNER_TICKS = frozenset({"tick", "remind"})
@@ -238,6 +245,7 @@ class BfApp:
         lic_guard: Callable[[], object] | None = None,
         ca_source: CaSource | None = None,
         flex: Callable[[date], Sequence[FlexStatement]] | None = None,
+        flex_pull: FlexPuller | None = None,
     ) -> None:
         """``closes(d)``: the closes of session d (empty while the day's data is not in);
         ``marks(d)``: the last known close of every name at d (valuation; defaults to
@@ -251,7 +259,9 @@ class BfApp:
         ``lic_codes``; None, unit tests only, checks nothing). BF-D23 corporate actions:
         ``ca_source(codes, start, end)``: the calendar (vendor dividends + the record's
         CORPORATE_ACTIONS.csv) for those codes; ``flex(d)``: IBKR Activity Flex statements
-        available on d (the broker book's dividends and corporate actions)."""
+        available on d (the broker book's dividends and corporate actions). BF-D27:
+        ``flex_pull`` downloads the Flex statement into the inbox at ``FLEX_PULL_SLOTS``
+        before the 16:30 reconciliation (None: the inbox is filled by hand)."""
         self.s = s
         self.lic_guard = lic_guard
         self.j = journal
@@ -265,6 +275,7 @@ class BfApp:
         self.l12_stop = l12_stop or (lambda d: None)
         self.ca_source = ca_source
         self.flex = flex
+        self.flex_pull = flex_pull
         self.now = datetime.now(UTC)
         self.ex = Executor(
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
@@ -681,6 +692,44 @@ class BfApp:
             self.say(
                 f"Carried to {x} (L7): {len(intents)} order(s)\n"
                 + render_batch(self.j, bid, "PAPER")
+            )
+
+    def job_flex_pull(self, day: date, now: datetime) -> None:
+        """BF-D27: the paper account's Activity Flex statement to the previous session,
+        downloaded into the inbox once a day (each slot until it is there); paged once
+        a day when still missing at the last slot before the reconciliation, or at once
+        on an error the next slot would not fix (no secret, refused token, not paper)."""
+        if self.flex_pull is None or self.j.job_done(f"flex-pull:{day}"):
+            return
+        prev = max((d for d in self.sessions if d < day), default=day - timedelta(days=1))
+        last = max(
+            (date.fromisoformat(str(r["to"])) for _, r in self.j.job_records("flex-pull:")),
+            default=None,
+        )
+        res = self.flex_pull.pull(prev, last, now)
+        info = {
+            "status": res.status, "from": str(res.from_date), "to": str(res.to_date),
+            "tries": res.tries, "note": res.note,
+        }  # fmt: skip
+        if res.ok:
+            assert res.path is not None
+            self.j.mark_job(f"flex-pull:{day}", {**info, "file": res.path.name}, now)
+            self._ca_note(
+                day, now,
+                f"INFO Flex statement {res.from_date}..{res.to_date} in the inbox "
+                f"({res.path.name}, {res.status.lower()})",
+            )  # fmt: skip
+            return
+        self.j.mark_job(f"flex-try:{day}", info, now)
+        last_slot = now >= at(day, FLEX_PAGE_SLOT)
+        if (res.fatal or last_slot) and not self.j.job_done(f"flex-page:{day}"):
+            self.j.mark_job(f"flex-page:{day}", info, now)
+            what = "late/missing" if res.status in ("NOT_READY", "FAILED") else "refused"
+            self.say(
+                f"PAGE IBKR Flex statement to {res.to_date} {what} ({res.status}: "
+                f"{res.note}). The 16:30 reconciliation runs on the inbox as it is (pending "
+                "corporate actions stay expectations). Check the Flex token / query (Docker "
+                "secrets) or put the statement XML in the inbox by hand."
             )
 
     def job_reconcile(self, day: date, now: datetime) -> None:

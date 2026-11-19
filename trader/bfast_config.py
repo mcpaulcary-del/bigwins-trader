@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trader.lines.emg2 import Emg2_20Params
 from trader.orders import OrderParams, OrderType
@@ -106,6 +106,18 @@ class RiskCfg(_M):
     real_money_floor: Decimal
 
 
+class FlexPullCfg(_M):
+    """BF-D27: the scheduled Flex Web Service download into ``data.flex_inbox``. No
+    token or query id here (``extra=forbid``): both are Docker secrets only
+    (``ibkr_flex_token``, ``ibkr_flex_query_id``)."""
+
+    raw_dir: Path  # every response kept unchanged (raw store, source ``flex``)
+    lookback_days: int = Field(default=7, ge=1, le=30)
+    max_days: int = Field(default=30, ge=1, le=365)
+    attempts: int = Field(default=2, ge=1, le=3)
+    backoff_seconds: float = Field(default=5.0, ge=0, le=15)
+
+
 class DataCfg(_M):
     forward_store: Path
     sim_book: str
@@ -127,6 +139,15 @@ class DataCfg(_M):
     # IBKR Activity Flex statements (XML) of the broker book, read before each
     # reconciliation: its dividends and corporate actions are booked from them
     flex_inbox: Path | None = None
+    # BF-D27: download the paper account's Flex statement into flex_inbox before the
+    # 16:30 reconciliation (None: the inbox is filled by hand)
+    flex_pull: FlexPullCfg | None = None
+
+    @model_validator(mode="after")
+    def _pull_needs_inbox(self) -> DataCfg:
+        if self.flex_pull is not None and self.flex_inbox is None:
+            raise ValueError("data.flex_pull needs data.flex_inbox")
+        return self
 
 
 class TelegramCfg(_M):

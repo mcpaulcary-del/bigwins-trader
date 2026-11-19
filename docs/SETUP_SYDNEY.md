@@ -15,6 +15,7 @@ This build cannot trade real money; the live gateway port is not used.
 | Second factor | a TOTP seed generated on the server into `deploy/secrets/totp_seed` and added to the owner's authenticator app by QR on the server screen |
 | EODHD token | `deploy/secrets/eodhd_api_token` (B1 connector; B-fast reads the forward store) |
 | Dead-man check-in URL | `deploy/secrets/healthchecks_url` |
+| IBKR Flex Web Service (BF-D27) | in Client Portal (paper): Reporting > Flex Queries: an Activity Flex query of the paper account with Cash Transactions (exDate/payDate) and Corporate Actions; enable the Flex Web Service; the token typed into `deploy/secrets/ibkr_flex_token`, the query id into `deploy/secrets/ibkr_flex_query_id` (chmod 600; never in config or git). The trader downloads the statement into `FLEX_INBOX` (writable) at 13:05-16:25 and pages if it is still missing at 16:25 |
 
 ## 2. Machine
 

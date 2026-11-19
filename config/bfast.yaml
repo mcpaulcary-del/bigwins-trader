@@ -64,6 +64,12 @@ data:
                                             # the vendor (capital return / special / in specie / demerger)
   flex_inbox: /data/flex/inbox              # BF-D23: IBKR Activity Flex XML of the paper book; its
                                             # dividends and corporate actions are booked from it
+  flex_pull:                                # BF-D27: Flex Web Service download into flex_inbox at
+    raw_dir: /app/out/flex_raw              # 13:05..16:25 (before the 16:30 recon), paged if late;
+    lookback_days: 7                        # token + query id: Docker secrets ibkr_flex_token /
+    max_days: 30                            # ibkr_flex_query_id only (never here)
+    attempts: 2
+    backoff_seconds: 5
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0
 journal:

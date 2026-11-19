@@ -180,7 +180,10 @@ def test_scheduler_runs_each_job_once_per_session() -> None:
     app, _, _ = _app(None)
     day = DAYS[0]
     jobs = due_jobs(app, at(day, "16:35"))
-    assert [n for _, n in jobs][:6] == ["tick", "tick", "remind", "tick", "submit", "collect"]
+    assert [n for _, n in jobs] == [
+        "tick", "tick", "flex_pull", "flex_pull", "remind", "flex_pull", "tick", "submit",
+        "flex_pull", "collect", "flex_pull", "reconcile",
+    ]  # fmt: skip
     for k, _ in jobs:
         app.j.mark_job(k)
     assert due_jobs(app, at(day, "16:35")) == []

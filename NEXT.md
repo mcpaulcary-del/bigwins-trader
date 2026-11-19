@@ -1,4 +1,4 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3 and corporate actions)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3, corporate actions, splits and the Flex pull)
 
 Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
 c07197c and deleted locally; **its remote copy could not be deleted from this session**
@@ -109,8 +109,8 @@ go-live checklist, by a reviewed code change.
   maps a rename the vendor does not link (e.g. Platinum -> L1 Group).
 - Compose mounts two more paths: `RECORD_DIR` (the record's `68_forward_record`, read
   only) and `FLEX_INBOX` (Flex XML of the paper account).
-- Still open: the Flex Web Service pull into the inbox is not scheduled (manual or a
-  cron `FlexClient` fetch until the reality spike settles Flex timing, O-3); IBKR's
+- Still open: ~~the Flex Web Service pull into the inbox is not scheduled~~ (done,
+  BF-D27 below; timing still to confirm in the reality spike, O-3); IBKR's
   exact ASX `CorporateAction` types/descriptions on paper are **unverified** (synthetic
   fixtures); ~~vendor split events are not yet applied to simulated holdings~~ (done,
   BF-D26 below).
@@ -122,6 +122,20 @@ go-live checklist, by a reviewed code change.
   ratio, total cost kept). Paper book: from IBKR's Flex record; until it arrives the
   calendar split explains the broker's new count in reconciliation and the book is
   valued and sized at the expected count. Tests: 1-for-10 and 2-for-1, unit and app.
+
+## Scheduled Flex download (BF-D27, 19 Nov 2026)
+
+- Job `flex_pull` at 13:05, 14:05, 15:05, 16:05, 16:25 (before the 16:30 reconciliation):
+  the paper account's Activity Flex statement to the previous session into `FLEX_INBOX`
+  (`flex_<fd>_<td>.xml`, atomic, once a day), 2 tries a slot within 40 s; paged once a
+  day if still missing at 16:25, or at once if the token/query secret is missing, IBKR
+  refuses the token, or the statement is not of a `DU` account.
+- Owner on the server: `deploy/secrets/ibkr_flex_token` and
+  `deploy/secrets/ibkr_flex_query_id` (chmod 600; never in config or git); the paper
+  Flex query with Cash Transactions (exDate/payDate) and Corporate Actions;
+  `FLEX_INBOX` is now mounted writable; raw responses in `/app/out/flex_raw`.
+- Gate after BF-D26/D27: ruff, format, mypy --strict, validate-config x2, pytest, BF
+  coverage gate green; `docker compose config` passes.
 
 ## Owner / record keeper points still open
 
@@ -200,8 +214,8 @@ go-live checklist, by a reviewed code change.
 2. **IBKR reality spike** on the paper gateway (item 1 above): LOC accepted / cut-off,
    auction-sale funds, `orderRef` after restart, Flex timing, account tags, quotes;
    and the Flex query's Corporate Actions / Cash Transactions rows for an ASX dividend
-   (BF-D23 parser keys checked against a real statement), with the Flex pull into
-   `data.flex_inbox` scheduled.
+   (BF-D23 parser keys checked against a real statement); the scheduled Flex pull
+   (BF-D27) run against the real Flex Web Service with the owner's token.
 3. **Five reconciled paper dry runs** on a real IBKR paper gateway (sessions with
    orders, ledger = broker to the unit and the cent each day; go-live item 2).
 4. **`/kill` drill from the owner's phone** (cancel within 60 s), plus `/pause`,
