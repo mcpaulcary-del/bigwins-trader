@@ -2,8 +2,9 @@
 
     trader-bf validate-config [--config config/bfast.yaml]
     trader-bf emg2-list --asof 2026-11-30 [--config ...] [--store DIR] [--out DIR]
-    trader-bf kill|pause [--journal URL]           # one step, no second factor
-    trader-bf status [--journal URL]
+    trader-bf deposit --book B --amount A$ [--config ...] [--journal URL]
+    trader-bf kill|pause [--config ...] [--journal URL]   # one step, no second factor
+    trader-bf status [--config ...] [--journal URL]
     trader-bf tax-report --fy 2026-27 [--book B] [--journal URL] [--flex DIR] [--amit CSV]
                          [--prior-losses A$] [--out DIR]     # BF-D29, not tax advice
 
@@ -11,6 +12,14 @@
 T and the EMG2-20 picks for a fresh A$10,000 book, and writes
 ``emg2_list_<D>.json`` / ``emg2_20_picks_<D>.json`` with their SHA-256 digests (the
 "written and hashed before the open" step of BF1). It never contacts a broker.
+
+``deposit``, ``kill``, ``pause``, ``status`` and ``tax-report`` act on **the running
+app's journal** (BF-D30): the database named by the config's ``journal.url_env``
+(``TRADER_BF_JOURNAL_URL`` in the trader container: the server's Postgres, password from
+the ``db_password`` Docker secret), exactly as ``trader-bf run`` does. There is no
+implicit local SQLite file any more. ``--journal URL`` (or a ``sqlite`` URL in the
+environment variable) names another database explicitly: tests and development only;
+every command prints which journal it used (password-free).
 """
 
 from __future__ import annotations
@@ -43,10 +52,23 @@ def _sessions(until: date) -> list[date]:
     return [d.date() for d in cal.sessions]
 
 
-def _journal(url: str | None) -> Journal:
+def _journal(url: str) -> Journal:
+    """An explicitly named journal database (``--journal URL``; tests and development)."""
     from sqlalchemy import create_engine
 
-    return Journal(create_engine(url)) if url else Journal.sqlite("bf_journal.sqlite3")
+    return Journal(create_engine(url))
+
+
+def cli_journal(args: argparse.Namespace) -> Journal:
+    """BF-D30: the journal of the running app (config ``journal.url_env``, Postgres on the
+    server), unless ``--journal URL`` names another one explicitly. Never a default file."""
+    if getattr(args, "journal", None):
+        j = _journal(args.journal)
+    else:
+        cfg = load_bfast_config(args.config)
+        j = _journal_from_config(cfg.journal.url_env)
+    print(f"journal: {j.engine.url.render_as_string(hide_password=True)}", file=sys.stderr)
+    return j
 
 
 def cmd_validate_config(args: argparse.Namespace) -> int:
@@ -232,7 +254,7 @@ def cmd_tax_report(args: argparse.Namespace) -> int:
     )
 
     cfg = load_bfast_config(args.config)
-    j = _journal(args.journal) if args.journal else _journal_from_config(cfg.journal.url_env)
+    j = cli_journal(args)
     flex_dir = args.flex if args.flex is not None else cfg.data.flex_inbox
     statements = None
     if flex_dir is not None and Path(flex_dir).is_dir():
@@ -269,6 +291,40 @@ def _tax_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> Non
     p.add_argument("--out", default="out/tax")
 
 
+def _journal_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument(
+        "--journal",
+        help="journal URL, explicit (tests/dev); default: the running app's journal "
+        "(the config's journal.url_env, Postgres on the server)",
+    )
+
+
+def cmd_journal(a: argparse.Namespace) -> int:
+    """deposit / kill / pause / status on the running app's journal (BF-D30)."""
+    j = cli_journal(a)
+    if a.cmd == "deposit":
+        if a.amount <= 0:
+            raise SystemExit("a deposit must be positive")
+        j.add_cash(a.book, "DEPOSIT", a.amount, "deposit via CLI")
+        print(f"deposit A${a.amount} recorded for {a.book}; cash now A${j.cash(a.book)}")
+        return 0
+    if a.cmd == "kill":
+        j.set_safety(SafetyLevel.KILLED, "CLI kill", "cli")
+        print("KILLED (open orders are cancelled by the runner's kill path; re-arm needs 2FA)")
+    elif a.cmd == "pause":
+        j.set_safety(SafetyLevel.PAUSED, "CLI pause", "cli")
+        print("PAUSED")
+    print(f"safety {j.safety_level().value}")
+    if a.cmd == "status":
+        cfg = load_bfast_config(a.config) if a.config.is_file() else None
+        for book in (cfg.book, cfg.data.sim_book) if cfg else ():
+            pos = j.positions(book)
+            held = dict(sorted(pos.items()))
+            print(f"{book}: cash A${j.cash(book)}, {len(pos)} holding(s) {held}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="trader-bf", description="B-fast EMG2-20 (paper only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -300,11 +356,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = sub.add_parser("deposit", help="record a deposit into a book's journal (paper set-up)")
     p.add_argument("--book", required=True)
     p.add_argument("--amount", type=Decimal, required=True)
-    p.add_argument("--journal")
+    _journal_args(p)
     _tax_parser(sub)
     for name in ("kill", "pause", "status"):
-        p = sub.add_parser(name)
-        p.add_argument("--journal")
+        _journal_args(sub.add_parser(name))
     a = ap.parse_args(argv)
     commands = {
         "validate-config": cmd_validate_config,
@@ -315,19 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if a.cmd in commands:
         return commands[a.cmd](a)
-    if a.cmd == "deposit":
-        _journal(a.journal).add_cash(a.book, "DEPOSIT", a.amount, "deposit via CLI")
-        print(f"deposit A${a.amount} recorded for {a.book}")
-        return 0
-    j = _journal(a.journal)
-    if a.cmd == "kill":
-        j.set_safety(SafetyLevel.KILLED, "CLI kill", "cli")
-        print("KILLED (open orders are cancelled by the runner's kill path; re-arm needs 2FA)")
-    elif a.cmd == "pause":
-        j.set_safety(SafetyLevel.PAUSED, "CLI pause", "cli")
-        print("PAUSED")
-    print(f"safety {j.safety_level().value}; cash/positions per book via the report")
-    return 0
+    return cmd_journal(a)
 
 
 if __name__ == "__main__":

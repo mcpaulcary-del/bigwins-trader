@@ -169,9 +169,9 @@ go-live checklist, by a reviewed code change.
   id + TOTP seed, the FUND-start canary (one A200 order) with example messages, the
   commands as implemented, and the remaining checklist.
 - Found while writing it (for the reality spike, before any paper order):
-  (1) `trader-bf deposit` / `kill` / `pause` / `status` use `--journal` or a local
-  SQLite file, not the config's Postgres journal (`bfast_cli.main`); fix before the
-  deposits are recorded. (2) The paper account's made-up starting balance must equal
+  (1) ~~`trader-bf deposit` / `kill` / `pause` / `status` use `--journal` or a local
+  SQLite file~~ fixed (BF-D30): they use the running app's journal (config
+  `journal.url_env`, Postgres + `db_password` secret); SQLite only when named explicitly. (2) The paper account's made-up starting balance must equal
   the journal deposit (cash is reconciled to the cent; L11 assumes A$10,000): reset
   the paper balance or decide another way. (3) Compose file secrets are bind mounts
   with host permissions; the trader runs as uid 10001, so `chmod 600` root files are

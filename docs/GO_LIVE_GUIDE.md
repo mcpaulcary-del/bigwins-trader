@@ -498,12 +498,15 @@ needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm w
    a gateway restart; the account values IBKR reports; live v delayed quotes (A5); the
    Flex download against the real service and its timing; the order precautions (A4);
    the paper account's cash v the A$10,000 journal deposit (A3.2); that each container
-   reads its secret files (B6); the daily price-store refresh on the server. I also fix
-   `trader-bf deposit` / `kill` / `pause` / `status`, which today default to a local
-   file instead of the server's database (`trader/bfast_cli.py` `main`), before I record
-   the deposits. **You see**: one or two small paper orders I ask you to approve with
+   reads its secret files (B6); the daily price-store refresh on the server.
+   `trader-bf deposit` / `kill` / `pause` / `status` act on the server's database, the
+   same journal the running trader uses (BF-D30); they are run inside the trader
+   container, e.g. `docker compose exec trader trader-bf status`. **You see**: one or two small paper orders I ask you to approve with
    `/ok`, and a written result in `NEXT.md`.
-2. **Start the runner**: record the A$10,000 paper deposits (paper book and twin), switch
+2. **Start the runner**: record the A$10,000 paper deposits (paper book and twin:
+   `docker compose exec trader trader-bf deposit --book EMG2_18_PAPER --amount 10000`,
+   the same with `--book EMG2_18_SIM`; the command prints `journal: postgresql+psycopg://trader@db...`
+   and the new cash, BF-D30), switch
    the compose command to `trader-bf run --start <start date>`. **You see**: the
    messages of part D from that evening.
 3. **Five reconciled paper dry runs** (go-live item 2): five sessions with orders where
