@@ -50,3 +50,12 @@ Both locked in before the 30 Nov decision.
 1. The A200 fund buy is ONE order (exempt from the A$800 per-buy cap; owner is paged); IBKR's max order value setting must be above A$10,000 (go-live checklist).
 2. A switch decision uses the start-day limits (24 orders, A$10,500 of buys).
 3. If the book starts in FUND state, the canary is the single fund order.
+
+## Protection re-confirmed on corrected figures (report 98), 20 Nov 2026
+Report 98 found a replay fault in report 96 (a blocked fund order sat in cash through Mar 2020). Corrected EMG2-18_BT: A$28,277 / A$23,927 (worst fall −46% / −53%) vs plain EMG2-18 A$28,067 / A$23,731 (−56% / −58%). Owner shown these and chose: KEEP the protection for the live book. Build fix BF-D34 handles unsellable shares on a switch day.
+
+## Live sell rule switched to C6 (after report 100), 20 Nov 2026
+Owner chose: the live EMG2-18 book (with the band-trend protection unchanged) uses the low-turnover sell rule C6 from report 99/100: a holding is sold only after it has been held at least 6 month-ends AND it is out of the top 40% of band C (plus the existing forced sells: bid-peg, leaving the eligible set/band downward, payouts, protection switch). Buys unchanged. Owner was told: reliable gain ≈ A$250–320/yr fee saving at A$10k only; the rest of report 99's +A$6k is likely luck; overseas C6 won 5 of 8 but lost badly in Canada (−28%); deeper fall on one dataset is noise; no tax-discount benefit (no holding reaches 12 months). The current rule (EMG2-18_BT) keeps running on paper beside it. Code must be tested on paper before any real sell.
+
+## Clarification (coordinator), 20 Nov 2026
+The C6 entry above wrongly listed "leaving the eligible set/band downward" as a forced sell. The tested, frozen C6 rule (deep99 FREEZE_99) sells such a holding only once it has been held 6 month-ends. The live and paper books follow the frozen, tested rule (BF-D35, AMENDMENT_live_EMG2_18_C6.md). Forced sells at any time remain: bid-peg (takeover price pinned), payouts/delistings, and the protection switch to FUND.

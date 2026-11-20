@@ -30,3 +30,14 @@
 - 2026-11-19 05:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['DXS', 'NXL', 'SHL', 'SPK', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'ORI', 'SRG']
 - 2026-11-19 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
 - 2026-11-19 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'DXS', 'MMS', 'SHL', 'SIQ', 'SPK', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'ORI', 'PRU', 'SRG', 'XYZ']
+- 2026-11-20 01:20Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-20 01:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RGN'] leaving ['DDR', 'TWE']
+- 2026-11-20 01:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'DXS', 'NAB', 'NXL', 'SHL', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'MND', 'ORI', 'SRG', 'TEA', 'XYZ']
+- 2026-11-20 03:20Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-20 03:20Z +20% JUMP EIQ +21.8% (possible takeover/scheme; check ASX announcements)
+- 2026-11-20 03:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RGN'] leaving ['DDR', 'TWE']
+- 2026-11-20 03:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'DXS', 'MMS', 'NXL', 'SHL', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'TEA', 'XYZ']
+- 2026-11-20 05:21Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-20 05:21Z HOLDING MOVE TEA -9.5% on day (quote 7.62, last close 8.42)
+- 2026-11-20 05:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RGN'] leaving ['DDR', 'TWE']
+- 2026-11-20 05:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'DXS', 'MMS', 'NXL', 'SHL', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'MND', 'ORI', 'SRG', 'TEA', 'XYZ']

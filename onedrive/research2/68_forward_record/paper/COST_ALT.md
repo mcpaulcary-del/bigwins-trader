@@ -1,4 +1,4 @@
-# Cheaper-broker re-scoring (INFORMATION ONLY) - as of 2026-11-19
+# Cheaper-broker re-scoring (INFORMATION ONLY) - as of 2026-11-20
 
 **PAPER - information only. Not part of the frozen rules; makes no trading decision; the paper state is read, never written. No real money; the AI never places trades.**
 
@@ -6,9 +6,9 @@ Same trades, same fills, same half-spread (v1.3 E2) as the official record; only
 
 | Book | Trades | Brokerage paid A$ | Actual-cost return | A$3 return | A$0 return | A200 (A$0) | Actual vs A200 | A$3 vs A200 | A$0 vs A200 | 40/60 (A$0) | Actual vs 40/60 | A$0 vs 40/60 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| H82_lifecycle_5k | 4 | 26.40 | -0.36% | -0.07% | +0.17% | -1.71% | +1.35% | +1.64% | +1.88% | -0.73% | +0.37% | +0.90% |
-| H82_25k | 10 | 66.00 | -0.64% | -0.49% | -0.37% | -1.71% | +1.07% | +1.22% | +1.34% | -0.73% | +0.09% | +0.36% |
-| H82_100k | 30 | 198.00 | -1.02% | -0.91% | -0.82% | -1.71% | +0.69% | +0.80% | +0.89% | -0.73% | -0.29% | -0.09% |
+| H82_lifecycle_5k | 4 | 26.40 | -0.75% | -0.46% | -0.22% | -3.28% | +2.52% | +2.81% | +3.05% | -3.00% | +2.24% | +2.77% |
+| H82_25k | 10 | 66.00 | -1.13% | -0.98% | -0.86% | -3.28% | +2.15% | +2.29% | +2.41% | -3.00% | +1.87% | +2.13% |
+| H82_100k | 30 | 198.00 | -1.74% | -1.63% | -1.54% | -3.28% | +1.54% | +1.64% | +1.73% | -3.00% | +1.26% | +1.45% |
 
-Generated 2026-11-19T09:28:12Z by paper_costalt.py; state.json sha256 a65bdab8e085c16d3c1da019f9e550f2f6c756735aa33ba62dd52a8a6c265ccc; score_state.json sha256 579b2e75d0238ddccfa70ff09e1d2e55abbd8c873b7ab197b18373bd098a7c9e.
+Generated 2026-11-20T09:27:44Z by paper_costalt.py; state.json sha256 0a355d0bd1f8385a386494a13db94c24d6a2a97ef65e3fb846a32c2e7f4b3c51; score_state.json sha256 74eb7ef372b3b50cfaee9ff0855c791071b65a840540cc1760253f7af5ccbd87.
 History: cost_alt_history.csv, regenerated in full each run (one row per book per recorded day); the version written before AMENDMENT_scoring_v2 is kept as cost_alt_history_v1_frozen.csv.

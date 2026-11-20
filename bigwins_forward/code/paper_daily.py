@@ -16,6 +16,7 @@ import paper_lib as P, fwd_ledger as L, paper_shadow as SH, paper_score as PS, p
 import paper_emg2 as EM, paper_early as EA     # SHADOW EMG2 (AMENDMENT_shadow_EMG2.md) and SHADOW EARLY (AMENDMENT_shadow_EARLY.md)
 import paper_emg2s as ES                        # PAPER twins of live EMG2-18: H6, COMBO, REF (AMENDMENT_shadow_EMG2_18_H6.md, AMENDMENT_shadow_EMG2_COMBO.md)
 import paper_emg2bt as BT                        # PAPER line EMG2_18_SIM_BT, EMG2-18 + band-trend switch into A200 (AMENDMENT_shadow_EMG2_18_BT.md)
+import paper_emg2bt6 as BT6                      # PAPER line EMG2_18_SIM_BT_C6, the same + sell rule C6 (AMENDMENT_shadow_EMG2_18_BT_C6.md)
 import paper_blind3 as B3                        # PAPER line BLIND3, blind build 3 frozen primary (AMENDMENT_shadow_BLIND3.md)
 import paper_pair as PR                          # PAPER line PAIR, EMG2-18 + BLIND3 in one A$10,000 account (AMENDMENT_shadow_PAIR.md)
 
@@ -141,7 +142,10 @@ def scorecard(st, d):
     try: btrows, btmd, bthold = BT.scorecard_rows(d)                           # PAPER line EMG2_18_SIM_BT (band-trend switch; information only)
     except Exception as e:
         log('EMG2-18 BT scorecard error (H82 unaffected):', repr(e)); btrows, btmd, bthold = [], [f'| EMG2_18_SIM_BT | — | — | scorecard error: {repr(e)[:120]} |'], []
-    esrows = esrows + btrows; esmd = esmd + btmd; eshold = eshold + bthold
+    try: b6rows, b6md, b6hold = BT6.scorecard_rows(d)                          # PAPER line EMG2_18_SIM_BT_C6 (band trend + sell rule C6; information only)
+    except Exception as e:
+        log('EMG2-18 BT_C6 scorecard error (H82 unaffected):', repr(e)); b6rows, b6md, b6hold = [], [f'| EMG2_18_SIM_BT_C6 | — | — | scorecard error: {repr(e)[:120]} |'], []
+    esrows = esrows + btrows + b6rows; esmd = esmd + btmd + b6md; eshold = eshold + bthold + b6hold
     try: b3rows, b3md, b3hold = B3.scorecard_rows(d)                           # PAPER line BLIND3 + 50/50 EMG2-18 + BLIND3 reading (information only)
     except Exception as e:
         log('BLIND3 scorecard error (H82 unaffected):', repr(e)); b3rows, b3md, b3hold = [], [f'| BLIND3 | — | — | scorecard error: {repr(e)[:120]} |'], []
@@ -208,7 +212,7 @@ def scorecard(st, d):
     if achold: md += ['', '## SHADOW ACC books (keep winners: not adopted; tracked for information)', ''] + achold
     if cxhold: md += ['', '## SHADOW CXL books (report 81 D2, cap-weighted ex-losers: not adopted; tracked for information)', ''] + cxhold
     if emhold: md += ['', '## EMG2 books (lead challenger; SHADOW, paper only)', ''] + emhold
-    if eshold: md += ['', '## EMG2-18 paper twins (H6, COMBO, REF) and paper line EMG2_18_SIM_BT (information only)', ''] + eshold
+    if eshold: md += ['', '## EMG2-18 paper twins (H6, COMBO, REF) and paper lines EMG2_18_SIM_BT, EMG2_18_SIM_BT_C6 (information only)', ''] + eshold
     if b3hold: md += ['', '## BLIND3 and PAIR paper books (information only)', ''] + b3hold
     if eahold: md += ['', '## SHADOW EARLY books (information only, unproven)', ''] + eahold
     if pend: md += ['', '## Pending paper orders (H82 and momentum books)', '', '| Book | Type | Code | Size | When | Rule |', '|---|---|---|---|---|---|'] + pend
@@ -305,6 +309,7 @@ def main():
         em = EM.run(d, mkt, log)                                        # SHADOW EMG2 (AMENDMENT_shadow_EMG2.md; own state file; month-end bundle as the SHADOW lines)
         es = ES.run(d, mkt, log)                                        # EMG2-18 paper twins H6 / COMBO / REF (own state file; same month-end bundle as EMG2)
         bt = BT.run(d, mkt, log)                                        # PAPER line EMG2_18_SIM_BT (own state file; same month-end bundle as EMG2)
+        b6 = BT6.run(d, mkt, log)                                       # PAPER line EMG2_18_SIM_BT_C6 (own state file; same month-end bundle as EMG2)
         b3 = B3.run(d, mkt, log)                                        # PAPER line BLIND3 (own state file; same month-end bundle as EMG2)
         pr = PR.run(d, mkt, log)                                        # PAPER line PAIR (own state file; same month-end bundle as EMG2)
         ea = EA.run(d, mkt, log); EM.clear_bundle(); P.BUNDLE.clear()   # SHADOW EARLY (AMENDMENT_shadow_EARLY.md; own state file; reads the new-listings tracker)
@@ -317,6 +322,7 @@ def main():
         if em is not None: extra['emg2'] = em
         if es is not None: extra['emg2s'] = es
         if bt is not None: extra['emg2bt'] = bt
+        if b6 is not None: extra['emg2bt6'] = b6
         if b3 is not None: extra['blind3'] = b3
         if pr is not None: extra['pair'] = pr
         if ea is not None: extra['early'] = ea
@@ -326,7 +332,7 @@ def main():
         log(d, 'booked; ledger', e['seq'], e['entry_sha256'][:12]); booked.append(d)
     if not booked:
         PS.sync(st, log)
-        EM.run(st['last_processed'], None, log); ES.run(st['last_processed'], None, log); BT.run(st['last_processed'], None, log); B3.run(st['last_processed'], None, log); PR.run(st['last_processed'], None, log); EA.run(st['last_processed'], None, log); EM.clear_bundle(); P.BUNDLE.clear()   # catch-up only (e.g. EARLY waiting for the tracker); no new day
+        EM.run(st['last_processed'], None, log); ES.run(st['last_processed'], None, log); BT.run(st['last_processed'], None, log); BT6.run(st['last_processed'], None, log); B3.run(st['last_processed'], None, log); PR.run(st['last_processed'], None, log); EA.run(st['last_processed'], None, log); EM.clear_bundle(); P.BUNDLE.clear()   # catch-up only (e.g. EARLY waiting for the tracker); no new day
         scorecard(st, st['last_processed']); log('nothing new to book; scorecard refreshed for', st['last_processed'])
 
 if __name__ == '__main__':

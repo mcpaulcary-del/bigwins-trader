@@ -4,6 +4,9 @@
 #   BT2 ON iff the index >= the mean of its last 10 month-end levels (this one included); BT3 OFF: sell every share at the next close and put the
 #   cash less A$50 in the ASX 200 fund (A200), buy no share; BT4 ON: the fund is not on T, so rule L4 sells it; the registered rules run.
 #   EMG2_18_SIM_BT + 100 random twins EMG2_18_BT_RND_s001..s100 (seeds 8780000+i), one state for all.
+#   AMENDMENT_shadow_EMG2_18_BT_leftover.md (ledger seq 75; = trading-system BF-D34): in state OFF, on every session that is not a month-end
+#   decision session, BT3a a share left unsold is offered again whenever it has a close, BT3b the cash of such sales goes into A200 (>= A$500,
+#   no 10% top-up test; below A$500 it accumulates).
 # PAPER ONLY: no real money, no broker orders, the AI never places trades. Own state file STATE_DIR/emg2bt_state.json; never reads or writes the
 # H82 state or another line's state (reads paper_emg2s' state for the BT - REF reading of the scorecard only). Idempotent and resumable.
 import os, json, math, traceback
@@ -30,7 +33,7 @@ def new_book(bid, kind, seed=None):
 def init_state():
     books = [new_book('EMG2_18_SIM_BT', 'BT')] + [new_book(f'EMG2_18_BT_RND_s{i:03d}', 'BT_RND', seed=SEED0 + i) for i in range(1, NRAND + 1)]
     return dict(record='Big Wins forward paper record -- PAPER line EMG2_18_SIM_BT, EMG2-18 + band-trend switch into A200 (PAPER ONLY; information only)',
-                amendments=['AMENDMENT_shadow_EMG2_18_BT.md'], start_decision=BT_START, fill_day=P.next_session(BT_START),
+                amendments=['AMENDMENT_shadow_EMG2_18_BT.md', 'AMENDMENT_shadow_EMG2_18_BT_leftover.md'], start_decision=BT_START, fill_day=P.next_session(BT_START),
                 last_processed=P.prev_session(BT_START), decisions=[], data_blocks=[], bt=[], state=None, state_from=None, sessions_out=0,
                 last={}, books=books)
 
@@ -134,6 +137,30 @@ def decide_on(b, R, lot, d, k, last, E, duplog):
     return new
 
 
+def sweep(b, d, mkt, last, since, E, k):
+    """BT3a/BT3b (seq 75, = BF-D34) on a session of state OFF that is not a month-end decision session, after the session's fills:
+    each share holding (not the fund) with a close today is sold at the next close (no close today: offered again the next session with one);
+    when a share was sold on/after `since` (the latest month-end decision session), the cash less the reserve, within the cap, buys the fund at
+    the next close if >= A$500, whatever the 10% top-up band (below: the cash accumulates and is tested again next session)."""
+    if b['orders']: return []                                                                      # an open order (none expected): left to it
+    cl = mkt['close']; new = []
+    for cid, h in sorted(b['holdings'].items()):
+        if cid != FUND_CID and (cl.get(h['code']) or 0) > 0:
+            new.append(dict(type='sell', cid=cid, code=h['code'], reason='BT3a OFF: leftover share sold (BF-D34)'))
+    if b.get('share_sold', '') >= since and (cl.get(FUND) or 0) > 0:
+        fh = b['holdings'].get(FUND_CID); fval = ES.shares(fh) * last[FUND]['p'] if fh else 0.0
+        room = CAP - fval; avail = min(b['cash'] - RESERVE, room); p = cl[FUND]; hh = half(FUND, p)
+        q = int(math.floor(max(avail, 0.0) / (p * (1 + hh))))                                      # whole units at today's close, costs included
+        while q > 0 and q * p * (1 + hh) + ES.brok(q * p) > avail + 1e-9: q -= 1
+        if q * p >= MIN_ORDER:                                                                      # below A$500 of units: the cash accumulates
+            new.append(dict(type='fund', cid=FUND_CID, code=FUND, amount=math.floor(avail * 100) / 100, room=round(room, 2), k=k, sweep=True,
+                            reason='BT3b OFF: fund sweep, cash of leftover sales (BF-D34)'))
+    if new:
+        b['orders'] = new; b['E'] = E
+        ES.ev(b, d, 'fund sweep (state FUND, BF-D34): orders ' + ', '.join(f"{o['type']} {o['code']}" for o in new))
+    return new
+
+
 def run_day(b, d, mkt):
     cl = mkt['close']
     for h in (b['holdings'][x] for x in sorted(b['holdings'])):                                     # splits
@@ -149,17 +176,19 @@ def run_day(b, d, mkt):
     for o in [o for o in b['orders'] if o['type'] == 'sell']:                                       # sells first
         h = b['holdings'].get(o['cid']); p = cl.get(o['code'])
         if h is None: continue
-        if p is None: ES.ev(b, d, f"sell {o['code']} not filled (no close); decided again next month-end"); continue
+        if p is None: ES.ev(b, d, f"sell {o['code']} not filled (no close); in state FUND offered again the next session with a close (BT3a), else decided again next month-end"); continue
         q = ES.shares(h); hh = half(o['code'], p); bk = ES.brok(q * p); pr = max(0.0, q * p * (1 - hh) - bk)
         b['cash'] += pr; b['spread_paid'] += q * p * hh; b['brok_paid'] += bk
         parts = ES.realise(h, q, pr); del b['holdings'][o['cid']]
         ES.record(b, dict(date=d, side='sell', code=o['code'], shares=q, price=p, half_spread=hh, brokerage=bk, cash=round(pr, 2), reason=o['reason'], lots=parts))
+        if o['code'] != FUND: b['share_sold'] = d                                                   # BT3b: last share sale filled
     for o in [o for o in b['orders'] if o['type'] in ('buy', 'fund')]:
         p = cl.get(o['code'])
         if p is None: ES.ev(b, d, f"{o['type']} {o['code']} not filled: no close on the fill day"); continue
         hh = half(o['code'], p)
         if o['type'] == 'fund':                                                                     # BT3: the cash after the sales, less the reserve, within the cap
-            spend = min(b['cash'] - RESERVE, o['room']); q = int(math.floor(max(spend, 0.0) / (p * (1 + hh)))); q0 = None
+            spend = min(b['cash'] - RESERVE, o['room'], o['amount'] if o.get('sweep') else math.inf)    # BT3b: at most the cash planned
+            q = int(math.floor(max(spend, 0.0) / (p * (1 + hh)))); q0 = None
         else: q = o['shares']; q0 = q
         while q > 0 and q * p * (1 + hh) + ES.brok(q * p) > b['cash'] - RESERVE + 1e-9: q -= 1         # cut to what the cash covers
         if q <= 0 or q * p < MIN_ORDER and (q0 is None or q < q0):
@@ -179,6 +208,21 @@ def step(s, d, mkt, log, bundle=None):
     for b in s['books']: run_day(b, d, mkt)
     if s['state'] == 'OFF' and s['state_from'] is not None and d >= s['state_from']: s['sessions_out'] += 1
     info = None
+    if s['state'] == 'OFF' and s['decisions'] and not (d >= BT_START and month_end(d)):              # BT3a/BT3b (seq 75, BF-D34)
+        since = max([s['decisions'][-1]] + [x[0] for x in s['data_blocks']]); E = P.next_session(d); k = len(s['decisions']) - 1; orows = []
+        for b in s['books']:
+            new = sweep(b, d, mkt, last, since, E, k)
+            if not ES.rnd(b):
+                orows += [dict(book=b['id'], state='OFF', type=o['type'], code=o['code'], shares='all' if o['type'] == 'sell' else '', amount_AUD=o.get('amount'),
+                               fill='close of ' + E, rule=o['reason']) for o in new]
+        nb = sum(1 for b in s['books'] if b['orders'] and b['E'] == E)
+        if nb:
+            files = {}
+            if orows:
+                os.makedirs(out_dir(), exist_ok=True)
+                files[f'shadow/emg2bt_sweep_{d}.csv'] = P.write_csv(f'{out_dir()}/emg2bt_sweep_{d}.csv', pd.DataFrame(orows, columns=['book', 'state', 'type', 'code', 'shares', 'amount_AUD', 'fill', 'rule']))
+            info = dict(asof=d, sweep=True, fill_day=E, books_with_orders=nb, orders=len(orows), files_sha256=files)
+            log('EMG2-18 BT', d, 'fund sweep (BF-D34):', nb, 'books with orders;', len(orows), 'orders in EMG2_18_SIM_BT')
     if d >= BT_START and month_end(d):
         D, blocked, src = EM.get_bundle(d, log) if bundle is None else bundle
         R = EM.table(D); lot = ES.lottery(D, R); duplog = D.get('duplog', [])
@@ -220,13 +264,15 @@ def run(d, mkt, log):
         if d < BT_START: return None
         s = load()
         if s is None: s = init_state(); log('EMG2-18 BT paper line state created; first decision', BT_START)
-        decs = []
+        decs = []; sweeps = []
         for x in P.sessions_between(s['last_processed'], d):
             m = mkt if (x == d and mkt is not None) else P.load_day(x)
             if m is None: log('EMG2-18 BT', x, 'no bulk file; stops here and resumes on a later run'); break
             info = step(s, x, m, log); save(s)
-            if info: decs.append(info)
-        return dict(last_processed=s['last_processed'], state=s['state'], state_sha256=P.L.sha(state_path()), decisions=decs or None)
+            if info: (sweeps if info.get('sweep') else decs).append(info)
+        out = dict(last_processed=s['last_processed'], state=s['state'], state_sha256=P.L.sha(state_path()), decisions=decs or None)
+        if sweeps: out['fund_sweeps'] = sweeps                                                      # BT3a/BT3b (seq 75, BF-D34)
+        return out
     except Exception as e:
         log('EMG2-18 BT ERROR (H82 books unaffected):', repr(e)); log(traceback.format_exc())
         return dict(error=repr(e)[:300])
