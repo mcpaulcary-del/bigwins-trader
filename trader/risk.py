@@ -128,6 +128,9 @@ class RiskContext:
     positions: Mapping[str, int]  # broker positions, units
     settled_cash: Decimal
     holdings_cost: Decimal = Decimal(0)  # at cost, for the capital cap
+    # BF-D34: the fund's own cost; a FUND-flagged buy is capped on it (the shares still
+    # held in FUND state are being sold); None = the whole book's cost as for any buy
+    fund_cost: Decimal | None = None
     quotes: Mapping[str, Quote] = field(default_factory=dict)
     blocked: frozenset[str] = frozenset()
     orders_sent_today: int = 0
@@ -163,6 +166,7 @@ class _Day:
         self.buys = ctx.buys_sent_today_aud
         self.cash = ctx.settled_cash
         self.cost = ctx.holdings_cost
+        self.fund_cost = ctx.fund_cost
 
 
 def _pre_checks(  # noqa: PLR0911, PLR0912 - one return per breaker rule
@@ -274,7 +278,10 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             if day.buys + cur.value_at_limit > buy_cap:
                 out.append(RiskResult(it, Verdict.REJECT, ("MAX_BUYS_PER_DAY",)))
                 continue
-            if day.cost + cur.value_at_limit > lim.capital_cap_aud:
+            base = day.cost
+            if "FUND" in cur.flags and day.fund_cost is not None:
+                base = day.fund_cost  # BF-D34
+            if base + cur.value_at_limit > lim.capital_cap_aud:
                 out.append(RiskResult(it, Verdict.REJECT, ("CAPITAL_CAP",)))
                 continue
         if day.orders + 1 > per_day:
@@ -288,6 +295,8 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             day.buys += cur.value_at_limit
             day.cash -= cur.value_at_limit + ctx.commission(cur.value_at_limit)
             day.cost += cur.value_at_limit
+            if day.fund_cost is not None and "FUND" in cur.flags:
+                day.fund_cost += cur.value_at_limit
         verdict = Verdict.CLIP if cur.qty != it.qty else Verdict.PASS
         out.append(RiskResult(cur, verdict, tuple(reasons)))
     return RiskReport(tuple(out), tuple(pages), latch)

@@ -186,6 +186,15 @@ go-live checklist, by a reviewed code change.
   `REAL` for the FUND switch) in a separate `ledger_bf_dryrun` journal; plan and table
   in `docs/GO_LIVE_GUIDE.md` E3.
 
+## Go-live fixes (20 Nov 2026; BF-D30..D34)
+
+- BF-D30 CLI uses the running app's journal; BF-D31 daily EODHD price-store refresh
+  (fail closed when stale); BF-D32 paper dry run with forced EMG2 (plan: guide E3);
+  BF-D33 secret permissions checked at start-up, paper balance steps (guide A3.2);
+  BF-D34 FUND switch with an unsellable share: fund bought with the cash available,
+  leftover offered every session it trades, proceeds swept into A200 (all books).
+  Gate green (ruff, format, mypy --strict, validate-config x2, pytest, BF gate).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

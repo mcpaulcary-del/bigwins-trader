@@ -42,7 +42,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Protocol
 
 import numpy as np
@@ -78,6 +78,8 @@ from trader.lines.band_trend import BandTrend, BandTrendParams, band_trend
 from trader.lines.emg2 import (
     BT_FUND_BUY,
     BT_FUND_SELL,
+    BT_FUND_SWEEP,
+    BT_LEFTOVER_SELL,
     BookState,
     BuyPlan,
     Emg2_20Decision,
@@ -140,6 +142,7 @@ DAY_JOBS: tuple[tuple[str, str], ...] = tuple(
             ("16:30", "reconcile"),
             ("22:15", "sim"),
             ("22:20", "decide"),
+            ("22:25", "fund_sweep"),  # BF-D34: leftover shares out, their cash into the fund
             ("22:45", "report"),
             *((t, "flex_pull") for t in FLEX_PULL_SLOTS),  # BF-D27: before the 16:30 recon
             *((t, "store_refresh") for t in STORE_REFRESH_SLOTS),  # BF-D31: after the close
@@ -411,6 +414,13 @@ class BfApp:
             positions=self.j.map_codes(broker.positions()),  # BF-D19: a code change
             settled_cash=broker.account().settled_cash,
             holdings_cost=self.j.holdings_cost(book),
+            # BF-D34: a fund buy is capped on the fund's own cost; the shares still held
+            # in FUND state are being sold and never block it
+            fund_cost=(
+                self.j.cost_book(book).cost.get(self.s.band_trend.fund, Decimal(0))
+                if self.s.band_trend.enabled
+                else None
+            ),
             orders_sent_today=n,
             buys_sent_today_aud=buys,
         )
@@ -572,6 +582,150 @@ class BfApp:
             self._note_decision_difference(day, now, acted)
         return True
 
+    # ------------------------------------------------------------ BF-D34 fund sweep
+    def _book_state(self, book: str, day: date) -> str | None:
+        """The L15 state of ``book``'s own latest decision at or before ``day`` (the books
+        can decide on different days: L6 skips the start month-end for the paper book
+        only). None: the switch is off or the book has not decided under it."""
+        if not self.s.band_trend.enabled:
+            return None
+        days = [
+            k.rsplit(":", 1)[1]
+            for k, r in self.j.job_records(f"decide:{book}:")
+            if "digest" in r and k.rsplit(":", 1)[1] <= str(day)
+        ]
+        if not days:
+            return None
+        recs = dict(self.j.job_records(f"bt:{max(days)}"))
+        rec = recs.get(f"bt:{max(days)}")
+        return None if rec is None else str(rec["state"])
+
+    def job_fund_sweep(self, day: date, now: datetime) -> bool:
+        """BF-D34 (report 98): in FUND state, after the switch, a share the switch could
+        not sell (no trade, halted, limit not met; L7's three carries over) is offered
+        again every session it trades, and cash from such sales (or a fund buy cut to
+        the cash settled at the time) goes into the fund at once, not at the next
+        month-end. Every book alike: the paper book (owner approval, L8), the twin and
+        the random twins (auto). A book with a decision today is left to the decision."""
+        fund = self.s.band_trend.fund
+        if not self.s.band_trend.enabled or not any(
+            self._book_state(book, day) == "FUND" for book, *_ in self._books()
+        ):
+            return True
+        closes = dict(self.closes(day))
+        if not closes:
+            return now >= at(day, RETRY_UNTIL)  # the day's closes may still come
+        panel = self.panels(day)
+        liq = liquidity_table(panel)
+        tv20 = {
+            e: Decimal(repr(float(liq.tv_med20[j]))).quantize(Decimal(1))
+            for j, e in enumerate(panel.entities)
+            if liq.tv_med20[j] == liq.tv_med20[j]
+        }
+        x = self.next_session(day)
+        for book, ex, broker, mode in self._books():
+            key = f"sweep:{book}:{day}"
+            if self.j.job_done(key) or self.j.job_done(f"decide:{book}:{day}"):
+                continue
+            if self._book_state(book, day) != "FUND":
+                continue
+            batch = self._sweep_batch(book, day, closes, tv20, fund)
+            if batch is None:
+                self.j.mark_job(key, {"orders": 0}, now)
+                continue
+            ctx = self._ctx(book, broker, x, day, now, True, data_as_of=panel.as_of)
+            ex.plan(batch, mode, x, ctx)
+            self.j.mark_job(key, {"batch": batch.batch_id, "orders": len(batch.intents)}, now)
+            if book == self.s.book:
+                self.say(
+                    f"Fund sweep {day} (BF-D34, state: FUND): leftover shares sold and their "
+                    "cash put into the fund\n" + render_batch(self.j, batch.batch_id, "PAPER")
+                )
+                for p in ex.plan_pages:
+                    self.say("PAGE " + p)
+        return True
+
+    def _sweep_batch(
+        self,
+        book: str,
+        day: date,
+        closes: Mapping[str, Decimal],
+        tv20: Mapping[str, Decimal],
+        fund: str,
+    ) -> OrderBatch | None:
+        open_ = [it for it, st in self._all_intents(book) if st not in TERMINAL]
+        selling: dict[str, int] = {}
+        for it in open_:
+            if it.side is Side.SELL:
+                selling[it.entity] = selling.get(it.entity, 0) + it.qty
+        band = self.s.order_params.limit_band
+        bid = batch_id_for(book, day, "F")
+        out: list[OrderIntent] = []
+        for e, q in sorted(self._book_positions(book, day).items()):
+            rest = q - selling.get(e, 0)
+            ref = closes.get(e)
+            if e == fund or rest <= 0 or ref is None or ref <= 0:
+                continue  # no trade today (halted): offered again the next session
+            out.append(
+                OrderIntent(
+                    client_order_id(book, day, e, Side.SELL),
+                    bid,
+                    len(out) + 1,
+                    self.s.line,
+                    book,
+                    day,
+                    e,
+                    Side.SELL,
+                    rest,
+                    self.s.order_params.order_type,
+                    ref,
+                    round_to_step(ref * (1 - band), Side.SELL),
+                    BT_LEFTOVER_SELL,
+                    tv_med20=tv20.get(e),
+                    prev_close=ref,
+                )
+            )
+        decided = [k.rsplit(":", 1)[1] for k, _ in self.j.job_records(f"decide:{book}:")]
+        last = max(decided, default="")
+        sold = any(
+            f.side is Side.SELL and f.entity != fund and str(f.executed_at.date()) >= last
+            for f in self.j.fills(book)
+        )
+        ref = closes.get(fund)
+        buying = any(it.side is Side.BUY for it in open_)
+        if sold and not buying and ref is not None and ref > 0:
+            p = self.s.params
+            fund_cost = self.j.cost_book(book).cost.get(fund, Decimal(0))
+            cash = min(self.j.cash(book) - p.cash_reserve_aud, p.capital_cap_aud - fund_cost)
+            lim = round_to_step(ref * (1 + band), Side.BUY)
+            qty = int((cash / lim).to_integral_value(ROUND_DOWN)) if cash > 0 else 0
+            if qty > 0 and ref * qty >= p.min_parcel_aud:
+                out.append(
+                    OrderIntent(
+                        client_order_id(book, day, fund, Side.BUY),
+                        bid,
+                        len(out) + 1,
+                        self.s.line,
+                        book,
+                        day,
+                        fund,
+                        Side.BUY,
+                        qty,
+                        self.s.order_params.order_type,
+                        ref,
+                        lim,
+                        BT_FUND_SWEEP,
+                        tv_med20=tv20.get(fund),
+                        prev_close=ref,
+                        flags=("FUND",),
+                    )
+                )
+        if not out:
+            return None
+        return OrderBatch(
+            bid, book, day, tuple(out), (), sha256_json([i.client_order_id for i in out])
+        )
+
     def _band_trend(
         self, panel: PricePanel, day: date, now: datetime, lst: Emg2List | None
     ) -> BandTrend | None:
@@ -729,7 +883,9 @@ class BfApp:
             for bid, final in self._active(book, day):
                 b = self.j.batch(bid)
                 assert b is not None
-                start_day = bid.endswith(("-S", "-C", "-B"))  # BF-D28: a switch as the start
+                start_day = bid.endswith(
+                    ("-S", "-C", "-B", "-F")
+                )  # BF-D28/D34: a switch as the start
                 rep = ex.submit(
                     bid,
                     self._ctx(book, broker, day, b["decision_date"], now, start_day),

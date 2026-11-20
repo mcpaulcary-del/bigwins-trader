@@ -439,6 +439,8 @@ def decide_emg2_20(
 BT_FUND_BUY = "BT_FUND_BUY"  # BT3: the cash goes into the fund
 BT_FUND_SELL = "BT_FUND_SELL"  # BT4: the fund is sold, the registered rules run
 BT_OFF_SELL = "BT_OFF_SELL"  # BT3: every share is sold
+BT_LEFTOVER_SELL = "BT_LEFTOVER_SELL"  # BF-D34: a share the switch could not sell, again
+BT_FUND_SWEEP = "BT_FUND_SWEEP"  # BF-D34: cash of those sales (or a cut fund buy) into the fund
 
 
 def decide_emg2_18_bt(
