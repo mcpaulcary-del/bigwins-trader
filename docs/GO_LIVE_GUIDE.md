@@ -52,13 +52,29 @@ pricing plan of the live account; the simulated twin assumes IBKR's commission
 1. Settings > Account Settings > "Paper Trading Account": **create / enable** it. IBKR
    gives it its own **username** and an account id starting with **DU** (for example
    `DU1234567`). Set a password for the paper username.
-2. **Cash on the paper account.** IBKR starts a paper account with a large made-up
-   balance. The trader reconciles every day, to the cent, its own journal cash against
-   the paper account's settled cash (`trader/reconcile.py`, `trader/runner.py`), and its
-   loss rule (L11) works on a A$10,000 book. So the paper account must hold what the
-   journal says was deposited. If the paper settings page lets you **reset the paper
-   account with a chosen balance, reset it to A$10,000 in AUD**. If it does not, tell me
-   what it shows; I deal with it in the reality spike (part E) before any order is sent.
+2. **Cash on the paper account: exactly A$10,000, the same as the journal deposit.**
+   IBKR starts a paper account with a large made-up balance (often US$1,000,000). The
+   trader reconciles every day, to the cent, its own journal cash against the paper
+   account's cash (`trader/reconcile.py`, `trader/runner.py`); its loss rule (L11) and
+   the A$10,000 cap work on a A$10,000 book. Any difference is a reconciliation break:
+   the book halts (`HALTED_INTEGRITY`) and nothing is sent. So:
+   - **Base currency AUD.** Log in to Client Portal **with the paper username**:
+     Settings > Account Settings > "Base Currency" (Configuration) > **AUD**.
+   - **Reset the balance.** Log in to Client Portal with your **live** username:
+     Settings > Account Settings > "Paper Trading Account" > **"Reset Paper Trading
+     Account"** (IBKR's wording varies: look for "reset" and "net liquidation value" /
+     "starting balance"). Enter **10000** (AUD), confirm. A reset clears all paper
+     positions and orders and usually takes effect the **next day** (overnight).
+   - **Check** the next day in the paper Portal (Portfolio / Account summary): cash
+     **A$10,000.00**, no positions, nothing in other currencies. Then the deposits are
+     recorded with exactly the same amount (E1.2): `trader-bf deposit --book
+     EMG2_18_PAPER --amount 10000`, and `trader-bf status` shows `EMG2_18_PAPER: cash
+     A$10000`. The first 16:30 reconciliation compares the two.
+   - If IBKR does not let you choose A$10,000 (only fixed amounts, or USD), **do not
+     start**: tell me what the page offers. Starting with a different paper balance and
+     a A$10,000 journal breaks the reconciliation on day one, by design.
+   - Reset again (same steps) **after the paper dry run** (E3) and before the official
+     paper start, so the official book starts from A$10,000 cash and no holdings.
 3. "Share real-time market data subscriptions with paper account": **Yes** (see A5).
 
 ### A4. Order precautions: maximum order value above A$10,000
@@ -250,7 +266,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **nine** files in `deploy/secrets/`, with exactly these names
+Compose needs **eight** files in `deploy/secrets/`, with exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -270,14 +286,33 @@ put healthchecks_url      # a healthchecks.io ping URL; type: none   until we se
 openssl rand -hex 24 > secrets/db_password                   # database password, made here
 python3 -c 'import base64,os;print(base64.b32encode(os.urandom(20)).decode())' > secrets/totp_seed
 chmod 444 secrets/*        # see the note below
-ls -l secrets              # nine files, none empty
+ls -l secrets              # eight files, none empty, all -r--r--r--
+./check_secrets.sh         # BF-D33: "ok: deploy/secrets is 700 and its 8 files are 444, none empty"
 ```
 
-Note on permissions: Docker passes these files into the containers as they are, and
-the trader runs as user 10001 inside its container, so the files must be readable by
-that user. The **folder** `secrets/` is `700` (only root on the server can look in); the
-files themselves are `444`. If a container cannot read one, it says so in its log
-(`docker compose logs trader`).
+Note on permissions: Docker passes these files into the containers as bind mounts
+with the server's owner and mode, and every container runs as its own non-root user
+(the trader as uid 10001, Postgres as uid 999, the gateway as its own user). So the
+**files** must be `444` (readable by any user, writable by none) and the **folder**
+`secrets/` must be `700` (only root on the server can even list it; the containers do
+not see the folder, only their own files). `chmod 600` files (the old advice) are
+unreadable inside the containers.
+
+The stack checks this at every start (BF-D33): a one-shot service `secrets-check` runs
+first as uid 10001 with no network, checks all eight files (present, non-empty, `444`,
+readable) **without reading them**, and the gateway, database and trader start only if
+it passes. If one is wrong, `docker compose up -d` stops with an error and
+`docker compose logs secrets-check` says exactly which file and how to fix it, e.g.
+
+```
+SECRET CHECK FAILED: secret db_password: mode 0600 is not readable by other users; the
+containers run as other uids (trader 10001) - on the server: cd /srv/asx-trader/deploy &&
+chmod 700 secrets && chmod 444 secrets/* (docs/GO_LIVE_GUIDE.md B6), then docker compose up -d
+```
+
+The trader checks its own seven files again when it starts (`trader-bf check-secrets`,
+also run by `trader-bf run`). `./check_secrets.sh` on the server also checks the folder
+mode, which the containers cannot see.
 
 | File | Used by | Read in |
 | --- | --- | --- |

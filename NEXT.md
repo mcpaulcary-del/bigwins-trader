@@ -171,12 +171,13 @@ go-live checklist, by a reviewed code change.
 - Found while writing it (for the reality spike, before any paper order):
   (1) ~~`trader-bf deposit` / `kill` / `pause` / `status` use `--journal` or a local
   SQLite file~~ fixed (BF-D30): they use the running app's journal (config
-  `journal.url_env`, Postgres + `db_password` secret); SQLite only when named explicitly. (2) The paper account's made-up starting balance must equal
-  the journal deposit (cash is reconciled to the cent; L11 assumes A$10,000): reset
-  the paper balance or decide another way. (3) Compose file secrets are bind mounts
-  with host permissions; the trader runs as uid 10001, so `chmod 600` root files are
-  unreadable: guide uses `444` files in a `700` folder; confirm each container reads
-  its secrets. (4) ~~The daily refresh of `FORWARD_STORE` on the server is not built~~ built
+  `journal.url_env`, Postgres + `db_password` secret); SQLite only when named explicitly. (2) The paper account's starting balance must equal the
+  journal deposit: guide A3.2 now gives the steps (base currency AUD, reset to
+  A$10,000, check, then `trader-bf deposit 10000`; do not start otherwise; reset again
+  after the dry run). (3) ~~secret file permissions~~ checked at start-up (BF-D33):
+  `secrets-check` service (uid 10001, no network, contents never read) gates gw/db/
+  trader; `trader-bf check-secrets`; host `deploy/check_secrets.sh` (folder 700, files
+  444); confirm on the server in the spike. (4) ~~The daily refresh of `FORWARD_STORE` on the server is not built~~ built
   (BF-D31): job `store_refresh` 17:35..22:05, EODHD bulk AU closes + dividends + splits,
   counted budget in the journal, idempotent, no decision on a stale store (paged);
   timing against the real EODHD service to confirm in the spike.

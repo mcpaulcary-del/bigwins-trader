@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -164,8 +165,6 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
 
 
 def _journal_from_config(url_env: str) -> Journal:
-    import os
-
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
 
@@ -242,6 +241,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             + ", ".join(f"{d} {s}" for d, s in sorted(dr.decisions.items())),
             file=sys.stderr,
         )
+    from trader.secret_check import check_secrets
+
+    bad = check_secrets()  # BF-D33: a clear error at start-up, not a failed job later
+    if bad:
+        raise SystemExit("SECRET CHECK FAILED: " + "; ".join(bad))
     j = _journal_from_config(cfg.journal.url_env)
     for book in (cfg.book, cfg.data.sim_book):
         if j.cash(book) == 0 and not j.positions(book):
@@ -274,6 +278,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         store_refresh=store_refresher(cfg),  # BF-D31: daily EODHD bulk into the store
     )
     run_forever(app)
+    return 0
+
+
+def cmd_check_secrets(args: argparse.Namespace) -> int:
+    """BF-D33: the Docker secret files are there, non-empty and readable by this uid
+    (and by other users: 444 files in a 700 folder). Contents are never read."""
+    from trader.secret_check import STACK_SECRETS, TRADER_SECRETS, check_secrets
+
+    names = STACK_SECRETS if args.all else TRADER_SECRETS
+    bad = check_secrets(names, args.dir)
+    for b in bad:
+        print(f"SECRET CHECK FAILED: {b}", file=sys.stderr)
+    if bad:
+        return 2
+    uid = os.getuid() if hasattr(os, "getuid") else -1
+    print(f"ok: {len(names)} secret file(s) in {args.dir} readable by uid {uid}")
     return 0
 
 
@@ -387,6 +407,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = sub.add_parser("run", help="scheduler + Telegram + IBKR paper gateway (paper only)")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--start", type=date.fromisoformat, help="L6 start decision date (canary)")
+    p = sub.add_parser("check-secrets", help="the Docker secret files are readable (BF-D33)")
+    p.add_argument("--all", action="store_true", help="every file of the stack (secrets-check)")
+    p.add_argument("--dir", type=Path, default=Path("/run/secrets"))
     p = sub.add_parser("deposit", help="record a deposit into a book's journal (paper set-up)")
     p.add_argument("--book", required=True)
     p.add_argument("--amount", type=Decimal, required=True)
@@ -401,6 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "dry-run": cmd_dry_run,
         "run": cmd_run,
         "tax-report": cmd_tax_report,
+        "check-secrets": cmd_check_secrets,
     }
     if a.cmd in commands:
         return commands[a.cmd](a)

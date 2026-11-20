@@ -3,13 +3,31 @@
 # - No service publishes a port to the host: nothing is reachable from the internet.
 #   Admin access is over Tailscale SSH to the host (docs/SETUP_SYDNEY.md).
 # - Images are pinned by tag AND digest (BP-10). Re-pin deliberately.
-# - Secrets are Docker secrets read from files under ./secrets (mode 600, never in git).
+# - Secrets are Docker secrets read from files under ./secrets (never in git): the folder
+#   700, the files 444 (bind mounts keep the host mode; the containers run as other uids).
+#   The one-shot service secrets-check (uid 10001, no network, contents never read)
+#   checks every file at start-up and the other services wait for it (BF-D33);
+#   deploy/check_secrets.sh checks the folder on the host.
 #   The IBKR login is used only by the gateway container; the trader never sees it.
 # - TRADING_MODE=paper. The live port (4003) is not used; the trader refuses it anyway.
 
 name: asx-trader-bfast
 
 services:
+  secrets-check:
+    # BF-D33: every secret file is there, non-empty and readable by a non-root, non-owner
+    # uid (444); a failure stops the stack with "SECRET CHECK FAILED: ..." in its log
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: asx-trader-bfast-trader:local
+    user: "10001:10001"
+    network_mode: none
+    restart: "no"
+    secrets: [tws_password, db_password, telegram_bot_token, totp_seed, eodhd_api_token,
+              healthchecks_url, ibkr_flex_token, ibkr_flex_query_id]
+    command: ["trader-bf", "check-secrets", "--all"]
+
   gw-paper:
     # gnzsnz/ib-gateway, stable channel 10.37 (checked 2026-11-19 on ghcr.io)
     image: ghcr.io/gnzsnz/ib-gateway:10.37.1r@sha256:b248e4dad68cc1de8dd1905ea8598089e92307dfec57f59e08a28182bbb002d5
@@ -25,6 +43,8 @@ services:
       TIME_ZONE: Australia/Sydney
       TZ: Australia/Sydney
     secrets: [tws_password]
+    depends_on:
+      secrets-check: {condition: service_completed_successfully}
     networks: [internal]
     # no "ports:" on purpose; the trader reaches gw-paper:4004 on the internal network
 
@@ -36,6 +56,8 @@ services:
       POSTGRES_DB: ledger_bf_paper
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets: [db_password]
+    depends_on:
+      secrets-check: {condition: service_completed_successfully}
     volumes: [pgdata:/var/lib/postgresql/data]
     networks: [internal]
     healthcheck:
@@ -47,8 +69,10 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    image: asx-trader-bfast-trader:local
     restart: unless-stopped
     depends_on:
+      secrets-check: {condition: service_completed_successfully}
       db: {condition: service_healthy}
       gw-paper: {condition: service_started}
     environment:
@@ -71,7 +95,8 @@ services:
     networks: [internal, egress]
     # `trader-bf run` (scheduler + Telegram + paper gateway) exists; the container stays
     # idle until the reality spike and the piece-2 dry runs pass, then the command changes.
-    command: ["sh", "-c", "trader-bf validate-config && exec sleep infinity"]
+    # (`trader-bf run` checks its secret files again first, BF-D33)
+    command: ["sh", "-c", "trader-bf check-secrets && trader-bf validate-config && exec sleep infinity"]
 
 networks:
   internal:
