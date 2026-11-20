@@ -210,6 +210,8 @@ The trader container mounts five host folders (`deploy/docker-compose.yml`, serv
 ```bash
 mkdir -p /srv/bigwins_forward/data/eodhd /srv/ref /srv/record/68_forward_record /srv/flex/inbox
 chown 10001:10001 /srv/flex/inbox      # the trader runs as uid 10001 and writes here
+# after the store has been copied in from the record (see below):
+chown -R 10001:10001 /srv/bigwins_forward/data/eodhd   # the daily refresh appends to it
 cd /srv/asx-trader/deploy
 cp .env.example .env && chmod 600 .env
 nano .env
@@ -220,7 +222,7 @@ nano .env
 | Variable | Value | What it is |
 | --- | --- | --- |
 | `IBKR_PAPER_USERID` | your **paper** username | the gateway logs in with it |
-| `FORWARD_STORE` | `/srv/bigwins_forward/data/eodhd` | the daily price store (read-only; config `data.forward_store`) |
+| `FORWARD_STORE` | `/srv/bigwins_forward/data/eodhd` | the daily price store (config `data.forward_store`); writable: the trader appends each session's EODHD bulk file (BF-D31) |
 | `REF_DIR` | `/srv/ref` | holds `etp_list.txt` (config `data.etp_list`) |
 | `RECORD_DIR` | `/srv/record/68_forward_record` | the record's folder with `CORPORATE_ACTIONS.csv` (read-only; `data.corporate_actions_csv`, BF-D23) |
 | `FLEX_INBOX` | `/srv/flex/inbox` | IBKR Flex XML files; the trader writes them (`data.flex_inbox`, BF-D27) |
@@ -231,9 +233,20 @@ repository (69 codes), pinned by SHA-256 in `config/bfast.yaml`
 trader refuses every decision and order and pages you (BF-D21); `$TRADER_BF_LIC_LIST`
 is only for tests outside the container.
 
-The three data folders (`FORWARD_STORE`, `REF_DIR`, `RECORD_DIR`) are filled from the
-research record; I set that up with you in the reality-spike session, including the
-**daily refresh of the price store** (an open item on my list: part E).
+The three data folders (`FORWARD_STORE`, `REF_DIR`, `RECORD_DIR`) are filled once from
+the research record; I set that up with you in the reality-spike session. From then on
+the trader **refreshes the price store itself** every trading day (BF-D31,
+`trader/store_refresh.py`): after the ASX close (17:35, 18:35, ... 22:05 Sydney) it
+downloads EODHD's end-of-day bulk file for the ASX, plus that day's dividends and
+splits, and appends them to `FORWARD_STORE`, with the key from the `eodhd_api_token`
+secret file only. Each request is counted in the database before it is sent (EODHD
+counts a bulk request as 100 calls; `data.store_refresh.calls_per_day: 100000` is the
+daily ceiling - lower it if your EODHD plan allows fewer calls). A day already in the
+store is not fetched again. If the day's prices are still missing at 22:05, or the key
+is missing or refused, or the budget is used up, you get `PAGE price store not
+refreshed for <date> ...` and **no decision is made on stale prices** (the 22:20
+decision waits until 23:40, then records a rule-14 data block and pages you; holdings
+are kept).
 
 ### B6. The secret files
 
@@ -273,7 +286,7 @@ files themselves are `444`. If a container cannot read one, it says so in its lo
 | `telegram_bot_token` | trader | `trader/approval.py` `TelegramTransport` |
 | `totp_seed` | trader | `trader/approval.py` `TotpVerifier` |
 | `ibkr_flex_token`, `ibkr_flex_query_id` | trader | `trader/flex_pull.py` (read at each pull) |
-| `eodhd_api_token` | price-store refresh | `trader/data/eodhd.py` |
+| `eodhd_api_token` | trader (price-store refresh, BF-D31) | `trader/store_refresh.py` (read at each refresh) |
 | `healthchecks_url` | dead-man heartbeat | not read yet (the heartbeat is still to build) |
 
 ### B7. Two settings in `config/bfast.yaml`
@@ -365,6 +378,7 @@ nobody can re-arm the system or approve an order without it.
 | 15:45 | sends approved orders (LOC, into the closing auction) | "...-C: sent 1, not approved 0, held/rejected 0" |
 | 16:20 | collects fills | |
 | 16:30 | reconciles journal v IBKR to the unit and the cent | a PAGE only on a break |
+| 17:35-22:05 | downloads the day's EODHD prices, dividends and splits into the price store (hourly until it is there) | a PAGE only if still missing at 22:05 (then no decision on stale prices) |
 | 22:20 | month-end (or start) decision | the decision message with orders for the **next** session |
 | 22:45 | daily report | the report (every trading day) |
 
@@ -498,7 +512,8 @@ needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm w
    a gateway restart; the account values IBKR reports; live v delayed quotes (A5); the
    Flex download against the real service and its timing; the order precautions (A4);
    the paper account's cash v the A$10,000 journal deposit (A3.2); that each container
-   reads its secret files (B6); the daily price-store refresh on the server.
+   reads its secret files (B6); the daily price-store refresh (BF-D31) against the real
+   EODHD service and its timing.
    `trader-bf deposit` / `kill` / `pause` / `status` act on the server's database, the
    same journal the running trader uses (BF-D30); they are run inside the trader
    container, e.g. `docker compose exec trader trader-bf status`. **You see**: one or two small paper orders I ask you to approve with

@@ -122,6 +122,7 @@ from trader.risk import (
     worst,
 )
 from trader.runner import reconcile_and_page
+from trader.store_refresh import STORE_PAGE_SLOT, STORE_REFRESH_SLOTS, StoreRefresher
 from trader.universe import liquidity_table
 
 PanelProvider = Callable[[date], PricePanel]
@@ -141,6 +142,7 @@ DAY_JOBS: tuple[tuple[str, str], ...] = tuple(
             ("22:20", "decide"),
             ("22:45", "report"),
             *((t, "flex_pull") for t in FLEX_PULL_SLOTS),  # BF-D27: before the 16:30 recon
+            *((t, "store_refresh") for t in STORE_REFRESH_SLOTS),  # BF-D31: after the close
         ),
         key=lambda j: j[0],
     )
@@ -253,6 +255,7 @@ class BfApp:
         ca_source: CaSource | None = None,
         flex: Callable[[date], Sequence[FlexStatement]] | None = None,
         flex_pull: FlexPuller | None = None,
+        store_refresh: StoreRefresher | None = None,
     ) -> None:
         """``closes(d)``: the closes of session d (empty while the day's data is not in);
         ``marks(d)``: the last known close of every name at d (valuation; defaults to
@@ -268,7 +271,11 @@ class BfApp:
         CORPORATE_ACTIONS.csv) for those codes; ``flex(d)``: IBKR Activity Flex statements
         available on d (the broker book's dividends and corporate actions). BF-D27:
         ``flex_pull`` downloads the Flex statement into the inbox at ``FLEX_PULL_SLOTS``
-        before the 16:30 reconciliation (None: the inbox is filled by hand)."""
+        before the 16:30 reconciliation (None: the inbox is filled by hand). BF-D31:
+        ``store_refresh`` appends the day's EODHD bulk files to the price store at
+        ``STORE_REFRESH_SLOTS``; with it, no decision is made while the store's newest
+        day is before the decision day (fail closed; None: the store is filled
+        elsewhere and only rule 14's closes test applies)."""
         self.s = s
         self.lic_guard = lic_guard
         self.j = journal
@@ -287,6 +294,7 @@ class BfApp:
         self.ca_source = ca_source
         self.flex = flex
         self.flex_pull = flex_pull
+        self.store_refresh = store_refresh
         self.now = datetime.now(UTC)
         self.ex = Executor(
             journal, broker, s.book, limits=s.limits, approval_deadline=s.approval_deadline
@@ -483,7 +491,9 @@ class BfApp:
         refused = self._decision_refused(day, now, kinds)  # BF-D21: before any panel
         if refused is not None:
             return refused
+        stale = self._store_stale(day)  # BF-D31: never decide on a stale price store
         panel = self.panels(day)
+        ready = stale is None and data_ready(panel)
         liq = liquidity_table(panel)
         tv20 = {
             e: Decimal(repr(float(liq.tv_med20[j]))).quantize(Decimal(1))
@@ -492,7 +502,7 @@ class BfApp:
         }
         x = self.next_session(day)
         acted: dict[str, set[tuple[str, str]]] = {}
-        lst = emg2_list(panel) if data_ready(panel) else None  # one list for every book
+        lst = emg2_list(panel) if ready else None  # one list for every book
         trend = self._band_trend(panel, day, now, lst)  # L15: one state for every book
         seeds = {name: seed for name, seed, _, _ in self.rnd}
         for book, ex, broker, mode in self._books():
@@ -501,7 +511,7 @@ class BfApp:
             if k is None or self.j.job_done(key):
                 continue
             dec = None
-            block = None if data_ready(panel) else "the day's closes are missing"
+            block = stale or (None if ready else "the day's closes are missing")
             if block is None:
                 state = BookState(book, self.j.cash(book), self._book_positions(book, day))
                 order = self._random_order(seeds.get(book), day, now)
@@ -809,6 +819,42 @@ class BfApp:
                 f"{res.note}). The 16:30 reconciliation runs on the inbox as it is (pending "
                 "corporate actions stay expectations). Check the Flex token / query (Docker "
                 "secrets) or put the statement XML in the inbox by hand."
+            )
+
+    def _store_stale(self, day: date) -> str | None:
+        """BF-D31: why the price store is stale for a decision on ``day`` (None: fresh,
+        or no refresher configured)."""
+        if self.store_refresh is None:
+            return None
+        last = self.store_refresh.last_day()
+        if last is not None and last >= day:
+            return None
+        return (
+            f"price store stale: newest bulk day {last or 'none'} is before {day} "
+            "(BF-D31; no decision on stale data)"
+        )
+
+    def job_store_refresh(self, day: date, now: datetime) -> None:
+        """BF-D31: the day's EODHD bulk closes, dividends and splits into the price store
+        the decision reads, once a day (each slot until it is there); the owner is paged
+        once a day when it is still missing at the last slot, or at once on an error the
+        next slot will not fix (no key, budget used up, key refused)."""
+        if self.store_refresh is None or self.j.job_done(f"store-refresh:{day}"):
+            return
+        res = self.store_refresh.refresh(day, self.j, now)
+        info = {"status": res.status, "rows": res.rows, "calls": res.calls, "note": res.note}
+        if res.ok:
+            self.j.mark_job(f"store-refresh:{day}", info, now)
+            return
+        self.j.mark_job(f"store-try:{day}", info, now)
+        last_slot = now >= at(day, STORE_PAGE_SLOT)
+        if (res.fatal or last_slot) and not self.j.job_done(f"store-page:{day}"):
+            self.j.mark_job(f"store-page:{day}", info, now)
+            self.say(
+                f"PAGE price store not refreshed for {day} ({res.status}: {res.note}). "
+                "No decision is made on stale data (BF-D31); the twins wait for the "
+                "day's closes. Check the EODHD key (Docker secret eodhd_api_token), the "
+                "call budget, or EODHD's status; the refresh can be re-run by hand."
             )
 
     def job_reconcile(self, day: date, now: datetime) -> None:

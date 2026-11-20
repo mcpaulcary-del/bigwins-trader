@@ -176,7 +176,10 @@ go-live checklist, by a reviewed code change.
   the paper balance or decide another way. (3) Compose file secrets are bind mounts
   with host permissions; the trader runs as uid 10001, so `chmod 600` root files are
   unreadable: guide uses `444` files in a `700` folder; confirm each container reads
-  its secrets. (4) The daily refresh of `FORWARD_STORE` on the server is not built.
+  its secrets. (4) ~~The daily refresh of `FORWARD_STORE` on the server is not built~~ built
+  (BF-D31): job `store_refresh` 17:35..22:05, EODHD bulk AU closes + dividends + splits,
+  counted budget in the journal, idempotent, no decision on a stale store (paged);
+  timing against the real EODHD service to confirm in the spike.
   (5) In FUND state the book places one order and then none, so go-live item 2 (five
   paper sessions with orders) needs a plan in the spike.
 

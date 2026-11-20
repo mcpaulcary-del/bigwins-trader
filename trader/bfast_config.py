@@ -132,6 +132,19 @@ class FlexPullCfg(_M):
     backoff_seconds: float = Field(default=5.0, ge=0, le=15)
 
 
+class StoreRefreshCfg(_M):
+    """BF-D31: the daily EODHD bulk refresh of ``data.forward_store`` on the server. No
+    key here (``extra=forbid``): it is the Docker secret ``eodhd_api_token`` only."""
+
+    raw_dir: Path  # every vendor response kept unchanged (raw store, source ``eodhd``)
+    calls_per_day: int = Field(default=100000, ge=100)  # the plan's EODHD calls a GMT day
+    bulk_call_cost: int = Field(default=100, ge=1, le=1000)  # EODHD counts a bulk call as 100
+    min_rows: int = Field(default=1000, ge=1)  # closes dated D needed (about 1,400-1,900)
+    min_share: Decimal = Field(default=Decimal("0.9"), gt=0, le=1)  # of the previous day's
+    attempts: int = Field(default=2, ge=1, le=3)
+    backoff_seconds: float = Field(default=5.0, ge=0, le=15)
+
+
 class DataCfg(_M):
     forward_store: Path
     sim_book: str
@@ -156,6 +169,9 @@ class DataCfg(_M):
     # BF-D27: download the paper account's Flex statement into flex_inbox before the
     # 16:30 reconciliation (None: the inbox is filled by hand)
     flex_pull: FlexPullCfg | None = None
+    # BF-D31: append the day's EODHD bulk files to forward_store after the close (the
+    # store must then be mounted writable); None: the store is filled elsewhere
+    store_refresh: StoreRefreshCfg | None = None
 
     @model_validator(mode="after")
     def _pull_needs_inbox(self) -> DataCfg:

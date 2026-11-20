@@ -43,7 +43,8 @@ risk:
   day_move: {review: -0.07, halt: -0.12}
   real_money_floor: 0.60
 data:
-  forward_store: /data/forward/eodhd        # read-only mount of $B/bigwins_forward/data/eodhd
+  forward_store: /data/forward/eodhd        # $B/bigwins_forward/data/eodhd; writable on the server:
+                                            # the daily refresh below appends the bulk files (BF-D31)
   sim_book: EMG2_18_SIM                     # simulated twin (L13)
   sim_half_spread: 0.005                    # L9 start spread, a side
   random_twins: 100                         # EMG2_18_RND_s001...s100 (L13; L11 test (b))
@@ -70,6 +71,14 @@ data:
     max_days: 30                            # ibkr_flex_query_id only (never here)
     attempts: 2
     backoff_seconds: 5
+  store_refresh:                            # BF-D31: EODHD bulk closes + dividends + splits of the
+    raw_dir: /app/out/eodhd_raw             # session into forward_store at 17:35..22:05 (after the
+    calls_per_day: 100000                   # close, before the 22:20 decision); counted per GMT day
+    bulk_call_cost: 100                     # in the journal before each request (EODHD: 100 a bulk call)
+    min_rows: 1000                          # closes dated D (the record has about 1,400-1,900)
+    min_share: 0.9                          # and >= 90% of the previous bulk day's; else retried
+    attempts: 2                             # key: Docker secret eodhd_api_token only (never here);
+    backoff_seconds: 5                      # stale store => no decision, owner paged
 band_trend:                     # L15 (AMENDMENT_live_EMG2_18_BT.md; owner decision after report 96; BF-D28)
   enabled: true                 # month-end: band 301-600 equal-weight index below its 10-month average
   fund: A200                    #   -> "state: FUND": sell EMG2 shares, hold the ASX 200 fund (A200);

@@ -59,7 +59,8 @@ services:
               ibkr_flex_token, ibkr_flex_query_id]  # BF-D27: Flex download (read at each pull)
     volumes:
       - ../config:/app/config:ro
-      - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
+      # BF-D31: writable, the daily refresh appends the EODHD bulk files the decision reads
+      - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd
       - ${REF_DIR:?path holding etp_list.txt}:/data/ref:ro
       # BF-D23: the record's 68_forward_record (CORPORATE_ACTIONS.csv) and the Flex inbox
       - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro

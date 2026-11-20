@@ -101,17 +101,26 @@ def store_providers(
     fs = ForwardStore(store)
     bt = cfg.band_trend_params()
     protect = frozenset({bt.fund}) if bt.enabled else frozenset()  # BF-D28: A200 stays priceable
-    cache: dict[date, tuple[float, PricePanel]] = {}
+    cache: dict[date, tuple[float, PricePanel, str]] = {}
+    bulk_dir = Path(store) / "raw" / "bulk_eod"
+
+    def version() -> str:  # BF-D31: a new bulk file (the daily refresh) rebuilds the panel
+        return max((p.name for p in bulk_dir.glob("AU_*.json.gz")), default="")
 
     def panel(d: date) -> PricePanel:
         hit = cache.get(d)
-        if hit is None or (refresh_seconds is not None and clock() - hit[0] > refresh_seconds):
+        v = version()
+        if (
+            hit is None
+            or hit[2] != v
+            or (refresh_seconds is not None and clock() - hit[0] > refresh_seconds)
+        ):
             lic = lic_codes(cfg)  # BF-D21: re-checked on every build; raises, never falls back
             p = fs.build_panel(
                 d, sessions, history=cfg.data.history_sessions, etp_codes=etp,
                 lic_codes=lic.codes, protect=protect,
             )  # fmt: skip
-            cache[d] = hit = (clock(), p)
+            cache[d] = hit = (clock(), p, v)
         return hit[1]
 
     def closes(d: date) -> dict[str, Decimal]:

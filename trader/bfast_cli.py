@@ -41,6 +41,7 @@ from trader.risk import SafetyLevel
 
 if TYPE_CHECKING:
     from trader.flex_pull import FlexPuller
+    from trader.store_refresh import StoreRefresher
 
 DEFAULT_CONFIG = Path("config/bfast.yaml")
 
@@ -193,6 +194,21 @@ def flex_puller(cfg: BfastConfig) -> FlexPuller | None:
     )  # fmt: skip
 
 
+def store_refresher(cfg: BfastConfig) -> StoreRefresher | None:
+    """BF-D31: the daily EODHD bulk refresh of the price store, key from the Docker secret."""
+    from trader.data.store import RawStore
+    from trader.store_refresh import StoreRefresher
+
+    sr = cfg.data.store_refresh
+    if sr is None:
+        return None
+    return StoreRefresher(
+        cfg.data.forward_store, RawStore(sr.raw_dir, "owner"), calls_per_day=sr.calls_per_day,
+        bulk_call_cost=sr.bulk_call_cost, min_rows=sr.min_rows, min_share=float(sr.min_share),
+        attempts=sr.attempts, backoff_s=sr.backoff_seconds,
+    )  # fmt: skip
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """The long-running paper process: scheduler + Telegram + IBKR paper gateway."""
     from trader.approval import TelegramTransport, TotpVerifier
@@ -238,6 +254,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         ca_source=ca_source_from(cfg, cfg.data.forward_store),  # BF-D23
         flex=flex_inbox(cfg.data.flex_inbox) if cfg.data.flex_inbox else None,
         flex_pull=flex_puller(cfg),  # BF-D27
+        store_refresh=store_refresher(cfg),  # BF-D31: daily EODHD bulk into the store
     )
     run_forever(app)
     return 0

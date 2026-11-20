@@ -187,7 +187,9 @@ def test_scheduler_runs_each_job_once_per_session() -> None:
     for k, _ in jobs:
         app.j.mark_job(k)
     assert due_jobs(app, at(day, "16:35")) == []
-    assert [n for _, n in due_jobs(app, at(day, "23:00"))] == ["sim", "decide", "report"]
+    assert [n for _, n in due_jobs(app, at(day, "23:00"))] == [
+        *["store_refresh"] * 6, "sim", "decide", "report",
+    ]  # fmt: skip  # BF-D31: the price-store refresh slots after the close
     assert due_jobs(app, at(date(2023, 1, 7), "23:00")) == []  # Saturday: no session
 
 
