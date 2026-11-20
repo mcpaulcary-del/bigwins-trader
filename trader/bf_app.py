@@ -43,6 +43,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal
+from itertools import pairwise
 from typing import Any, Protocol
 
 import numpy as np
@@ -346,6 +347,7 @@ class BfApp:
         if s.approval_mode not in ("per_order", "batch"):  # L8: the broker book never
             raise ValueError(f"approval_mode {s.approval_mode!r}: owner approval required")
         self.log: list[str] = []
+        self._month_ends: frozenset[date] | None = None  # BF-D35: cached calendar month-ends
 
     # ------------------------------------------------------------ calendar helpers
     def is_session(self, d: date) -> bool:
@@ -540,7 +542,12 @@ class BfApp:
             if block is None:
                 state = BookState(book, self.j.cash(book), self._book_positions(book, day))
                 order = self._random_order(seeds.get(book), day, now)
-                dec = self._decide_book(panel, state, lst, order, trend)
+                ages = (
+                    self.holding_ages(book, day, state.holdings)
+                    if self.s.params.sell_rule == "C6"
+                    else None
+                )
+                dec = self._decide_book(panel, state, lst, order, trend, ages)
                 block = dec.data_block
             if block is not None or dec is None:
                 if now < at(day, RETRY_UNTIL):
@@ -766,14 +773,59 @@ class BfApp:
         lst: Emg2List | None,
         order: TargetOrder | None,
         trend: BandTrend | None,
+        ages: Mapping[str, int | None] | None = None,
     ) -> Emg2_20Decision:
-        """Rules L2-L5, under L15 when the band-trend switch is on (BF-D28)."""
+        """Rules L2-L5, under L15 when the band-trend switch is on (BF-D28), with the sell
+        rule of the config (L4, or C6 with ``ages``: BF-D35)."""
+        # a random twin's keep zone is its random score's; any other order: the EMG2 score's
+        keep = order.keep_zone if isinstance(order, RandomOrder) else None
         if trend is None:
-            return decide_emg2_20(panel, state, self.s.params, lst=lst, target_order=order)
+            return decide_emg2_20(
+                panel, state, self.s.params, lst=lst, target_order=order, ages=ages,
+                keep_order=keep,
+            )  # fmt: skip
         return decide_emg2_18_bt(
             panel, state, self.s.params, lst=lst, target_order=order, trend_on=trend.on,
             fund=self.s.band_trend.fund, top_up_fraction=self.s.band_trend.top_up_fraction,
+            ages=ages, keep_order=keep,
         )  # fmt: skip
+
+    def month_ends(self) -> frozenset[date]:
+        """Month-end sessions of the calendar (the last session of each calendar month)."""
+        if self._month_ends is None:
+            ss = self.sessions
+            self._month_ends = frozenset(
+                a for a, b in pairwise(ss) if (a.year, a.month) != (b.year, b.month)
+            )
+        return self._month_ends
+
+    def holding_ages(
+        self, book: str, day: date, holdings: Mapping[str, int]
+    ) -> dict[str, int | None]:
+        """BF-D35 rule L4-C6.1: each holding's age at a decision on ``day``, in month-ends:
+        the month-end sessions after the decision session of its latest filled buy, up to
+        and including ``day`` (the purchase decision counts as zero). Every month-end
+        counts, a data block or L6's skipped start month-end included, so the paper book
+        and its twin see the same age. Computed from the journal only (fills and their
+        intents, old codes followed through code changes), so a restart changes nothing.
+        EMG2 never buys a name it holds, so the latest buy is the one that opened the
+        holding (a name sold in full and bought again starts from zero). None: no buy of
+        its own (a corporate-action share): counted as old enough."""
+        imap = self.j.identity_map()
+        when = {it.client_order_id: it.decision_date for it, _ in self.j.intents_of_book(book)}
+        bought: dict[str, date] = {}
+        for f in self.j.fills(book):  # in execution order: the latest buy wins
+            if f.side is not Side.BUY or f.client_order_id not in when:
+                continue
+            d0 = when[f.client_order_id]
+            if d0 <= day:
+                bought[imap.get(f.entity, f.entity)] = d0
+        me = self.month_ends()
+        out: dict[str, int | None] = {}
+        for e in sorted(holdings):
+            first = bought.get(e)
+            out[e] = None if first is None else sum(1 for m in me if first < m <= day)
+        return out
 
     def _switches(self, dec: Emg2_20Decision, holdings: Mapping[str, int]) -> bool:
         """The decision moves the book into the fund (a first fund buy) or out of it."""
@@ -814,6 +866,11 @@ class BfApp:
         head += f"list {list_digest[:12]}; {len(self.j.intents_of(batch_id))} order(s)"
         if state is not None:
             head += "\n" + state
+        if self.s.params.sell_rule == "C6":  # BF-D35
+            head += (
+                "\nsell rule C6: a share is sold after >= 6 month-ends held and only outside "
+                "the top 40% of band C (BID_PEG and the L15 switch at once)"
+            )
         if self.s.lic_note:
             head += "\n" + self.s.lic_note
         lvl = self.j.safety_level()
@@ -1370,7 +1427,7 @@ class BfApp:
         self.j.mark_job("rnd-origin", {"month": month_index(day), "day": str(day)}, now)
         return month_index(day)
 
-    def _random_order(self, seed: int | None, day: date, now: datetime) -> TargetOrder | None:
+    def _random_order(self, seed: int | None, day: date, now: datetime) -> RandomOrder | None:
         if seed is None:
             return None  # the paper book and the simulated twin: T in score order
         return RandomOrder(seed, self._rnd_origin(day, now), month_index(day))

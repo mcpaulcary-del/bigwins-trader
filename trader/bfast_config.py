@@ -73,6 +73,9 @@ class Emg2_20Cfg(_M):  # noqa: N801
     min_parcel_aud: Decimal = Field(ge=Decimal(500))
     cash_reserve_aud: Decimal = Field(ge=0)
     skip_lottery: bool
+    # BF-D35 (AMENDMENT_live_EMG2_18_C6.md): C6 = sell only after 6 month-ends held and
+    # outside the top 40% of band C; L4 = the registered rule (kept for the paper comparison)
+    sell_rule: Literal["L4", "C6"] = "L4"
 
 
 class BandTrendCfg(_M):
@@ -279,6 +282,7 @@ class BfastConfig(_M):
             cash_reserve_aud=c.cash_reserve_aud,
             capital_cap_aud=c.capital_cap_aud,
             skip_lottery=c.skip_lottery,
+            sell_rule=c.sell_rule,
         )
 
     def order_params(self) -> OrderParams:

@@ -414,7 +414,7 @@ nobody can re-arm the system or approve an order without it.
 | 16:20 | collects fills | |
 | 16:30 | reconciles journal v IBKR to the unit and the cent | a PAGE only on a break |
 | 17:35-22:05 | downloads the day's EODHD prices, dividends and splits into the price store (hourly until it is there) | a PAGE only if still missing at 22:05 (then no decision on stale prices) |
-| 22:20 | month-end (or start) decision | the decision message with orders for the **next** session |
+| 22:20 | month-end (or start) decision; in state EMG2 a share is sold only after 6 month-ends held and outside the top 40% of band C (sell rule C6, BF-D35) | the decision message with orders for the **next** session |
 | 22:25 | in FUND state only: a share the switch could not sell (e.g. halted) is offered again, and its cash goes into A200 (BF-D34) | "Fund sweep ..." with orders to approve, only when there is something to sell or invest |
 | 22:45 | daily report | the report (every trading day) |
 

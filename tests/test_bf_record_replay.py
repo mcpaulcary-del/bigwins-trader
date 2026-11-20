@@ -62,9 +62,12 @@ def _app(r: Rec, **kw: Any) -> tuple[BfApp, MockGateway, str]:
     """The scenarios below run without the 100 random twins (the full replay has them)
     and, like it, with the L15 band-trend switch off: they drill the registered EMG2-18
     path, which on this data the switch would replace by the fund (BF-D28; the switch on
-    the same data: ``test_BF_D28_record_replay_switch_on_holds_the_fund``)."""
+    the same data: ``test_BF_D28_record_replay_switch_on_holds_the_fund``), and with the
+    registered sell rule L4: the drills need the 18 Nov sells, which C6 (BF-D35) would not
+    make three weeks after the start (C6 on the same data: ``tests/test_bf_c6.py``)."""
     kw.setdefault("random_twins", 0)
     kw.setdefault("band_trend", False)
+    kw.setdefault("sell_rule", "L4")
     cfg, sess, prov = r
     return mock_app(cfg, prov, sess, START, **kw)
 

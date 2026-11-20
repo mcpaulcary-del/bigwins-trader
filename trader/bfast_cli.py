@@ -80,7 +80,10 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     except LicListError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
-    print(f"ok: book {cfg.book}, mode {cfg.mode}, cap A${cfg.live_emg2_20.capital_cap_aud}")
+    print(
+        f"ok: book {cfg.book}, mode {cfg.mode}, cap A${cfg.live_emg2_20.capital_cap_aud}, "
+        f"sell rule {cfg.live_emg2_20.sell_rule}"  # BF-D35
+    )
     print(lic.describe())
     return 0
 

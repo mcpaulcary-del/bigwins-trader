@@ -27,6 +27,9 @@ live_emg2_20:
   min_parcel_aud: 500
   cash_reserve_aud: 50
   skip_lottery: true
+  sell_rule: C6                 # BF-D35 (AMENDMENT_live_EMG2_18_C6.md, owner after report 100): sell only
+                                #   after >= 6 month-ends held AND outside the top 40% of band C (BID_PEG,
+                                #   payouts, the L15 switch unchanged); L4 = the old rule (paper comparison)
 risk:
   order_value_max_aud: 800
   orders_per_day: {start: 24, normal: 16, hard: 80}

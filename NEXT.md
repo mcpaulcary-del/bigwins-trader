@@ -195,6 +195,19 @@ go-live checklist, by a reviewed code change.
   leftover offered every session it trades, proceeds swept into A200 (all books).
   Gate green (ruff, format, mypy --strict, validate-config x2, pytest, BF gate).
 
+## Sell rule C6 (20 Nov 2026; BF-D35)
+
+- Owner decision after report 100 (record `AMENDMENT_live_EMG2_18_C6.md`, ledger seq 79):
+  in state EMG2 a share is sold only after >= 6 month-ends held AND outside the top 40%
+  of band C; BID_PEG, payouts and the L15 switch unchanged. Config
+  `live_emg2_20.sell_rule: C6` (L4 still selectable); the paper book, the twin and the
+  random twins use it; ages from the journal (restart-safe). The old rule runs on paper
+  in the record (`EMG2_18_SIM_BT`), C6 too (`EMG2_18_SIM_BT_C6`, seq 80-81).
+- Must be seen working on paper before any real sale: no share can be ripe before six
+  month-ends after the first EMG2-state buy (the book starts in FUND state).
+- Open for the owner: the note lists "leaving the eligible set" with the forced sells;
+  the frozen rule (and this build) sells such a holding only once it is ripe.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

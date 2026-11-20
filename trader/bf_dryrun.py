@@ -41,6 +41,7 @@ from trader.broker.paper_sim import SimBroker
 from trader.ca_book import CaSource, calendar_source
 from trader.data.forward_store import ForwardStore
 from trader.journal import Journal
+from trader.lines.emg2 import SellRule
 from trader.panel import PricePanel
 from trader.secrets import SecretValue
 
@@ -52,18 +53,23 @@ def settings_from(
     lic_note: str = "",
     random_twins: int | None = None,
     band_trend: bool | None = None,
+    sell_rule: SellRule | None = None,
 ) -> AppSettings:
-    """``random_twins`` overrides the configured count and ``band_trend`` switches the L15
-    band-trend switch on or off (tests and short replays only; BF-D28)."""
+    """``random_twins`` overrides the configured count, ``band_trend`` switches the L15
+    band-trend switch on or off (BF-D28) and ``sell_rule`` replaces the configured sell
+    rule (BF-D35): tests and short replays only."""
     bt = cfg.band_trend_params()
     if band_trend is not None:
         bt = replace(bt, enabled=band_trend)
+    params = cfg.emg2_20_params()
+    if sell_rule is not None:
+        params = replace(params, sell_rule=sell_rule)
     return AppSettings(
         book=cfg.book,
         sim_book=cfg.data.sim_book,
         line=cfg.line,
         capital_aud=cfg.live_emg2_20.capital_cap_aud,
-        params=cfg.emg2_20_params(),
+        params=params,
         order_params=cfg.order_params(),
         limits=cfg.risk_limits(),
         approval_mode=cfg.execution.approval_mode,
@@ -162,6 +168,7 @@ def mock_app(
     random_twins: int | None = None,
     ca_source: CaSource | None = None,
     band_trend: bool | None = None,
+    sell_rule: SellRule | None = None,
 ) -> tuple[BfApp, MockGateway, str]:
     """A ``BfApp`` on the mock gateway with a simulated owner's authenticator. Passing
     the same ``gw``, ``journal_path`` and ``seed`` again is a restart: the new app has
@@ -177,7 +184,7 @@ def mock_app(
     )
     broker.connect()
     j = Journal.sqlite(journal_path)
-    s = settings_from(cfg, frozenset({chat}), start, note, random_twins, band_trend)
+    s = settings_from(cfg, frozenset({chat}), start, note, random_twins, band_trend, sell_rule)
     sim = SimBroker(cash=s.capital_aud, half_spread=s.sim_half_spread)
     if fresh:
         for book in (s.book, s.sim_book):
@@ -201,12 +208,13 @@ def forward_store_dry_run(
     providers: Providers | None = None,
     random_twins: int | None = None,
     band_trend: bool | None = None,
+    sell_rule: SellRule | None = None,
 ) -> tuple[DryRunSummary, BfApp, FakeTransport]:
     providers = providers or store_providers(cfg, store, sessions)
     start = min((d for d, k in decisions.items() if k == "S"), default=None)
     app, gw, seed = mock_app(
         cfg, providers, sessions, start, journal_path, random_twins=random_twins,
-        ca_source=ca_source_from(cfg, store), band_trend=band_trend,
+        ca_source=ca_source_from(cfg, store), band_trend=band_trend, sell_rule=sell_rule,
     )  # fmt: skip
     tr = app.transport
     assert isinstance(tr, FakeTransport)

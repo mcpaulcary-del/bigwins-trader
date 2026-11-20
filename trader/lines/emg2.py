@@ -22,7 +22,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_DOWN, Decimal
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -198,6 +198,10 @@ def emg2_list(panel: PricePanel, params: Emg2Params | None = None) -> Emg2List:
 
 
 TargetOrder = Callable[[Emg2List, frozenset[str]], Sequence[str]]
+# BF-D35: the keep zone K of a random twin (``RandomOrder.keep_zone``): band C names whose
+# random-score percentile is above ``1 - keep_fraction``; None = the EMG2 score's K.
+KeepZone = Callable[[Emg2List, float], frozenset[str]]
+SellRule = Literal["L4", "C6"]
 
 
 @dataclass(frozen=True)
@@ -216,6 +220,13 @@ class Emg2_20Params:  # noqa: N801 - the line's registered name
     est_commission_rate: Decimal = Decimal("0.00088")
     est_half_spread: Decimal = Decimal("0.005")
     payout_after_sessions: int = 20  # BW-UNI-21: valued at zero for sizing after 20 sessions
+    # BF-D35 (AMENDMENT_live_EMG2_18_C6.md, owner decision after report 100): the sell rule.
+    # "L4": sell every holding off T. "C6" (rule L4-C6, report 99's frozen X40_H6): sell only
+    # a holding held >= ``c6_min_months`` month-ends AND outside the top ``c6_keep_fraction``
+    # of band C. BID_PEG and the payout path are unchanged in both.
+    sell_rule: SellRule = "L4"
+    c6_min_months: int = 6
+    c6_keep_fraction: float = 0.40
 
 
 @dataclass(frozen=True)
@@ -232,7 +243,7 @@ class SellPlan:
     entity: str
     qty: int
     ref_close: Decimal
-    reason: str  # EMG2_OFF_LIST | EMG2_BID_PEG
+    reason: str  # EMG2_OFF_LIST | EMG2_BID_PEG | EMG2_C6_EXIT | BT_*
 
 
 @dataclass(frozen=True)
@@ -266,9 +277,12 @@ class Emg2_20Decision:  # noqa: N801
     # L15 band-trend switch (BF-D28): "EMG2" or "FUND"; None = the switch is not in use
     # (the payload, and so the digest, of a decision without the switch is unchanged)
     state: str | None = None
+    # BF-D35: under sell rule C6, each holding's age in month-ends (None: no buy of its
+    # own, counted as old enough) and the keep zone held; None = rule L4 (payload unchanged)
+    ages: tuple[tuple[str, int | None], ...] | None = None
 
     def payload(self) -> dict[str, Any]:
-        out = {
+        out: dict[str, Any] = {
             "book": self.book, "as_of": self.as_of, "list_digest": self.list_digest,
             "data_block": self.data_block, "account_value": self.account_value,
             "slots": self.slots, "parcel": self.parcel,
@@ -277,6 +291,9 @@ class Emg2_20Decision:  # noqa: N801
         }  # fmt: skip
         if self.state is not None:
             out["state"] = self.state
+        if self.ages is not None:
+            out["sell_rule"] = "C6"
+            out["ages"] = [[e, a] for e, a in self.ages]
         return out
 
     @property
@@ -331,24 +348,75 @@ class _Ctx:
         return j is not None and bool(self.peg[j])
 
 
+EMG2_C6_EXIT = "EMG2_C6_EXIT"  # BF-D35: held >= 6 month-ends and outside the keep zone
+
+
+def keep_zone(lst: Emg2List, keep_fraction: float) -> frozenset[str]:
+    """BF-D35 rule L4-C6.2: band C members whose score percentile is above
+    ``1 - keep_fraction`` (0.60: the top 40%; T, the top fifth, is inside)."""
+    return frozenset(r.entity for r in lst.band_c if r.score_pct > 1.0 - keep_fraction)
+
+
+def c6_sells(
+    holdings: Sequence[str],
+    ages: Mapping[str, int | None],
+    keep: frozenset[str],
+    pegged: Callable[[str], bool],
+    min_months: int = 6,
+) -> list[tuple[str, str]]:
+    """Rule L4-C6.3 (= deep99 ``eng99.gone_list`` with X40_H6): ``(entity, reason)`` of each
+    holding to sell: ``BID_PEG`` at once; otherwise only if its age is ``min_months`` or
+    more (an unknown age, None, counts as old enough) and it is not in the keep zone."""
+    out: list[tuple[str, str]] = []
+    for e in holdings:
+        if pegged(e):
+            out.append((e, "EMG2_BID_PEG"))
+            continue
+        age = ages.get(e)
+        if (age is None or age >= min_months) and e not in keep:
+            out.append((e, EMG2_C6_EXIT))
+    return out
+
+
 def _plan_sells(
-    ctx: _Ctx, book: BookState, targets: frozenset[str]
+    ctx: _Ctx,
+    book: BookState,
+    targets: frozenset[str],
+    *,
+    keep: frozenset[str] | None = None,
+    ages: Mapping[str, int | None] | None = None,
+    force: frozenset[str] = frozenset(),
 ) -> tuple[list[SellPlan], list[str], Decimal]:
-    """L4: sell in full every holding not on T or flagged ``BID_PEG``."""
+    """L4: sell in full every holding not on T or flagged ``BID_PEG``. With ``keep``
+    (rule C6, BF-D35): sell by ``c6_sells`` instead. ``force``: sold whatever the rule
+    (the fund in state EMG2, BT4); a holding without a close for 20 sessions is never an
+    order (payout path)."""
     sells: list[SellPlan] = []
     kept: list[str] = []
     proceeds = Decimal(0)
-    for e in sorted(book.holdings):
+    priced = {e: ctx.px(e) for e in sorted(book.holdings)}
+    c6: dict[str, str] = {}
+    if keep is not None:
+        live = [e for e, px in priced.items() if px is not None and e not in force]
+        c6 = dict(c6_sells(live, ages or {}, keep, ctx.pegged, ctx.p.c6_min_months))
+    for e, price in priced.items():
         q = book.holdings[e]
-        price = ctx.px(e)
         if price is None:
             kept.append(e)  # no close for 20 sessions: payout path (BW-UNI-21), not an order
+            continue
+        if e in force:
+            reason: str | None = "EMG2_OFF_LIST"
+        elif keep is not None:
+            reason = c6.get(e)
         elif e not in targets or ctx.pegged(e):
             reason = "EMG2_BID_PEG" if ctx.pegged(e) else "EMG2_OFF_LIST"
+        else:
+            reason = None
+        if reason is None:
+            kept.append(e)
+        else:
             sells.append(SellPlan(e, q, price, reason))
             proceeds += _sale_estimate(q, price, ctx.p)
-        else:
-            kept.append(e)
     return sells, kept, proceeds
 
 
@@ -383,12 +451,19 @@ def decide_emg2_20(
     *,
     lst: Emg2List | None = None,
     target_order: TargetOrder | None = None,
+    ages: Mapping[str, int | None] | None = None,
+    keep_order: KeepZone | None = None,
+    force_sell: frozenset[str] = frozenset(),
 ) -> Emg2_20Decision:
     """One EMG2-20 decision (rules L2-L5) for ``book`` at the panel's session D.
 
     ``lst``: the EMG2 list of this panel, if already computed (one list serves the
     simulated twin and its random twins). ``target_order(lst, pegged)``: replaces the
-    order of rule 3 (T) for a random twin (``trader.random_twins``); None = T."""
+    order of rule 3 (T) for a random twin (``trader.random_twins``); None = T.
+    Sell rule C6 (``params.sell_rule``, BF-D35): ``ages`` = each holding's age in
+    month-ends (a missing entry counts as old enough); ``keep_order(lst, fraction)``
+    replaces the keep zone for a random twin (None: the EMG2 score's). ``force_sell``:
+    holdings sold whatever the rule (the fund in state EMG2)."""
     p = params or Emg2_20Params()
     if any(q <= 0 for q in book.holdings.values()):
         raise ValueError("holdings must be positive whole shares (long only)")
@@ -412,7 +487,13 @@ def decide_emg2_20(
     if target_order is not None:
         pegged = frozenset(e for e, j in ctx.col.items() if bool(ctx.peg[j]))
         targets = tuple(target_order(lst, pegged))
-    sells, kept, proceeds = _plan_sells(ctx, book, frozenset(targets))
+    keep: frozenset[str] | None = None
+    if p.sell_rule == "C6":
+        frac = p.c6_keep_fraction
+        keep = keep_order(lst, frac) if keep_order is not None else keep_zone(lst, frac)
+    sells, kept, proceeds = _plan_sells(
+        ctx, book, frozenset(targets), keep=keep, ages=ages, force=force_sell
+    )
     cands, skipped = _pick_buys(ctx, book, targets, n - len(kept))
     kept_value = sum(((ctx.px(e) or Decimal(0)) * book.holdings[e] for e in kept), Decimal(0))
     available = min(
@@ -428,9 +509,12 @@ def decide_emg2_20(
                 skipped.append(Skip(e, "MIN_PARCEL"))  # its cash waits for the next decision
             else:
                 buys.append(BuyPlan(e, rank, each, ref))
+    aged = None
+    if keep is not None:
+        aged = tuple((e, (ages or {}).get(e)) for e in sorted(book.holdings))
     return Emg2_20Decision(
         book.book, lst.as_of, lst.digest, None, account_value, n, parcel,
-        tuple(sells), tuple(buys), tuple(skipped), tuple(kept),
+        tuple(sells), tuple(buys), tuple(skipped), tuple(kept), ages=aged,
     )  # fmt: skip
 
 
@@ -454,6 +538,8 @@ def decide_emg2_18_bt(
     top_up_fraction: float = 0.10,
     lst: Emg2List | None = None,
     target_order: TargetOrder | None = None,
+    ages: Mapping[str, int | None] | None = None,
+    keep_order: KeepZone | None = None,
 ) -> Emg2_20Decision:
     """One EMG2-18 decision under rule L15 (``AMENDMENT_live_EMG2_18_BT.md``, BT3/BT4).
 
@@ -462,11 +548,16 @@ def decide_emg2_18_bt(
     holding is sold (``BT_OFF_SELL``), no share is bought, and the cash after the sales
     less the reserve, within the capital cap (L1), is one fund buy (``BT_FUND_BUY``) if
     it is at least A$500; when the fund is already held, only if it is also at least
-    ``top_up_fraction`` of the account. Rule 14 data block: no decision, as always."""
+    ``top_up_fraction`` of the account. Rule 14 data block: no decision, as always.
+    Sell rule C6 (BF-D35) applies in state EMG2 only; the fund is always sold there (BT4)
+    and every share in state FUND (BT3), whatever its age."""
     p = params or Emg2_20Params()
     lst = lst or emg2_list(panel, list_params)
     if trend_on:
-        dec = decide_emg2_20(panel, book, p, list_params, lst=lst, target_order=target_order)
+        dec = decide_emg2_20(
+            panel, book, p, list_params, lst=lst, target_order=target_order, ages=ages,
+            keep_order=keep_order, force_sell=frozenset({fund}),
+        )  # fmt: skip
         relabel = tuple(
             replace(x, reason=BT_FUND_SELL) if x.entity == fund else x for x in dec.sells
         )

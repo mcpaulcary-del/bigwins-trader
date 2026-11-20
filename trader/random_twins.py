@@ -24,6 +24,9 @@ import hashlib
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
+
+from trader.features import pct_rank
 from trader.lines.emg2 import Emg2List
 
 SEED_BASE = 8550000  # AMENDMENT_live_EMG2_20 book table: seeds 8550000 + i
@@ -73,3 +76,14 @@ class RandomOrder:
             pool, key=lambda e: (-random_score(self.seed, e, self.month, self.origin), e)
         )
         return tuple(scored[: len(lst.targets)])
+
+    def keep_zone(self, lst: Emg2List, keep_fraction: float) -> frozenset[str]:
+        """BF-D35 (rule C6 in a random twin): the keep zone is the members of band C whose
+        percentile of this twin's random score (average rank / count over the whole band,
+        as the EMG2 score's ``score_pct``) is above ``1 - keep_fraction``."""
+        names = [r.entity for r in lst.band_c]
+        if not names:
+            return frozenset()
+        x = np.array([random_score(self.seed, e, self.month, self.origin) for e in names])
+        pct = pct_rank(x)
+        return frozenset(e for e, v in zip(names, pct, strict=True) if v > 1.0 - keep_fraction)
