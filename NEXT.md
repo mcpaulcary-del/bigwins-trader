@@ -180,8 +180,10 @@ go-live checklist, by a reviewed code change.
   (BF-D31): job `store_refresh` 17:35..22:05, EODHD bulk AU closes + dividends + splits,
   counted budget in the journal, idempotent, no decision on a stale store (paged);
   timing against the real EODHD service to confirm in the spike.
-  (5) In FUND state the book places one order and then none, so go-live item 2 (five
-  paper sessions with orders) needs a plan in the spike.
+  (5) ~~In FUND state the book places one order and then none~~ planned (BF-D32):
+  paper-only `paper_dry_run` config block forces EMG2 on chosen decision evenings (and
+  `REAL` for the FUND switch) in a separate `ledger_bf_dryrun` journal; plan and table
+  in `docs/GO_LIVE_GUIDE.md` E3.
 
 ## Owner / record keeper points still open
 

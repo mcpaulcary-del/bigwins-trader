@@ -526,10 +526,12 @@ needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm w
    messages of part D from that evening.
 3. **Five reconciled paper dry runs** (go-live item 2): five sessions with orders where
    the journal equals IBKR to the unit and the cent each day. Because the book will
-   probably sit in A200 (one order, then none until the state changes), how those five
-   order sessions are produced on the paper account is decided in the spike; I tell you
-   before anything is sent. **You see**: approval requests (`/ok`), the 16:30 result and
-   the 22:45 report each of those days.
+   probably sit in A200 (one order, then none until the state changes), the dry run
+   uses a **paper-only forced-state mode** (BF-D32; plan in E3 below) so those sessions
+   carry real 18-share buys and sells, plus one session with the FUND switch. **You
+   see**: approval requests (`/ok`), the 16:30 result and the 22:45 report each of those
+   days; every decision message of a forced day says `state: EMG2 FORCED (paper dry
+   run, BF-D32; the L15 rule says FUND ...)`.
 4. **Kill drill from your phone** (go-live item 4): on a drill day, after the 15:45 send
    and before the auction (about 16:10), I ask you to send `/kill`. Expected within 60
    seconds: `KILLED: no new orders; 1 open order(s) cancelled. ...`, and the order shows
@@ -551,6 +553,57 @@ needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm w
 | 15 | Be reachable by 15:20 on order days through April 2027 (orders need your `/ok`) | ongoing |
 | - | Answer the open decisions in `NEXT.md` (staged loss-rule interpretations, HGO -> KAN, BF-D24 demerged shares) | before go-live |
 | - | Market data: decide on the ASX Level 1 subscription (A5) | before real money |
+
+### E3. The paper dry-run plan (BF-D32)
+
+On the record's data the L15 state is FUND, so a normal start places one A200 order and
+then nothing until the state changes: not enough for go-live item 2. For the dry run
+only, `config/bfast.yaml` gets a `paper_dry_run` block that adds decisions on chosen
+evenings with the band-trend state **forced to EMG2** (or left to the rule with `REAL`):
+
+```yaml
+paper_dry_run:                 # BF-D32: PAPER ONLY; remove it after the dry run
+  until: 2026-12-18            # trader-bf run refuses to start after this date
+  decisions:
+    2026-12-01: EMG2           # start decision (trader-bf run --start 2026-12-01)
+    2026-12-04: REAL           # the rule's own state (FUND): the FUND switch
+    2026-12-11: EMG2           # forced EMG2 again: switch back into shares
+```
+
+(dates illustrative: S, S+3 and S+8 sessions; I set the real ones with you.) What
+happens, each session approved by you with `/ok` and reconciled at 16:30:
+
+| Session | Orders | Exercises |
+| --- | --- | --- |
+| S+1 | canary: one share buy | L6 canary, LOC fill, recon |
+| S+2 | the other 17 share buys (A$500-A$800 each) | an 18-share buy flow, start-day limits |
+| S+4 | all 18 shares sold; the one A200 buy when the sale money allows (BF-D28) | **the FUND switch**, an 18-share sell flow, the large paged fund order |
+| S+5..S+7 | unfilled sells carried (L7), the A200 buy if it waited for funds | carries, auction-sale funds (O-2) |
+| S+9 | A200 sold; the EMG2-18 picks bought as funds settle (D+1..D+4) | the switch back, a second 18-share buy flow |
+
+That is at least five sessions with orders, plus the FUND switch. The twin and its 100
+random twins take the same forced decisions, so the L13 comparison stays meaningful.
+
+**Guards.** The block is accepted only with `mode: paper`, `allow_live: false` and a
+`DU...` account (the config schema); the app refuses a forced state with any broker that
+is not paper, and `trader-bf run` refuses the block after `until`. The forced state is
+shown in every decision message and recorded in the journal (`bt:<day>` has
+`forced_from`).
+
+**Keep it out of the record.** Run the dry run in its own database so the official paper
+book starts clean: in `deploy/.env` set `JOURNAL_DB=ledger_bf_dryrun`, then
+
+```bash
+docker compose exec db createdb -U trader ledger_bf_dryrun
+docker compose up -d trader
+docker compose exec trader trader-bf deposit --book EMG2_18_PAPER --amount 10000
+docker compose exec trader trader-bf deposit --book EMG2_18_SIM --amount 10000
+```
+
+**After the dry run**: delete the `paper_dry_run` block, set `JOURNAL_DB=ledger_bf_paper`,
+reset the paper account to A$10,000 cash with no holdings (A3.2), record the two
+deposits in `ledger_bf_paper`, and start the official paper book
+(`trader-bf run --start <date>`, normally a FUND start as in D2).
 
 Real money needs, after all of the above, a separate reviewed code change that adds
 the live gateway with its own guards (go-live item 6); nothing in this build can do it.

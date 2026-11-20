@@ -225,6 +225,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         raise SystemExit("broker.account_id (the IBKR paper DU... id) is not set in the config")
     if not cfg.telegram.allowed_chat_ids:
         raise SystemExit("telegram.allowed_chat_ids is empty: nobody could approve an order")
+    dr = cfg.paper_dry_run
+    if dr is not None:  # BF-D32: paper only (schema + DU guard), and never left on
+        from trader.broker.base import assert_paper
+
+        assert_paper(
+            mode=cfg.mode, account_id=cfg.broker.account_id, port=cfg.broker.port,
+            allow_live=cfg.broker.allow_live,
+        )  # fmt: skip
+        if datetime.now(ASX_TZ).date() > dr.until:
+            raise SystemExit(
+                f"paper_dry_run ended on {dr.until}: remove it from the config (BF-D32)"
+            )
+        print(
+            f"PAPER DRY RUN (BF-D32) until {dr.until}: forced decisions "
+            + ", ".join(f"{d} {s}" for d, s in sorted(dr.decisions.items())),
+            file=sys.stderr,
+        )
     j = _journal_from_config(cfg.journal.url_env)
     for book in (cfg.book, cfg.data.sim_book):
         if j.cash(book) == 0 and not j.positions(book):

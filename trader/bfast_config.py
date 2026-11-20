@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -85,6 +86,24 @@ class BandTrendCfg(_M):
     # one fund order (BF-D28): never above the capital cap; paged above the A$800 limit
     fund_order_max_aud: Decimal = Field(default=Decimal(10000), ge=Decimal(500), le=Decimal(10000))
     fund_half_spread: Decimal = Field(default=Decimal("0.0005"), ge=0, le=Decimal("0.02"))
+
+
+class PaperDryRunCfg(_M):
+    """BF-D32: the paper dry run while the book's real L15 state is FUND. Extra decisions
+    on the listed dates with the band-trend state forced to ``EMG2`` (real 18-share buy
+    and sell flows) or ``FUND``, or ``REAL`` (the rule's own state: the FUND switch). Paper
+    only: the schema has ``mode: paper`` and a ``DU`` account only, the app refuses a
+    non-paper broker, and ``trader-bf run`` refuses the flag after ``until``."""
+
+    until: date
+    decisions: dict[date, Literal["EMG2", "FUND", "REAL"]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _inside(self) -> PaperDryRunCfg:
+        late = [d for d in self.decisions if d > self.until]
+        if late:
+            raise ValueError(f"paper_dry_run decisions after until {self.until}: {late}")
+        return self
 
 
 class StartNormal(_M):
@@ -218,6 +237,19 @@ class BfastConfig(_M):
     journal: JournalCfg
     band_trend: BandTrendCfg | None = None  # None = the switch is off (L15 not in use)
     tax: TaxCfg = Field(default_factory=TaxCfg)  # BF-D29 tax report
+    # BF-D32: paper dry run with forced L15 states (None in normal running)
+    paper_dry_run: PaperDryRunCfg | None = None
+
+    @model_validator(mode="after")
+    def _dry_run_paper_only(self) -> BfastConfig:
+        d = self.paper_dry_run
+        if d is None:
+            return self
+        if self.mode != "paper" or self.broker.allow_live:  # belt and braces (BW-EXE-09)
+            raise ValueError("paper_dry_run is for the paper account only")
+        if self.band_trend is None or not self.band_trend.enabled:
+            raise ValueError("paper_dry_run forces the L15 state: band_trend must be enabled")
+        return self
 
     def fund_codes(self) -> frozenset[str]:
         """Codes whose payments are fund (trust) distributions (BF-D29)."""

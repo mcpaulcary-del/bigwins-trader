@@ -54,7 +54,8 @@ services:
     environment:
       TZ: Australia/Sydney
       # password-free URL; the password is read from the db_password secret (S-03)
-      TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/ledger_bf_paper
+      # JOURNAL_DB (deploy/.env): ledger_bf_dryrun during the BF-D32 paper dry run only
+      TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/${JOURNAL_DB:-ledger_bf_paper}
     secrets: [db_password, telegram_bot_token, totp_seed, eodhd_api_token, healthchecks_url,
               ibkr_flex_token, ibkr_flex_query_id]  # BF-D27: Flex download (read at each pull)
     volumes:

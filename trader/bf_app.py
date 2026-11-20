@@ -57,7 +57,7 @@ from trader.approval import (
     render_batch,
     totp,
 )
-from trader.broker.base import Broker
+from trader.broker.base import Broker, LiveTradingRefusedError
 from trader.broker.paper_sim import SimBroker
 from trader.ca_book import (
     CaSource,
@@ -180,6 +180,16 @@ class AppSettings:
     random_seed_base: int = SEED_BASE
     # L15 band-trend switch (AMENDMENT_live_EMG2_18_BT.md; BF-D28); disabled by default
     band_trend: BandTrendParams = field(default_factory=BandTrendParams)
+    # BF-D32 paper dry run: extra decisions with the L15 state forced ("EMG2" / "FUND")
+    # or left to the rule ("REAL"); paper broker only; ignored after ``dry_run_until``
+    forced_states: tuple[tuple[date, str], ...] = ()
+    dry_run_until: date | None = None
+
+    def forced(self, d: date) -> str | None:
+        """The paper dry run's state for a decision on ``d`` (None: no dry-run decision)."""
+        if self.dry_run_until is not None and d > self.dry_run_until:
+            return None
+        return dict(self.forced_states).get(d)
 
 
 def data_ready(panel: PricePanel, min_share: float = 0.5) -> bool:
@@ -294,6 +304,7 @@ class BfApp:
         self.ca_source = ca_source
         self.flex = flex
         self.flex_pull = flex_pull
+        self._forced_from: dict[date, str] = {}  # BF-D32: the rule's state of a forced day
         self.store_refresh = store_refresh
         self.now = datetime.now(UTC)
         self.ex = Executor(
@@ -327,6 +338,8 @@ class BfApp:
         self.bot = ApprovalBot(
             journal, transport, verifier, s.chats, self._kill, s.approval_deadline
         )
+        if s.forced_states and not getattr(broker, "is_paper", False):  # BF-D32
+            raise LiveTradingRefusedError("the forced-state dry run is for a paper broker only")
         if s.approval_mode not in ("per_order", "batch"):  # L8: the broker book never
             raise ValueError(f"approval_mode {s.approval_mode!r}: owner approval required")
         self.log: list[str] = []
@@ -355,6 +368,8 @@ class BfApp:
         st = self.s.start_date
         if st is not None and d == st:
             return "S"
+        if self.s.forced(d) is not None:  # BF-D32: a paper dry-run decision, every book
+            return "R"
         if not self.is_month_end(d):
             return None
         if (
@@ -551,7 +566,7 @@ class BfApp:
             if book == self.s.book:
                 self._announce(
                     day, canary, dec.list_digest, batch.batch_id, ex.plan_pages,
-                    None if trend is None else trend.describe(),
+                    None if trend is None else self._describe_trend(day, trend),
                 )  # fmt: skip
         if acted:
             self._note_decision_difference(day, now, acted)
@@ -566,10 +581,29 @@ class BfApp:
         if not self.s.band_trend.enabled or lst is None:
             return None
         trend = band_trend(panel, self.s.band_trend)
+        forced = self.s.forced(day)
+        if forced in ("EMG2", "FUND") and forced != trend.state:
+            self._forced_from[day] = trend.state  # BF-D32: the rule's own state, shown
+            trend = replace(trend, state=forced)  # type: ignore[arg-type]
         key = f"bt:{day}"
         if not self.j.job_done(key):
-            self.j.mark_job(key, trend.payload(), now)
+            rec = trend.payload()
+            if day in self._forced_from:
+                rec["forced_from"] = self._forced_from[day]
+            self.j.mark_job(key, rec, now)
         return trend
+
+    def _describe_trend(self, day: date, trend: BandTrend) -> str:
+        """``BandTrend.describe`` with the BF-D32 dry-run override made plain."""
+        real = self._forced_from.get(day)
+        if real is None:
+            return trend.describe()
+        rel = "at or above" if real == "EMG2" else "below"
+        return (
+            f"state: {trend.state} FORCED (paper dry run, BF-D32; the L15 rule says {real}: "
+            f"band 301-600 index {trend.level:.4f} {rel} its {len(trend.levels)}-month "
+            f"average {trend.mean:.4f}, {trend.as_of})"
+        )
 
     def _decide_book(
         self,
@@ -602,6 +636,11 @@ class BfApp:
         if not recs:
             return "state: not decided yet (L15 band-trend switch)"
         r = recs[-1]
+        if r.get("forced_from"):  # BF-D32
+            return (
+                f"state: {r['state']} FORCED (paper dry run, BF-D32; the L15 rule said "
+                f"{r['forced_from']}, {r['as_of']})"
+            )
         rel = "at or above" if r["state"] == "EMG2" else "below"
         return (
             f"state: {r['state']} (band 301-600 index {float(r['level']):.4f} {rel} its "

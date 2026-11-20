@@ -77,6 +77,10 @@ def settings_from(
         random_prefix=cfg.data.random_prefix,
         random_seed_base=cfg.data.random_seed_base,
         band_trend=bt,
+        forced_states=(
+            tuple(sorted(cfg.paper_dry_run.decisions.items())) if cfg.paper_dry_run else ()
+        ),
+        dry_run_until=cfg.paper_dry_run.until if cfg.paper_dry_run else None,
     )
 
 
