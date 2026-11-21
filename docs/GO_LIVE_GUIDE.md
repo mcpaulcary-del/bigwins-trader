@@ -178,6 +178,9 @@ its public IP.
 
 ### B2. Tailscale, firewall, updates
 
+**Shortcut:** `deploy/server_bootstrap.sh` does B2, B3, the folders of B5 and the key of B4
+in one go (paste it into the server as root). The steps below are what it runs.
+
 Log in once with `ssh root@<public IP>`, then:
 
 ```bash
