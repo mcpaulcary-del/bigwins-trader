@@ -197,7 +197,10 @@ def emg2_list(panel: PricePanel, params: Emg2Params | None = None) -> Emg2List:
 # ---------------------------------------------------------------- EMG2-20 (§7.9)
 
 
-TargetOrder = Callable[[Emg2List, frozenset[str]], Sequence[str]]
+# ``target_order(lst, pegged, lottery)``: a random twin's list (``RandomOrder``). ``lottery``:
+# the lottery class the real book's buy step uses at this decision (BF-D36: the twin's list
+# holds as many buyable names as T), or None when the buy step does not skip lottery names.
+TargetOrder = Callable[[Emg2List, frozenset[str], Mapping[str, bool] | None], Sequence[str]]
 # BF-D35: the keep zone K of a random twin (``RandomOrder.keep_zone``): band C names whose
 # random-score percentile is above ``1 - keep_fraction``; None = the EMG2 score's K.
 KeepZone = Callable[[Emg2List, float], frozenset[str]]
@@ -458,8 +461,9 @@ def decide_emg2_20(
     """One EMG2-20 decision (rules L2-L5) for ``book`` at the panel's session D.
 
     ``lst``: the EMG2 list of this panel, if already computed (one list serves the
-    simulated twin and its random twins). ``target_order(lst, pegged)``: replaces the
-    order of rule 3 (T) for a random twin (``trader.random_twins``); None = T.
+    simulated twin and its random twins). ``target_order(lst, pegged, lottery)``: replaces
+    the order of rule 3 (T) for a random twin (``trader.random_twins``; ``lottery`` is the
+    buy step's lottery class, BF-D36); None = T.
     Sell rule C6 (``params.sell_rule``, BF-D35): ``ages`` = each holding's age in
     month-ends (a missing entry counts as old enough); ``keep_order(lst, fraction)``
     replaces the keep zone for a random twin (None: the EMG2 score's). ``force_sell``:
@@ -486,7 +490,8 @@ def decide_emg2_20(
     targets = lst.targets
     if target_order is not None:
         pegged = frozenset(e for e, j in ctx.col.items() if bool(ctx.peg[j]))
-        targets = tuple(target_order(lst, pegged))
+        lottery = ctx.lottery if p.skip_lottery else None  # BF-D36
+        targets = tuple(target_order(lst, pegged, lottery))
     keep: frozenset[str] | None = None
     if p.sell_rule == "C6":
         frac = p.c6_keep_fraction

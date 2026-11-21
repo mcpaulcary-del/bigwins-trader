@@ -208,6 +208,14 @@ go-live checklist, by a reviewed code change.
 - Open for the owner: the note lists "leaving the eligible set" with the forced sells;
   the frozen rule (and this build) sells such a holding only once it is ripe.
 
+## Random twins from the buyable set (21 Nov 2026; BF-D36)
+
+- Record `AMENDMENT_twins_buyable_set.md` (ledger seq 83): from the 30 Nov 2026 decision
+  each `EMG2_18_RND` twin's list has T's length and exactly T's number of buyable (not
+  lottery class) names, drawn by stratum with the same random scores and seeds. On the
+  record's data the old draw left 14 (30 Oct) and 32 (18 Nov) of 100 twins under 18
+  names; the new draw buys 18 in all 100. No golden re-pinned (all before 30 Nov).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

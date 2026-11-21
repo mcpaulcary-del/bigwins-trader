@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import replace
 from datetime import date
@@ -20,9 +21,11 @@ from trader.lines.emg2 import (
     Emg2List,
     decide_emg2_20,
     emg2_list,
+    lottery_flags,
 )
 from trader.loss_rule import percentile_rank
 from trader.random_twins import (
+    BUYABLE_FROM,
     REDRAW,
     SEED_BASE,
     RandomOrder,
@@ -99,7 +102,7 @@ def test_BF_D18_decide_with_the_list_order_is_the_registered_decision() -> None:
     p = Emg2_20Params(skip_lottery=False)
     book = BookState("X", Decimal(10000))
     base = decide_emg2_20(panel, book, p)
-    same = decide_emg2_20(panel, book, p, lst=lst, target_order=lambda x, _peg: x.targets)
+    same = decide_emg2_20(panel, book, p, lst=lst, target_order=lambda x, _peg, _lot: x.targets)
     assert same.digest == base.digest
     m = month_index(D0)
     rnd = decide_emg2_20(panel, book, p, lst=lst, target_order=RandomOrder(8550001, m, m))
@@ -121,7 +124,7 @@ def test_BF_D18_a_twin_in_list_order_is_the_simulated_twin_to_the_cent() -> None
     costs; with the order of rule 3 instead of the random score each twin ends with
     exactly the simulated twin's holdings and cash after two month-end decisions."""
     app, gw = _twins_app(3)
-    app._random_order = lambda seed, day, now: (lambda lst, _peg: lst.targets)  # type: ignore[method-assign]
+    app._random_order = lambda seed, day, now: (lambda lst, _peg, _lot: lst.targets)  # type: ignore[method-assign,assignment,return-value]
     _run(app, gw, DAYS)
     sim = app.s.sim_book
     for name, *_ in app.rnd:
@@ -183,7 +186,7 @@ def test_BF_D18_L11_stage2_resumes_automatically_with_the_twins_running() -> Non
     from trader.risk import SafetyLevel
 
     app, gw = _twins_app(3)
-    app._random_order = lambda seed, day, now: (lambda lst, _peg: lst.targets)  # type: ignore[method-assign]
+    app._random_order = lambda seed, day, now: (lambda lst, _peg, _lot: lst.targets)  # type: ignore[method-assign,assignment,return-value]
     _run(app, gw, DAYS[:4])
     m = _Marks(app)
     m.walk("9000", "8100", "7200", "6400", "5990.00")
@@ -193,3 +196,140 @@ def test_BF_D18_L11_stage2_resumes_automatically_with_the_twins_running() -> Non
     assert app.j.safety_level() is SafetyLevel.NORMAL
     out = [t for _, t in app.transport.outbox]  # type: ignore[attr-defined]
     assert any(t.startswith(f"L11 {M2}: staged test passed") and "percentile 50" in t for t in out)
+
+
+# ---------------------------------------------------------------- BF-D36 buyable stratum
+
+# A lottery class on the synthetic panel with both strata in band C: by traded value only
+# (band C 284 names, 186 lottery class; T 57 names, 23 buyable). Under the old draw 23 of
+# the 100 twins' lists hold fewer than 18 buyable names.
+LOT36 = Emg2_20Params(lottery_max_age_sessions=0, lottery_max_tv_med63=1.7e7)
+OLD = date(2100, 1, 1)  # buyable_from after the decision: the old (pre-BF-D36) draw
+NEW = date.min  # buyable_from before the decision: the BF-D36 stratum draw
+
+
+def _buyable(names: tuple[str, ...] | list[str], lot: dict[str, bool]) -> int:
+    return sum(1 for e in names if not lot.get(e, True))
+
+
+def test_BF_D36_twin_list_has_the_real_lists_length_and_buyable_count() -> None:
+    panel = _panel(D0)
+    lst = emg2_list(panel)
+    lot = lottery_flags(panel, LOT36)
+    m = month_index(D0)
+    real_buy = _buyable(lst.targets, lot)
+    assert 18 <= real_buy < len(lst.targets)  # both strata in T
+    starved = 0
+    for book, seed in twin_books("EMG2_18_RND"):
+        new = RandomOrder(seed, m, m, NEW)(lst, frozenset(), lot)
+        assert len(new) == len(lst.targets) and len(set(new)) == len(new), book
+        assert _buyable(new, lot) == real_buy, book
+        assert set(new) <= {r.entity for r in lst.band_c}
+        # best first by the twin's random score, and each stratum is its own top slice
+        sc = [random_score(seed, e, m, m) for e in new]
+        assert sc == sorted(sc, reverse=True)
+        pool = sorted(
+            (r.entity for r in lst.band_c), key=lambda e: (-random_score(seed, e, m, m), e)
+        )
+        assert [e for e in new if not lot[e]] == [e for e in pool if not lot[e]][:real_buy]
+        lots = [e for e in pool if lot[e]][: len(lst.targets) - real_buy]
+        assert [e for e in new if lot[e]] == lots
+        assert new == RandomOrder(seed, m, m, NEW)(lst, frozenset(), lot)  # deterministic
+        old = RandomOrder(seed, m, m, OLD)(lst, frozenset(), lot)
+        assert len(old) == len(lst.targets)
+        starved += _buyable(old, lot) < 18
+    assert starved == 23  # the flaw the amendment fixes, on these data
+
+
+def test_BF_D36_pegged_names_stay_out_and_order_is_band_order_free() -> None:
+    panel = _panel(D0)
+    lst = emg2_list(panel)
+    lot = lottery_flags(panel, LOT36)
+    m = month_index(D0)
+    c = [r.entity for r in lst.band_c]
+    pegged = frozenset(c[:7])
+    t = RandomOrder(8550001, m, m, NEW)(lst, pegged, lot)
+    assert not set(t) & pegged and len(t) == len(lst.targets)
+    assert _buyable(t, lot) == _buyable(lst.targets, lot)
+    rows = list(lst.band_c)
+    random.Random(3).shuffle(rows)
+    assert RandomOrder(8550001, m, m, NEW)(replace(lst, band_c=tuple(rows)), pegged, lot) == t
+
+
+def test_BF_D36_effective_from_the_30_nov_2026_decision() -> None:
+    """Before 30 Nov 2026 the old draw (record tables before that date keep it); without a
+    lottery class (the buy step skips none) one draw."""
+    assert date(2026, 11, 30) == BUYABLE_FROM
+    panel = _panel(D0)
+    lst = emg2_list(panel)
+    lot = lottery_flags(panel, LOT36)
+    m = month_index(D0)
+    o = RandomOrder(8550004, m, m)  # default: BUYABLE_FROM; D0 is in 2024
+    assert o(lst, frozenset(), lot) == RandomOrder(8550004, m, m, OLD)(lst, frozenset(), lot)
+    assert o(lst, frozenset(), lot) == o(lst, frozenset())
+    late = replace(lst, as_of="2026-11-30")
+    assert RandomOrder(8550004, m, m)(late, frozenset(), lot) == RandomOrder(8550004, m, m, NEW)(
+        lst, frozenset(), lot
+    )
+    assert RandomOrder(8550004, m, m, NEW)(lst, frozenset(), None) == o(lst, frozenset())
+
+
+def test_BF_D36_twins_hold_18_names_like_the_real_book() -> None:
+    """Each of the 100 twins, from cash, buys 18 names (the real book's count) with the
+    stratum draw; under the old draw the starved twins left cash idle."""
+    panel = _panel(D0)
+    lst = emg2_list(panel)
+    m = month_index(D0)
+    book = BookState("X", Decimal(10000))
+    real = decide_emg2_20(panel, book, LOT36, lst=lst)
+    assert real.slots == 18 and len(real.buys) == 18
+    short_old = 0
+    for _, seed in twin_books("EMG2_18_RND"):
+        new = decide_emg2_20(panel, book, LOT36, lst=lst, target_order=RandomOrder(seed, m, m, NEW))
+        fails = [s for s in new.skipped if s.reason in ("NO_CLOSE", "MIN_PARCEL")]
+        assert len(new.buys) == 18 or fails, seed  # cash-check failures only
+        assert sum(b.value_aud for b in new.buys) == sum(b.value_aud for b in real.buys)
+        again = decide_emg2_20(
+            panel, book, LOT36, lst=lst, target_order=RandomOrder(seed, m, m, NEW)
+        )
+        assert again.digest == new.digest  # deterministic
+        old = decide_emg2_20(panel, book, LOT36, lst=lst, target_order=RandomOrder(seed, m, m, OLD))
+        short_old += len(old.buys) < 18
+    assert short_old == 26  # 23 starved lists, 3 more with a skipped name (peg, no close)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("TRADER_FORWARD_STORE"),
+    reason="set TRADER_FORWARD_STORE to the record's store",
+)
+def test_BF_D36_record_data_twins_hold_18_names_with_the_stratum_draw() -> None:
+    """The record's store, 30 Oct and 18 Nov 2026, forced to the BF-D36 draw: every twin's
+    list has T's length and buyable count, and every twin buys 18 names from A$10,000 like
+    the real book; under the old draw 14 and 32 twins bought fewer (up to A$2,778 and
+    A$3,333 idle), the flaw ``AMENDMENT_twins_buyable_set.md`` s1 found in the record."""
+    from pathlib import Path
+
+    from tests.bf_support import asx_sessions
+    from trader.bf_dryrun import store_providers
+
+    cfg = real_config()
+    panels = store_providers(cfg, Path(os.environ["TRADER_FORWARD_STORE"]), asx_sessions())[0]
+    params = cfg.emg2_20_params()
+    assert params.skip_lottery
+    book = BookState("X", Decimal(10000))
+    for ds, t_len, t_buy, starved in (("2026-10-30", 40, 28, 14), ("2026-11-18", 37, 26, 32)):
+        day = date.fromisoformat(ds)
+        p = panels(day)
+        lst = emg2_list(p)
+        lot = lottery_flags(p, params)
+        assert (len(lst.targets), _buyable(lst.targets, lot)) == (t_len, t_buy), ds
+        m = month_index(day)
+        assert len(decide_emg2_20(p, book, params, lst=lst).buys) == 18
+        short = 0
+        for _, seed in twin_books("EMG2_18_RND"):
+            new = RandomOrder(seed, m, m, NEW)
+            assert len(t := new(lst, frozenset(), lot)) == t_len and _buyable(t, lot) == t_buy
+            assert len(decide_emg2_20(p, book, params, lst=lst, target_order=new).buys) == 18
+            old = RandomOrder(seed, m, m)  # before 30 Nov 2026: the old draw
+            short += len(decide_emg2_20(p, book, params, lst=lst, target_order=old).buys) < 18
+        assert short == starved, ds

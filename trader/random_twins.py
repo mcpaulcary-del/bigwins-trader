@@ -16,11 +16,22 @@ the first 8 bytes of a SHA-256 of ``(s, e, k, tag)`` read as a fraction of 2**64
 result is a persistent score per entity, redrawn independently with probability 0.2 a
 month, that needs no stored random-generator state, does not depend on the order of
 band C or on a restart, and is the same on every platform.
+
+BF-D36 (``AMENDMENT_twins_buyable_set.md``, record ledger seq 83, paper code seq 85): from
+the 30 Nov 2026 decision (``BUYABLE_FROM``) the twin's list is drawn **by stratum** so that
+it holds exactly as many buyable names as T: with m = the names of T that are not lottery
+class, the m best random scores among the band-C names that are neither bid-pegged nor
+lottery class plus the ``len(T) - m`` best among the band-C names that are not bid-pegged
+and are lottery class, best first. The lottery class is the one the real book's buy step
+uses at the same decision (a name without a flag counts as lottery class). Decisions
+before that date keep the old draw (the top ``len(T)`` of band C without pegged names), as
+the record's ``paper_emg2s.lists_for``.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
@@ -33,6 +44,8 @@ SEED_BASE = 8550000  # AMENDMENT_live_EMG2_20 book table: seeds 8550000 + i
 N_TWINS = 100
 REDRAW = 0.2  # probability a month that an entity's score is drawn again
 _SCALE = float(2**64)
+# BF-D36: first decision whose twin lists are drawn by buyable / lottery stratum
+BUYABLE_FROM = date(2026, 11, 30)
 
 
 def twin_books(
@@ -63,19 +76,31 @@ def random_score(seed: int, entity: str, month: int, origin: int) -> float:
 @dataclass(frozen=True)
 class RandomOrder:
     """Target order of one random twin at one decision (``decide_emg2_20``'s
-    ``target_order``): the ``len(T)`` names of band C, bid-pegged names excluded, with
-    the highest random score, best first; ties by entity code."""
+    ``target_order``): ``len(T)`` names of band C, bid-pegged names excluded, with the
+    highest random score, best first; ties by entity code. From ``buyable_from`` (BF-D36)
+    drawn by stratum: as many buyable (not lottery class) names as T has, the rest from
+    the lottery class; ``lottery`` None (the buy step skips no lottery name): one draw."""
 
     seed: int
     origin: int  # month index of the twins' first decision
     month: int  # month index of this decision
+    buyable_from: date = BUYABLE_FROM
 
-    def __call__(self, lst: Emg2List, pegged: frozenset[str]) -> tuple[str, ...]:
+    def __call__(
+        self, lst: Emg2List, pegged: frozenset[str], lottery: Mapping[str, bool] | None = None
+    ) -> tuple[str, ...]:
         pool = [r.entity for r in lst.band_c if r.entity not in pegged]
         scored = sorted(
             pool, key=lambda e: (-random_score(self.seed, e, self.month, self.origin), e)
         )
-        return tuple(scored[: len(lst.targets)])
+        n = len(lst.targets)
+        if lottery is None or lst.as_of < self.buyable_from.isoformat():
+            return tuple(scored[:n])
+        m = sum(1 for e in lst.targets if not lottery.get(e, True))
+        buy = [e for e in scored if not lottery.get(e, True)][:m]
+        lot = [e for e in scored if lottery.get(e, True)][: n - m]
+        chosen = set(buy) | set(lot)
+        return tuple(e for e in scored if e in chosen)
 
     def keep_zone(self, lst: Emg2List, keep_fraction: float) -> frozenset[str]:
         """BF-D35 (rule C6 in a random twin): the keep zone is the members of band C whose
