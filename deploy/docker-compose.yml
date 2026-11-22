@@ -1,6 +1,8 @@
 # B-fast stack for the always-on Sydney server (FD v3.0 §19.2, §21.1 BF0). PAPER ONLY.
 #
-# - No service publishes a port to the host: nothing is reachable from the internet.
+# - Nothing is reachable from the internet. The only published port is the read-only
+#   dashboard on the host's LOOPBACK (127.0.0.1:8080, BF-D37): the owner reaches it through
+#   `tailscale serve --bg 8080` (HTTPS, their tailnet only); UFW denies public inbound.
 #   Admin access is over Tailscale SSH to the host (docs/SETUP_SYDNEY.md).
 # - Images are pinned by tag AND digest (BP-10). Re-pin deliberately.
 # - Secrets are Docker secrets read from files under ./secrets (never in git): the folder
@@ -98,7 +100,48 @@ services:
     # (`trader-bf run` checks its secret files again first, BF-D33)
     command: ["sh", "-c", "trader-bf check-secrets && trader-bf validate-config && exec sleep infinity"]
 
+  dashboard:
+    # BF-D37: the owner's read-only phone page (`trader-bf dashboard`). It cannot place,
+    # approve, cancel or change anything: GET/HEAD only, no broker, no Telegram, the
+    # journal session is read-only in Postgres (default_transaction_read_only), the
+    # trader's output and the price store are mounted read-only, and its only secret is
+    # db_password. Published on the host's loopback only, never 0.0.0.0 on the host.
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: asx-trader-bfast-trader:local
+    restart: unless-stopped
+    user: "10001:10001"
+    depends_on:
+      secrets-check: {condition: service_completed_successfully}
+      db: {condition: service_healthy}
+    environment:
+      TZ: Australia/Sydney
+      TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/${JOURNAL_DB:-ledger_bf_paper}
+    secrets: [db_password]
+    volumes:
+      - ../config:/app/config:ro
+      - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
+      - traderout:/app/out:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # internal: the database; dashboard: a plain bridge, needed only because Docker does
+    # not publish ports from a container that is on internal networks alone
+    networks: [internal, dashboard]
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
+      interval: 60s
+      retries: 3
+    # inside the container it listens on all of the container's interfaces; the host side
+    # is the 127.0.0.1 mapping above
+    command: ["trader-bf", "dashboard", "--host", "0.0.0.0", "--port", "8080"]
+
 networks:
+  dashboard: {}           # the dashboard's loopback-published port (see above)
   internal:
     internal: true        # no internet: gateway<->trader<->db only
   egress: {}              # trader only: Telegram, EODHD, IBKR Flex, healthchecks (outbound)

@@ -220,3 +220,20 @@ def test_BF_D37_cli_snapshot(tmp_path: Path) -> None:
                   f"sqlite+pysqlite:///{tmp_path / 'j.sqlite'}", "--store", str(tmp_path),
                   "--out", str(tmp_path), "--snapshot", str(out)])  # fmt: skip
     assert rc == 0 and "Waiting for the first trading day" in out.read_text()
+
+
+def test_BF_D37_compose_service_is_loopback_and_read_only() -> None:
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    dc = yaml.safe_load((root / "deploy" / "docker-compose.yml").read_text())
+    svc = dc["services"]
+    with_ports = {k for k, v in svc.items() if v.get("ports")}
+    assert with_ports == {"dashboard"}  # nothing else is published
+    d = svc["dashboard"]
+    assert d["ports"] == ["127.0.0.1:8080:8080"]
+    assert d["secrets"] == ["db_password"] and d["user"] == "10001:10001"
+    assert d["read_only"] is True and d["cap_drop"] == ["ALL"]
+    assert all(v.endswith(":ro") for v in d["volumes"])
+    assert "egress" not in d["networks"]
+    assert d["command"][:2] == ["trader-bf", "dashboard"]

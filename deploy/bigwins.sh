@@ -2,7 +2,7 @@
 # bigwins - a simple menu for the owner on the server. PAPER ONLY.
 # Install once:  ln -sf /srv/asx-trader/deploy/bigwins.sh /usr/local/bin/bigwins
 # Then type:     bigwins          (menu)   or   bigwins status | logs | update | restart |
-#                secret <name> | check | claude | remote
+#                secret <name> | check | claude | remote | app
 set -uo pipefail
 
 REPO=/srv/asx-trader
@@ -48,6 +48,33 @@ cmd_status() {
   else
     y "  Not started yet (it starts after the IBKR details are in: GO_LIVE_GUIDE B8)."
   fi
+  echo
+  echo "== Phone app (read-only dashboard)"
+  if curl -fsS -m 3 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+    g "  dashboard: running on 127.0.0.1:8080"
+  else
+    y "  dashboard: not running"
+  fi
+  if tailscale serve status 2>/dev/null | grep -q 8080; then
+    g "  on your phone: $(app_url)"
+  else
+    y "  not shared on Tailscale yet (menu option 9)"
+  fi
+}
+
+app_url() {  # the server's Tailscale name, e.g. https://bigwins.tailnet-name.ts.net
+  local dns
+  dns=$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null)
+  [ -n "$dns" ] && echo "https://$dns"
+}
+
+cmd_app() {  # BF-D37: the read-only phone page, on your tailnet only
+  if ! tailscale status >/dev/null 2>&1; then r "Tailscale is not connected on the server."; return 1; fi
+  tailscale serve --bg 8080 || { r "tailscale serve failed (is HTTPS on in the Tailscale admin page?)."; return 1; }
+  local url; url=$(app_url)
+  g "The Big Wins app is on: ${url:-https://<server>.<tailnet>.ts.net}"
+  echo "Open it on your phone (Tailscale app on, same account), then Chrome menu > Add to Home screen."
+  echo "Only devices on your tailnet can open it. Turn it off with: tailscale serve reset"
 }
 
 cmd_logs() {
@@ -110,17 +137,19 @@ menu() {
   echo "  1) Refresh status        2) Trader log         3) Update to the latest code"
   echo "  4) Restart the trader    5) Add/replace a secret  6) Check secret files"
   echo "  7) Open Claude here      8) Start Remote Control (use Claude from the app)"
+  echo "  9) Turn on the phone app"
   echo "  0) Exit"
   read -rp "Choose: " c
   case $c in
     1) cmd_status;; 2) cmd_logs;; 3) cmd_update;; 4) cmd_restart;; 5) cmd_secret;;
-    6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; *) echo "Bye.";;
+    6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; 9) cmd_app;; *) echo "Bye.";;
   esac
 }
 
 case ${1:-} in
   status) cmd_status;; logs) cmd_logs;; update) cmd_update;; restart) cmd_restart;;
   secret) cmd_secret "${2:-}";; check) cmd_check;; claude) cmd_claude;; remote) cmd_remote;;
+  app) cmd_app;;
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app]";;
 esac
