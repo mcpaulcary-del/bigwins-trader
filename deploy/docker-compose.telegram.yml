@@ -1,0 +1,11 @@
+# BF-D40: Telegram on (`notify.channel: telegram` or `both` in config/bfast.yaml). Use with
+# the main file: docker compose -f docker-compose.yml -f docker-compose.telegram.yml ...
+# (the bigwins menu adds it by itself when the config says telegram or both).
+services:
+  secrets-check:
+    secrets: [telegram_bot_token]
+  trader:
+    secrets: [telegram_bot_token]
+
+secrets:
+  telegram_bot_token: {file: ./secrets/telegram_bot_token}

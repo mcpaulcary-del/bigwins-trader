@@ -11,13 +11,19 @@ bad=0
 if [ ! -d secrets ]; then echo "SECRET CHECK FAILED: deploy/secrets is missing (GO_LIVE_GUIDE B6)"; exit 2; fi
 m=$(stat -c %a secrets)
 if [ "$m" != "700" ]; then echo "SECRET CHECK FAILED: deploy/secrets is mode $m, not 700; $FIX"; bad=1; fi
-for n in tws_password db_password telegram_bot_token totp_seed eodhd_api_token \
-         healthchecks_url ibkr_flex_token ibkr_flex_query_id; do
+# BF-D40: the phone app needs vapid_private_key; Telegram (notify.channel telegram|both)
+# needs telegram_bot_token
+channel=$(sed -n 's/^  channel: *\([a-z]*\).*/\1/p' ../config/bfast.yaml 2>/dev/null | head -1)
+names="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id vapid_private_key"
+case "${channel:-app}" in telegram|both) names="$names telegram_bot_token";; esac
+count=0
+for n in $names; do
+  count=$((count + 1))
   f="secrets/$n"
   if [ ! -f "$f" ]; then echo "SECRET CHECK FAILED: $f is missing"; bad=1; continue; fi
   if [ ! -s "$f" ]; then echo "SECRET CHECK FAILED: $f is empty"; bad=1; fi
   m=$(stat -c %a "$f")
   if [ "$m" != "444" ]; then echo "SECRET CHECK FAILED: $f is mode $m, not 444; $FIX"; bad=1; fi
 done
-if [ "$bad" = 0 ]; then echo "ok: deploy/secrets is 700 and its 8 files are 444, none empty"; fi
+if [ "$bad" = 0 ]; then echo "ok: deploy/secrets is 700 and its $count files are 444, none empty (channel ${channel:-app})"; fi
 exit $((bad * 2))

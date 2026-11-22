@@ -1,8 +1,15 @@
 # B-fast stack for the always-on Sydney server (FD v3.0 §19.2, §21.1 BF0). PAPER ONLY.
 #
-# - Nothing is reachable from the internet. The only published port is the read-only
-#   dashboard on the host's LOOPBACK (127.0.0.1:8080, BF-D37): the owner reaches it through
+# - Nothing is reachable from the internet. The only published port is the phone app
+#   (dashboard) on the host's LOOPBACK (127.0.0.1:8080, BF-D37): the owner reaches it through
 #   `tailscale serve --bg 8080` (HTTPS, their tailnet only); UFW denies public inbound.
+#   The app's actions (/act/..., BF-D39) are forwarded by the dashboard to the trader's
+#   control server on the private `control` network (port 8081, never published), which
+#   checks the Tailscale log-in, the form token and the 6-digit code itself.
+# - Messages (BF-D40): `notify.channel: app` (default) = the phone app only. For Telegram
+#   (`telegram` or `both`) add the override file, which adds the telegram_bot_token secret:
+#   docker compose -f docker-compose.yml -f docker-compose.telegram.yml ... (the bigwins
+#   menu does this by itself when the config says telegram or both).
 #   Admin access is over Tailscale SSH to the host (docs/SETUP_SYDNEY.md).
 # - Images are pinned by tag AND digest (BP-10). Re-pin deliberately.
 # - Secrets are Docker secrets read from files under ./secrets (never in git): the folder
@@ -26,8 +33,10 @@ services:
     user: "10001:10001"
     network_mode: none
     restart: "no"
-    secrets: [tws_password, db_password, telegram_bot_token, totp_seed, eodhd_api_token,
-              healthchecks_url, ibkr_flex_token, ibkr_flex_query_id]
+    secrets: [tws_password, db_password, totp_seed, eodhd_api_token, healthchecks_url,
+              ibkr_flex_token, ibkr_flex_query_id, vapid_private_key]
+    volumes:
+      - ../config:/app/config:ro  # notify.channel decides which secrets are needed (BF-D40)
     command: ["trader-bf", "check-secrets", "--all"]
 
   gw-paper:
@@ -82,8 +91,9 @@ services:
       # password-free URL; the password is read from the db_password secret (S-03)
       # JOURNAL_DB (deploy/.env): ledger_bf_dryrun during the BF-D32 paper dry run only
       TRADER_BF_JOURNAL_URL: postgresql+psycopg://trader@db:5432/${JOURNAL_DB:-ledger_bf_paper}
-    secrets: [db_password, telegram_bot_token, totp_seed, eodhd_api_token, healthchecks_url,
-              ibkr_flex_token, ibkr_flex_query_id]  # BF-D27: Flex download (read at each pull)
+    secrets: [db_password, totp_seed, eodhd_api_token, healthchecks_url, ibkr_flex_token,
+              ibkr_flex_query_id,  # BF-D27: Flex download (read at each pull)
+              vapid_private_key]   # BF-D40: Web Push to the phone app
     volumes:
       - ../config:/app/config:ro
       # BF-D31: writable, the daily refresh appends the EODHD bulk files the decision reads
@@ -94,18 +104,21 @@ services:
       # BF-D27: writable, the scheduled Flex Web Service download writes the statements
       - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
       - traderout:/app/out
-    networks: [internal, egress]
-    # `trader-bf run` (scheduler + Telegram + paper gateway) exists; the container stays
+    # internal: gateway + db; egress: EODHD, IBKR Flex, Web Push, healthchecks (and Telegram
+    # when on); control: the dashboard forwards the app's /act/... requests (BF-D39)
+    networks: [internal, egress, control]
+    # `trader-bf run` (scheduler + app actions/alerts + paper gateway) exists; the container stays
     # idle until the reality spike and the piece-2 dry runs pass, then the command changes.
     # (`trader-bf run` checks its secret files again first, BF-D33)
     command: ["sh", "-c", "trader-bf check-secrets && trader-bf validate-config && exec sleep infinity"]
 
   dashboard:
-    # BF-D37: the owner's read-only phone page (`trader-bf dashboard`). It cannot place,
-    # approve, cancel or change anything: GET/HEAD only, no broker, no Telegram, the
-    # journal session is read-only in Postgres (default_transaction_read_only), the
-    # trader's output and the price store are mounted read-only, and its only secret is
-    # db_password. Published on the host's loopback only, never 0.0.0.0 on the host.
+    # BF-D37: the owner's phone app (`trader-bf dashboard`). Its own pages are read-only:
+    # no broker, no Telegram, no push, the journal session is read-only in Postgres
+    # (default_transaction_read_only), the trader's output and the price store are mounted
+    # read-only, and its only secret is db_password. The app's actions (/act/..., BF-D39)
+    # are forwarded unchanged to the trader's control server on the `control` network,
+    # which re-checks everything. Published on the host's loopback only, never 0.0.0.0.
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -129,7 +142,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     # internal: the database; dashboard: a plain bridge, needed only because Docker does
     # not publish ports from a container that is on internal networks alone
-    networks: [internal, dashboard]
+    networks: [internal, dashboard, control]
     ports: ["127.0.0.1:8080:8080"]
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -144,7 +157,9 @@ networks:
   dashboard: {}           # the dashboard's loopback-published port (see above)
   internal:
     internal: true        # no internet: gateway<->trader<->db only
-  egress: {}              # trader only: Telegram, EODHD, IBKR Flex, healthchecks (outbound)
+  egress: {}              # trader only: EODHD, IBKR Flex, Web Push, healthchecks, Telegram
+  control:
+    internal: true        # dashboard -> trader:8081 (the app's actions, BF-D39) only
 
 volumes:
   pgdata: {}
@@ -153,9 +168,9 @@ volumes:
 secrets:
   tws_password: {file: ./secrets/tws_password}
   db_password: {file: ./secrets/db_password}
-  telegram_bot_token: {file: ./secrets/telegram_bot_token}
   totp_seed: {file: ./secrets/totp_seed}
   eodhd_api_token: {file: ./secrets/eodhd_api_token}
   healthchecks_url: {file: ./secrets/healthchecks_url}
   ibkr_flex_token: {file: ./secrets/ibkr_flex_token}        # BF-D27: Flex Web Service token
   ibkr_flex_query_id: {file: ./secrets/ibkr_flex_query_id}  # the paper Activity Flex query
+  vapid_private_key: {file: ./secrets/vapid_private_key}    # BF-D40: generated by `bigwins vapid`
