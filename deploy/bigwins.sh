@@ -77,6 +77,21 @@ cmd_app() {  # BF-D37: the read-only phone page, on your tailnet only
   echo "Only devices on your tailnet can open it. Turn it off with: tailscale serve reset"
 }
 
+cmd_demo() {  # the phone page with DEMO data, before the trader has started (no secrets, no database)
+  cd $REPO || return 1
+  git pull --ff-only -q || y "Could not update the code; using the version already here."
+  echo "Building the app (a few minutes the first time)..."
+  docker build -q -t asx-trader-bfast-trader:local -f deploy/Dockerfile . >/dev/null || { r "Build failed."; return 1; }
+  docker rm -f bigwins-demo >/dev/null 2>&1
+  docker run -d --name bigwins-demo --restart unless-stopped -p 127.0.0.1:8080:8080 \
+    -v $REPO/config:/app/config:ro --read-only --tmpfs /tmp --cap-drop ALL \
+    --security-opt no-new-privileges:true -e TZ=Australia/Sydney \
+    asx-trader-bfast-trader:local trader-bf dashboard --demo --host 0.0.0.0 --port 8080 >/dev/null \
+    || { r "Could not start the demo app."; return 1; }
+  g "Demo app running (made-up numbers, marked DEMO)."
+  cmd_app
+}
+
 cmd_logs() {
   cd $DEPLOY || return 1
   docker compose logs --tail 40 trader 2>/dev/null || y "Trader not started yet."
@@ -86,7 +101,7 @@ cmd_update() {
   guard_market || return 1
   git -C $REPO pull --ff-only || { r "Update failed (no changes made)."; return 1; }
   if [ -f "$DEPLOY/.env" ] && [ "$(ls "$SECRETS" 2>/dev/null | wc -l)" -ge 8 ]; then
-    (cd $DEPLOY && docker compose build && docker compose up -d) && g "Updated and restarted."
+    (docker rm -f bigwins-demo >/dev/null 2>&1; cd $DEPLOY && docker compose build && docker compose up -d) && g "Updated and restarted."
   else
     g "Code updated. (The trader is not started yet, so nothing to restart.)"
   fi
@@ -137,19 +152,19 @@ menu() {
   echo "  1) Refresh status        2) Trader log         3) Update to the latest code"
   echo "  4) Restart the trader    5) Add/replace a secret  6) Check secret files"
   echo "  7) Open Claude here      8) Start Remote Control (use Claude from the app)"
-  echo "  9) Turn on the phone app"
+  echo "  9) Turn on the phone app   10) Phone app with DEMO data (before IBKR)"
   echo "  0) Exit"
   read -rp "Choose: " c
   case $c in
     1) cmd_status;; 2) cmd_logs;; 3) cmd_update;; 4) cmd_restart;; 5) cmd_secret;;
-    6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; 9) cmd_app;; *) echo "Bye.";;
+    6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; 9) cmd_app;; 10) cmd_demo;; *) echo "Bye.";;
   esac
 }
 
 case ${1:-} in
   status) cmd_status;; logs) cmd_logs;; update) cmd_update;; restart) cmd_restart;;
   secret) cmd_secret "${2:-}";; check) cmd_check;; claude) cmd_claude;; remote) cmd_remote;;
-  app) cmd_app;;
+  app) cmd_app;; demo) cmd_demo;;
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo]";;
 esac
