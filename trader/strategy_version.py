@@ -8,8 +8,9 @@ incoming code update changes, and when it may be applied.
 * **Stamping**: every decision records ``strategy:<day>`` with the fingerprint, so each
   batch (and through it each fill) has the version that made it; the app splits the
   results by version.
-* **Classification**: an update is a strategy update when it touches a strategy file or a
-  strategy key of the config; else app-only.
+* **Classification** (BF-D53, default-deny): an update is a strategy / trading update
+  when it touches anything under trader/, config/ or migrations/ except the UI-only
+  files (``UI_ONLY``); else (docs, tests, deploy scripts) app-only.
 * **Timing** (``strategy.update_mode``): ``immediate`` (default while paper): the host
   worker applies an approved update as soon as the ASX is closed and no order of the
   book is working, then the trader makes an out-of-cycle decision with the new rules
@@ -33,15 +34,19 @@ from trader.constants import ASX_TZ
 from trader.yamlio import load_yaml
 
 STRATEGY_KEYS = ("line", "live_emg2_20", "band_trend", "risk", "execution")
-STRATEGY_DATA_KEYS = ("lic_list_sha256", "random_twins", "random_prefix", "random_seed_base",
-                      "sim_half_spread", "history_sessions", "etp_list", "lic_list")  # fmt: skip
-STRATEGY_FILES = (
-    "trader/lines/",
-    "trader/universe.py",
-    "trader/features.py",
-    "trader/panel.py",
-    "config/lic_list.csv",
-)
+# BF-D53 (M2): default-deny. Any change under trader/, config/ or migrations/ is a
+# trading / strategy change, except these UI-only files; docs/, tests/ and the rest
+# (deploy scripts, README) are app-only. deploy/classify.py holds the same lists for the
+# root worker (a test keeps them equal).
+TRADING_DIRS = ("trader/", "config/", "migrations/")
+UI_ONLY = (
+    "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
+    "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
+)  # fmt: skip
+APP_ONLY_DIRS = ("docs/", "tests/")
+# keys of config/bfast.yaml that are not trading settings (the fingerprint ignores them)
+NON_TRADING_CONFIG = ("dashboard", "notify", "app", "heartbeat", "telegram", "journal", "tax",
+                      "strategy")  # fmt: skip
 CHANGELOG = "config/strategy_changelog.yaml"
 DECISION_AT = time(22, 20)
 BLOCK_BEFORE = timedelta(hours=24)
@@ -53,11 +58,17 @@ def _h(data: bytes) -> str:
 
 
 def strategy_config(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """The strategy part of a config mapping (what a strategy version covers)."""
-    out = {k: raw.get(k) for k in STRATEGY_KEYS}
-    data = raw.get("data") or {}
-    out["data"] = {k: data.get(k) for k in STRATEGY_DATA_KEYS} if isinstance(data, Mapping) else {}
-    return out
+    """The trading part of a config mapping (default-deny, BF-D53: every section except
+    the app's own settings)."""
+    return {k: v for k, v in raw.items() if k not in NON_TRADING_CONFIG}
+
+
+def is_trading_path(path: str) -> bool:
+    """BF-D53: a changed file that makes an update a strategy / trading update."""
+    f = path.strip()
+    if not f or f in UI_ONLY or f.startswith(APP_ONLY_DIRS):
+        return False
+    return f.startswith(TRADING_DIRS)
 
 
 def config_hash(raw: Mapping[str, Any]) -> str:
@@ -66,14 +77,17 @@ def config_hash(raw: Mapping[str, Any]) -> str:
 
 
 def code_hash(root: Path) -> str:
-    """Hash of the strategy source files under ``root`` (the repository or /app)."""
+    """Hash of the trading source under ``root`` (the repository or /app): every file of
+    trader/ except the UI-only ones, plus config/lic_list.csv (BF-D53, default-deny)."""
     h = hashlib.sha256()
-    for spec in STRATEGY_FILES:
-        p = root / spec
-        files = sorted(p.rglob("*.py")) if spec.endswith("/") else [p]
-        for f in files:
-            if f.is_file():
-                h.update(str(f.relative_to(root)).encode() + b"\0" + f.read_bytes() + b"\0")
+    files = [*sorted((root / "trader").rglob("*.py")), root / "config/lic_list.csv"]
+    for f in files:
+        if not f.is_file() or "__pycache__" in f.parts:
+            continue
+        rel = f.relative_to(root).as_posix()
+        if rel in UI_ONLY:
+            continue
+        h.update(rel.encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()[:12]
 
 
@@ -126,13 +140,15 @@ def fingerprint(config_path: Path, code_root: Path, commit: str = "") -> Fingerp
 def classify_update(
     files: Iterable[str], old_config: str | None, new_config: str | None
 ) -> dict[str, Any]:
-    """Is an incoming update a strategy change? ``files``: the changed paths;
-    ``old_config`` / ``new_config``: config/bfast.yaml before and after (text)."""
+    """Is an incoming update a strategy / trading change (BF-D53, default-deny)?
+    ``files``: the changed paths (any trading path counts, config/bfast.yaml included);
+    ``old_config`` / ``new_config``: config/bfast.yaml before and after (text), only to
+    name the settings that change."""
     reasons: list[str] = []
     for raw in files:
         f = raw.strip()
-        if f and any(f == s or (s.endswith("/") and f.startswith(s)) for s in STRATEGY_FILES):
-            reasons.append(f"strategy code: {f}")
+        if is_trading_path(f):
+            reasons.append(f"trading code or data: {f}")
     if old_config is not None and new_config is not None:
         try:
             a = strategy_config(load_yaml(old_config) or {})

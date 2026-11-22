@@ -19,7 +19,7 @@ import csv
 import io
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -39,6 +39,14 @@ from trader.tax_report import (
 from trader.webui import e, section, tile
 
 LABEL = "Estimate for your records — not tax advice. Paper account: no real tax."
+LIVE_LABEL = "Estimate for your records — not tax advice. Live account: check with your accountant."
+
+
+def label(src: Any) -> str:
+    """BF-D50: from the broker mode (``Sources.live``), never hard-coded."""
+    return LIVE_LABEL if getattr(src, "live", False) else LABEL
+
+
 CSV_COLUMNS = ("section", "code", "qty", "acquired", "disposed", "cost_base", "proceeds",
                "gain", "discount_eligible", "discount_applied", "method", "note")  # fmt: skip
 WASH_DAYS = 30
@@ -88,33 +96,59 @@ def unrealised(src: Any, marks: Mapping[str, Decimal], today: date) -> list[Unre
     return sorted(out, key=lambda u: (u.code, u.acquired))
 
 
-def rebuy_flags(src: Any, start: date, end: date) -> list[str]:
-    """A sale followed by a buy of the same code within 30 days (information only)."""
+def rebuy_flags(src: Any, start: date, end: date, report_: TaxReport | None = None) -> list[str]:
+    """A sale at a LOSS followed, within 30 days after it, by a buy of the same code
+    (TR 2008/1 "wash sale" scrutiny; information only). Times are compared timezone-aware
+    and only buys after the sale count (L4)."""
+    r = report_
+    if r is None:
+        return []
     allf: list[FillRecord] = safe(lambda: src.journal.fills(src.book), [])
-    fills = sorted(allf, key=lambda f: f.executed_at if f.executed_at.tzinfo
-                   else f.executed_at.replace(tzinfo=UTC))  # fmt: skip
+
+    def t(f: FillRecord) -> datetime:
+        return f.executed_at if f.executed_at.tzinfo else f.executed_at.replace(tzinfo=UTC)
+
+    sells = sorted((f for f in allf if f.side is Side.SELL), key=t)
+    buys = sorted((f for f in allf if f.side is Side.BUY), key=t)
+    loss_days = {(c.code, c.disposed) for c in r.cgt if c.event == "SALE" and c.gain < 0}
+    ids: dict[str, str] = safe(src.journal.identity_map, {})
     out = []
-    for s in fills:
-        if s.side is not Side.SELL:
+    for sf in sells:
+        sd = t(sf).astimezone(ASX_TZ).date()
+        code = ids.get(sf.entity, sf.entity)
+        if not start <= sd <= end or (code, sd) not in loss_days:
             continue
-        sd = s.executed_at.astimezone(ASX_TZ).date()
-        if not start <= sd <= end:
-            continue
-        for b in fills:
-            bd = b.executed_at.astimezone(ASX_TZ).date()
-            if (
-                b.side is Side.BUY
-                and b.entity == s.entity
-                and sd <= bd <= sd + timedelta(WASH_DAYS)
-            ):
-                out.append(f"{s.entity}: sold {sd:%d %b %Y}, bought again {bd:%d %b %Y} "
-                           f"({(bd - sd).days} days later)")  # fmt: skip
-                break
+        for b in buys:
+            if ids.get(b.entity, b.entity) != code or t(b) <= t(sf):
+                continue
+            bd = t(b).astimezone(ASX_TZ).date()
+            if bd <= sd + timedelta(WASH_DAYS):
+                out.append(f"{code}: sold at a loss {sd:%d %b %Y}, bought again "
+                           f"{bd:%d %b %Y} ({(bd - sd).days} days later)")  # fmt: skip
+            break
     return out
 
 
 def report(src: Any, y: int) -> TaxReport:
-    return build_report(src.journal, src.book, fy_label(y), _params(src), paper=True)
+    """The same inputs as ``trader-bf tax-report`` (BF-D51): AMIT entries from
+    ``tax.amit_csv`` and the losses carried in from before this book."""
+    from pathlib import Path
+
+    from trader.tax_report import load_amit_csv
+
+    amit_path = getattr(src, "amit_csv", None)
+    amit = load_amit_csv(Path(amit_path)) if amit_path and Path(amit_path).is_file() else []
+    prior = Decimal(str(getattr(src, "prior_losses", 0) or 0))
+    return build_report(src.journal, src.book, fy_label(y), _params(src), None, amit, prior,
+                        paper=not getattr(src, "live", False))  # fmt: skip
+
+
+def losses_used(s: Any) -> tuple[Decimal, Decimal]:
+    """(current-year losses used, carried-in losses used): the pool takes this year's
+    losses first, then those carried in (``summarise``)."""
+    used = s.applied_short + s.applied_long
+    cur = min(s.losses, used)
+    return cur, used - cur
 
 
 def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
@@ -130,7 +164,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     )
     r = safe(lambda: report(src, y), None)
     p = _params(src)
-    head = (seg + f'<p class="note">{e(LABEL)}</p><div class="seg">{picker}</div>'
+    head = (seg + f'<p class="note">{e(label(src))}</p><div class="seg">{picker}</div>'
             f"<p class='small muted'>1 Jul {y} – 30 Jun {y + 1} · parcels matched "
             f"<b>{e(p.method)}</b> · discount: {e(p.rule_text())}</p>")  # fmt: skip
     if r is None:
@@ -216,7 +250,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
                else "<p class='muted'>Nothing held.</p>")  # fmt: skip
     start, end = date(y, 7, 1), date(y + 1, 6, 30)
     flags = list(r.flags) + [f"Re-bought within 30 days (TR 2008/1, information only): {f}"
-                             for f in rebuy_flags(src, start, end)]  # fmt: skip
+                             for f in rebuy_flags(src, start, end, r)]  # fmt: skip
     fl = "".join(f"<li class='small'>{e(f)}</li>" for f in flags)
     body = (
         head
@@ -228,7 +262,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         + (section("Check with your accountant", f'<ul class="list">{fl}</ul>') if fl else "")
         + f'<a class="btn sec wide" href="/tax.csv?fy={fy_label(y)}" download>⬇ EOFY CSV for '
         "your accountant / myTax</a>"
-        f"<footer>{e(NOT_ADVICE)} {e(LABEL)}</footer>"
+        f"<footer>{e(NOT_ADVICE)} {e(label(src))}</footer>"
     )
     return shell(v, x, "Tax", body, "holdings")
 
@@ -256,7 +290,17 @@ def csv_export(src: Any, qs: Mapping[str, str]) -> str:
         w.writerow(["income", i.code, i.held, "", i.pay_date or i.ex_date or "", "", f"{i.cash:.2f}",
                     f"{i.income:.2f}", "", "", "", f"{i.kind} franking credit {i.franking_credit:.2f}"
                     + ("" if i.franked_pct is not None else " (franking not known)")])  # fmt: skip
-    w.writerow(["summary", "", "", "", "", "", "", f"{s.net_gain:.2f}", "", f"{s.discount:.2f}",
-                p.method, f"net capital gain FY {fy_label(y)}; loss carried forward {s.carried_out:.2f}"])  # fmt: skip
-    w.writerow(["note", "", "", "", "", "", "", "", "", "", "", LABEL])
+    cur, old = losses_used(s)
+    blank = ["", "", "", "", ""]
+    for name, val in (  # BF-D51: the summary for myTax / the accountant
+        ("total current-year capital gains", s.short_gains + s.long_gains),
+        ("current-year capital losses applied", cur),
+        ("prior-year (carried-in) losses applied", old),
+        ("CGT discount applied", s.discount),
+        ("net capital gain", s.net_gain),
+        ("net capital loss carried forward", s.carried_out),
+    ):
+        w.writerow(["summary", name, *blank, f"{val:.2f}", "", "", p.method,
+                    f"FY {fy_label(y)}"])  # fmt: skip
+    w.writerow(["note", "", "", "", "", "", "", "", "", "", "", label(src)])
     return buf.getvalue()

@@ -46,15 +46,20 @@ def test_BF_D45_classification_strategy_vs_app_only() -> None:
     app_only = classify_update(["trader/app_pages.py", "docs/GO_LIVE_GUIDE.md"], CFG, CFG)
     assert app_only == {"strategy": False, "reasons": []}
     code = classify_update(["trader/lines/emg2.py", "trader/webui.py"], CFG, CFG)
-    assert code["strategy"] and code["reasons"] == ["strategy code: trader/lines/emg2.py"]
-    for f in ("trader/universe.py", "trader/features.py", "config/lic_list.csv"):
+    assert code["strategy"] and code["reasons"] == ["trading code or data: trader/lines/emg2.py"]
+    for f in (
+        "trader/universe.py",
+        "trader/features.py",
+        "config/lic_list.csv",
+        "trader/bf_app.py",
+    ):
         assert classify_update([f], CFG, CFG)["strategy"], f
     new = CFG.replace("slots: 18", "slots: 17")
     cfg = classify_update(["config/bfast.yaml"], CFG, new)
-    assert cfg["strategy"] and cfg["reasons"] == ["strategy setting: live_emg2_20"]
-    # a config change outside the strategy keys (the app's own settings) is app-only
+    assert cfg["strategy"] and "strategy setting: live_emg2_20" in cfg["reasons"]
+    # BF-D53 default-deny: any change of config/bfast.yaml counts as a trading change
     other = CFG.replace("every_seconds: 300", "every_seconds: 600")
-    assert not classify_update(["config/bfast.yaml"], CFG, other)["strategy"]
+    assert classify_update(["config/bfast.yaml"], CFG, other)["strategy"]
     assert classify_update([], CFG, "::: not yaml")["strategy"]  # unreadable = careful side
 
 
@@ -96,7 +101,7 @@ def test_BF_D45_wait_for_the_close_and_for_working_orders() -> None:
     assert apply_wait(True, False, 0) is None
     j = Journal.sqlite()
     t = datetime(2026, 12, 1, 11, 0, tzinfo=ASX_TZ)
-    jid = add_server_job(j, "update", STRATEGY | IMMEDIATE, "o", t)
+    jid = add_server_job(j, "update", STRATEGY | IMMEDIATE, "o", t, "a" * 40)
     later = add_server_job(j, "check", 0, "o", t)
     assert claim_server_job(j, t, wait=lambda m: apply_wait(True, True, 0)) is None
     rows = {r["id"]: r for r in server_job_rows(j)}
@@ -129,7 +134,7 @@ def test_BF_D45_cli_claim_waits_for_working_orders(
     assert working_orders(j, BOOK) == 1
     cfg = tmp_path / "c.yaml"
     cfg.write_text(CFG.replace("book: EMG2_18_PAPER", f"book: {BOOK}"))
-    add_server_job(j, "rollback", STRATEGY, "o", datetime.now(ASX_TZ))
+    add_server_job(j, "rollback", STRATEGY, "o", datetime.now(ASX_TZ), "b" * 40)
     assert main(["server-jobs", "claim", "--journal", url, "--config", str(cfg)]) == 0
     assert json.loads(capsys.readouterr().out) == {}
     assert "working" in server_job_rows(j)[0]["result"]
@@ -194,7 +199,10 @@ def test_BF_D45_update_out_of_cycle_decision_is_stamped_and_needs_approval() -> 
         app.run_job(
             job, nxt, datetime.combine(nxt, datetime.min.time(), ASX_TZ).replace(hour=22, minute=15)
         )
-    t = datetime.combine(nxt, datetime.min.time(), ASX_TZ).replace(hour=22, minute=21)
+    t = datetime.combine(nxt, datetime.min.time(), ASX_TZ).replace(hour=22, minute=26)
+    assert rt2.tick(t) == "wait"  # M3: not before the day's scheduled jobs are done
+    for key in ("22:15:sim", "22:20:decide", "22:25:fund_sweep"):
+        app.j.mark_job(f"{nxt}:{key}", None, t)
     assert rt2.tick(t) == "decided" and rt2.tick(t) == "idle"
     assert app.j.job_records(f"strategy:{nxt}")[0][1]["id"] == v2.id
     bid = f"EMG2_18_PAPER-{nxt}-R"

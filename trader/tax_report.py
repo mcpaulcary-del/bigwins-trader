@@ -162,11 +162,12 @@ class TaxParams:
 
 
 def plus_12_months(d: date) -> date:
-    """The same day a year later (29 February -> 28 February)."""
-    try:
-        return d.replace(year=d.year + 1)
-    except ValueError:
-        return d.replace(year=d.year + 1, day=28)
+    """The same day a year later; the last day of February maps to the last day of
+    February (29 Feb -> 28 Feb, and 28 Feb before a leap year -> 29 Feb), so a parcel
+    bought on the last day of February becomes discount eligible on 1 March (L1)."""
+    if d.month == 2 and (d + timedelta(days=1)).month == 3:  # the last day of February
+        return date(d.year + 1, 3, 1) - timedelta(days=1)
+    return d.replace(year=d.year + 1)
 
 
 # ---------------------------------------------------------------------------

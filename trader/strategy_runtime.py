@@ -21,11 +21,14 @@ from datetime import datetime
 from typing import Any
 
 from trader.app_store import get_state, set_state
-from trader.bf_app import BfApp, at
+from trader.bf_app import DAY_JOBS, BfApp, at
 from trader.constants import ASX_TZ
 from trader.strategy_version import DECISION_AT, Fingerprint
 
 DECIDE_HHMM = DECISION_AT.strftime("%H:%M")
+AFTER_JOBS = frozenset(
+    {"sim", "decide", "fund_sweep"}
+)  # M3: the out-of-cycle decision follows these
 
 
 @dataclass
@@ -63,7 +66,12 @@ class StrategyRuntime:
         return "changed"
 
     def tick(self, now: datetime) -> str:  # noqa: PLR0911 - one outcome per return
-        """``idle`` | ``wait`` | ``decided`` | ``covered`` (the regular decision did it)."""
+        """``idle`` | ``wait`` | ``decided`` | ``covered`` (BF-D54, M3).
+
+        Runs only after the day's scheduled twin, decision and fund-sweep jobs are done
+        (their scheduler keys). A same-day decision covers the update only if the new
+        version made it (its ``strategy:<day>`` record); a decision made by the old
+        version that day means the out-of-cycle decision waits for the next session."""
         j = self.app.j
         st = get_state(j, "strategy-pending")
         pend = st[0] if st and isinstance(st[0], dict) else None
@@ -72,15 +80,16 @@ class StrategyRuntime:
         day = now.astimezone(ASX_TZ).date()
         if not self.app.is_session(day) or now < at(day, DECIDE_HHMM):
             return "wait"
+        if not all(j.job_done(f"{day}:{hhmm}:{name}") for hhmm, name in DAY_JOBS
+                   if name in AFTER_JOBS):  # fmt: skip
+            return "wait"
         book = self.app.s.book
-        if self.app.decision_kind(day, book) is not None:  # a month-end: the scheduler's job
-            if not j.job_done(f"decide:{book}:{day}"):
-                return "wait"
-            set_state(j, "strategy-pending", {**pend, "done": str(day)}, now)
-            return "covered"
         if j.job_done(f"decide:{book}:{day}"):
-            set_state(j, "strategy-pending", {**pend, "done": str(day)}, now)
-            return "covered"
+            made_by = dict(j.job_records(f"strategy:{day}")).get(f"strategy:{day}", {})
+            if made_by.get("id") == self.fp.id:
+                set_state(j, "strategy-pending", {**pend, "done": str(day)}, now)
+                return "covered"
+            return "wait"  # decided by the old version today: the next session's 22:25
         if not self.app.job_decide(day, now, "R"):  # the day's data are not in yet
             return "wait"
         set_state(j, "strategy-pending", {**pend, "done": str(day)}, now)

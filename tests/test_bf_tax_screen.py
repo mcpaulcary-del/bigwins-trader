@@ -134,14 +134,15 @@ def test_BF_D44_screen_unrealised_rebuy_flag_and_estimate() -> None:
     j = _j()
     _fill(j, "B1", "AAA", Side.BUY, 10, "10", date(2025, 11, 3))
     _fill(j, "S1", "BBB", Side.BUY, 10, "10", date(2026, 7, 2))
-    _fill(j, "S2", "BBB", Side.SELL, 10, "12", date(2026, 8, 3))
+    _fill(j, "S2", "BBB", Side.SELL, 10, "8", date(2026, 8, 3))  # a loss (L4)
     _fill(j, "S3", "BBB", Side.BUY, 10, "11", date(2026, 8, 20))
     j.mark_job("marks:2026-11-30", {"AAA": "15", "BBB": "11"}, datetime(2026, 11, 30, tzinfo=UTC))
     today = date(2026, 12, 1)
     un = unrealised(_Src(j), {"AAA": D(15)}, today)
     aaa = next(u for u in un if u.code == "AAA")
     assert aaa.eligible_from == date(2026, 11, 4) and aaa.value == D(150)
-    flags = rebuy_flags(_Src(j), date(2026, 7, 1), date(2027, 6, 30))
+    rep = build_report(j, BOOK, "2026-27", ATO)
+    flags = rebuy_flags(_Src(j), date(2026, 7, 1), date(2027, 6, 30), rep)
     assert flags and "BBB" in flags[0] and "17 days" in flags[0]
     src = Sources(j, BOOK, clock=lambda: datetime(2026, 12, 1, 10, tzinfo=UTC),
                   today=lambda: today, tax_params=ATO, marginal_rate=D("0.345"))  # fmt: skip
