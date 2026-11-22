@@ -156,12 +156,11 @@ do_update() {  # no questions asked (the app's server worker uses it too)
   if [ "$(git -C $REPO rev-parse HEAD)" != "$before" ]; then
     python3 "$DEPLOY/gitops.py" record "$STATE" "$before"  # BF-D45: the rollback target
   fi
-  after_update
 }
 
 after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
-  make_keys
+  make_keys || { r "Update stopped before the restart: fix the message above, then: bigwins update"; return 1; }
   if [ -f "$DEPLOY/.env" ] && secrets_ready; then
     docker rm -f bigwins-demo >/dev/null 2>&1
     dc build && dc up -d && g "Updated and restarted."
@@ -171,12 +170,17 @@ after_update() {  # secrets the new code needs, then rebuild and restart
 }
 
 make_keys() {  # BF-D40/D46/D48/D52: generated secrets, made here once, never shown
-  [ -s "$SECRETS/vapid_private_key" ] || make_vapid
-  local n
+  command -v openssl >/dev/null || { r "openssl is missing (apt install openssl): no keys made."; return 1; }
+  [ -s "$SECRETS/vapid_private_key" ] || make_vapid || return 1
+  local n tmp
   for n in app_proxy_key worker_job_key db_dashboard_password; do
-    if [ ! -s "$SECRETS/$n" ]; then
-      mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
-      openssl rand -hex 32 > "$SECRETS/$n" && chmod 444 "$SECRETS/$n" && g "Made $n."
+    [ -s "$SECRETS/$n" ] && continue
+    mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+    tmp="$SECRETS/.$n.new"
+    if openssl rand -hex 32 > "$tmp" && [ "$(wc -c < "$tmp")" -ge 64 ]; then
+      chmod 444 "$tmp" && mv -f "$tmp" "$SECRETS/$n" && g "Made $n."
+    else
+      rm -f "$tmp"; r "Could not make $n: nothing changed."; return 1  # never a zero-byte key
     fi
   done
 }
@@ -201,12 +205,15 @@ update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing el
   git -C $REPO merge --ff-only -q "$commit" || { echo "refused: fast-forward failed (no changes made)"; return 1; }
   python3 "$DEPLOY/gitops.py" record "$STATE" "$before"
   echo "now at $(git -C $REPO log --oneline -1)"
-  after_update
+  bash "$DEPLOY/bigwins.sh" after-pull  # BF-D61: the new script's steps, not this shell's
 }
 
 cmd_update() {
   guard_market || return 1
-  do_update
+  do_update || return 1
+  # BF-D61 (N4): the steps after the pull come from the NEW script (this shell still holds
+  # the old functions in memory), so new secrets and service changes apply at once
+  exec bash "$DEPLOY/bigwins.sh" after-pull
 }
 
 cmd_restart() {
@@ -322,6 +329,7 @@ finish_job() {  # id status text: record a server job's result (retried while th
 }
 
 cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s, as root)
+  mkdir -p "$STATE" && chmod 700 "$STATE"  # the worker's own notes: root only
   host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status >/dev/null 2>&1
   local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
@@ -333,6 +341,11 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
   # BF-D48: only jobs the trader signed (key held by the trader and this root worker only)
   if ! python3 "$DEPLOY/gitops.py" verify "$SECRETS/worker_job_key" "$id" "$action" "$commit" "$flags" "$created" "$sig"; then
     finish_job "$id" REFUSED "refused: the job is not signed by the trader"
+    return 0
+  fi
+  # BF-D59 (N8): each signed job id runs once only (this worker's own record, root only)
+  if ! python3 "$DEPLOY/gitops.py" claim-id "$STATE" "$id"; then
+    finish_job "$id" REFUSED "refused: this job id was already run"
     return 0
   fi
   case "$action" in
@@ -446,6 +459,7 @@ case ${1:-} in
   secret) cmd_secret "${2:-}";; check) cmd_check;; claude) cmd_claude;; remote) cmd_remote;;
   app) cmd_app;; demo) cmd_demo;; login) cmd_login;; vapid) cmd_vapid;;
   install-worker) cmd_install_worker;; worker) cmd_worker;;
+  after-pull) after_update;;  # BF-D61: run by update after the pull (the new script)
   ""|menu) menu;;
   *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker]";;
 esac

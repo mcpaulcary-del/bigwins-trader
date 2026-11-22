@@ -2,9 +2,12 @@
 -- idempotent; also for a journal that existed before). psql variables: db, pw.
 SELECT 'CREATE ROLE bigwins_dashboard LOGIN'
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bigwins_dashboard') \gexec
-ALTER ROLE bigwins_dashboard WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD :'pw';
+ALTER ROLE bigwins_dashboard WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT CONNECTION LIMIT 5 PASSWORD :'pw';
 ALTER ROLE bigwins_dashboard SET default_transaction_read_only = on;
 GRANT CONNECT ON DATABASE :"db" TO bigwins_dashboard;
+-- no temporary tables for anyone but the owner (trader, the superuser of this container)
+REVOKE TEMPORARY ON DATABASE :"db" FROM PUBLIC;
+REVOKE TEMPORARY ON DATABASE :"db" FROM bigwins_dashboard;
 GRANT USAGE ON SCHEMA public TO bigwins_dashboard;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM bigwins_dashboard;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM bigwins_dashboard;

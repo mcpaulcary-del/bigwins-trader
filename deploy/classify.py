@@ -1,6 +1,7 @@
 """bigwins worker (BF-D53): is an update a trading / strategy change? Default-deny: any
-change under trader/, config/ or migrations/, except the UI-only files below; docs/,
-tests/ and the rest are app-only. The same lists as trader/strategy_version.py (a test
+change under trader/, config/, migrations/, deploy/ or scripts/, or of pyproject.toml,
+uv.lock or alembic.ini, except the UI-only files below; docs/, tests/ and the rest are
+app-only. The same lists as trader/strategy_version.py (a test
 keeps them equal). Standard library only (the host's python3).
 
     git diff --name-only HEAD <commit> | python3 classify.py     prints "strategy" or "app"
@@ -11,7 +12,9 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable
 
-TRADING_DIRS = ("trader/", "config/", "migrations/")
+TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/")
+# BF-D60 (N5): infrastructure that changes what runs is not app-only either
+TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini")
 UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
@@ -23,7 +26,7 @@ def is_trading_path(path: str) -> bool:
     f = path.strip()
     if not f or f in UI_ONLY or f.startswith(APP_ONLY_DIRS):
         return False
-    return f.startswith(TRADING_DIRS)
+    return f.startswith(TRADING_DIRS) or f in TRADING_FILES
 
 
 def classify(files: Iterable[str]) -> str:

@@ -38,7 +38,9 @@ STRATEGY_KEYS = ("line", "live_emg2_20", "band_trend", "risk", "execution")
 # trading / strategy change, except these UI-only files; docs/, tests/ and the rest
 # (deploy scripts, README) are app-only. deploy/classify.py holds the same lists for the
 # root worker (a test keeps them equal).
-TRADING_DIRS = ("trader/", "config/", "migrations/")
+TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/")
+# BF-D60 (N5): infrastructure that changes what runs is not app-only either
+TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini")
 UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
@@ -68,7 +70,7 @@ def is_trading_path(path: str) -> bool:
     f = path.strip()
     if not f or f in UI_ONLY or f.startswith(APP_ONLY_DIRS):
         return False
-    return f.startswith(TRADING_DIRS)
+    return f.startswith(TRADING_DIRS) or f in TRADING_FILES
 
 
 def config_hash(raw: Mapping[str, Any]) -> str:

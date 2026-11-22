@@ -3,6 +3,7 @@
     python3 gitops.py record <state_dir> <head>     before an update: remember the commit
     python3 gitops.py target <state_dir> <head>     the rollback target, or exit 1
     python3 gitops.py done <state_dir>              after a rollback: forget it (no ping-pong)
+    python3 gitops.py claim-id <state_dir> <id>     BF-D59: refuse a job id run before (exit 1)
     python3 gitops.py verify <key_file> <id> <action> <commit> <flags> <created> <sig>
                                                     BF-D48: the trader's job signature, or exit 1
 
@@ -38,6 +39,24 @@ def target(state: Path, head: str) -> str | None:
     return t if SHA.fullmatch(t) and t != head else None
 
 
+RAN = "ran_job_ids"
+
+
+def claim_id(state: Path, job_id: str) -> bool:
+    """BF-D59 (N8): True the first time a job id is run, False ever after (a signed job
+    replayed into the database is refused). The list lives with the worker (root)."""
+    if not job_id.isdigit():
+        return False
+    state.mkdir(parents=True, exist_ok=True)
+    p = state / RAN
+    seen = set(p.read_text(encoding="utf-8").split()) if p.is_file() else set()
+    if job_id in seen:
+        return False
+    with p.open("a", encoding="utf-8") as f:
+        f.write(job_id + "\n")
+    return True
+
+
 def done(state: Path) -> None:
     (state / NAME).unlink(missing_ok=True)
 
@@ -53,10 +72,12 @@ def verify(key_file: Path, job_id: str, action: str, commit: str, flags: str, cr
     return hmac.compare_digest(want, sig)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> int:  # noqa: PLR0911 - one exit per operation
     op, state = argv[1], Path(argv[2])
     if op == "verify":
         return 0 if verify(state, *argv[3:9]) else 1
+    if op == "claim-id":
+        return 0 if claim_id(state, argv[3]) else 1
     if op == "record":
         record(state, argv[3])
         return 0
