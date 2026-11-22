@@ -135,9 +135,10 @@ def test_BF_D39_code_is_single_use_across_app_and_telegram() -> None:
     assert _rows(j, bid) == [(1, "OK"), (2, "OK")]
 
 
-def test_BF_D39_five_wrong_codes_lock_code_actions_and_page() -> None:
+def test_BF_D39_three_wrong_codes_lock_code_actions_and_page() -> None:
+    """BF-D47 (review H2): 3 wrong codes in 15 minutes lock (was 5)."""
     j, _, ctl, bid, pages = _setup()
-    for _ in range(5):
+    for _ in range(3):
         _, page = _post(ctl, {"a": "ok", "b": bid, "n": "all", "code": "000000"})
         assert "invalid or reused code" in page
     assert ctl.locked(T_APPROVE) is not None
@@ -287,8 +288,11 @@ def test_BF_D40_push_subscription_saved_only_for_push_services() -> None:
             "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}  # fmt: skip
     bad = json.dumps({"endpoint": "https://intranet.local/x", "keys": {"p256dh": "a", "auth": "b"}})
     assert ctl.respond("POST", "/act/push/subscribe", hdrs, bad.encode())[0] == 400
-    good = json.dumps({"endpoint": "https://fcm.googleapis.com/fcm/send/abc",
-                       "keys": {"p256dh": "a", "auth": "b"}})  # fmt: skip
+    sub = {
+        "endpoint": "https://fcm.googleapis.com/fcm/send/abc",
+        "keys": {"p256dh": "a", "auth": "b"},
+    }
+    good = json.dumps({"subscription": sub, "code": totp(SEED, T_APPROVE)})
     assert ctl.respond("POST", "/act/push/subscribe", hdrs, good.encode())[0] == 200
     from trader.app_store import push_sub_rows
 

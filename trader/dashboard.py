@@ -50,6 +50,7 @@ from sqlalchemy import inspect, select
 
 from trader import app_pages, webui
 from trader.app_pages import Extras
+from trader.app_sign import sign_proxy
 from trader.approval import approved_seqs
 from trader.constants import ASX_TZ
 from trader.journal import Journal, Status, events, safety
@@ -143,6 +144,7 @@ class View:
     index_label: str = "A200"
     index_note: str = "with dividends"
     demo: bool = False
+    live: bool = False  # BF-D50
     holdings: list[Holding] = field(default_factory=list)
     next_decision: date | None = None
     last_decision: date | None = None
@@ -214,9 +216,12 @@ class Sources:
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(ASX_TZ))
     index_note: str = "with dividends"
     demo: bool = False  # synthetic data (``--demo``): the page says so
+    live: bool = False  # BF-D50: from the config's broker mode (always paper in this build)
     approval_deadline: str = "15:20"
     tax_params: Any = None  # trader.tax_report.TaxParams (BF-D44); None = the defaults
     marginal_rate: Decimal | None = None  # tax.marginal_rate (BF-D44), set on the server only
+    prior_losses: Decimal = Decimal(0)  # BF-D51: tax.prior_losses_aud
+    amit_csv: Path | None = None  # BF-D51: tax.amit_csv
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -249,7 +254,7 @@ def collect(src: Sources) -> View:
     j = src.journal
     v = View(
         now=src.clock(), book=src.book, started=False, index_label=src.index_label,
-        index_note=src.index_note, demo=src.demo,
+        index_note=src.index_note, demo=src.demo, live=src.live,
     )  # fmt: skip
     if src.demo:
         v.notes.append("DEMO: synthetic prices from a short simulated run, not your book.")
@@ -598,19 +603,28 @@ FORWARD_IN = ("tailscale-user-login", "tailscale-user-name", "cookie", "content-
 FORWARD_OUT = ("content-type", "set-cookie", "cache-control", "content-security-policy")
 
 
-def proxy_to(base: str, timeout: float = 70.0) -> ActionsFn:
-    """BF-D39: forward ``/act/...`` unchanged to the trader's control server (which checks
-    the log-in, the form token and the code itself). The dashboard adds nothing and
-    keeps no state; a trader that is down gives a clear page, never a write elsewhere."""
+def proxy_to(base: str, key: bytes | None = None, timeout: float = 70.0) -> ActionsFn:
+    """BF-D39 / BF-D46: forward ``/act/...`` to the trader's control server (which checks
+    the log-in, the form token and the code itself). With ``key`` (``app_proxy_key``) the
+    viewer's log-in, Origin and Sec-Fetch-Site are signed with the method, path and body;
+    the trader accepts nothing unsigned. The log-in passed on is the one ``respond``
+    accepted (from the trusted proxy address only)."""
 
     def forward(
         method: str, path: str, headers: Mapping[str, str], body: bytes
     ) -> tuple[int, dict[str, str], bytes]:
         fwd = {k: v for k, v in headers.items() if k.lower() in FORWARD_IN}
         host = next((v for k, v in headers.items() if k.lower() == "host"), "")
-        if host:
+        if key is None and host:  # unsigned (development only): the host for the Origin check
             fwd["X-Forwarded-Host"] = host
-            fwd["Host"] = host
+        if key is not None:
+
+            def hv(name: str) -> str:
+                return next((v for k, v in headers.items() if k.lower() == name), "")
+
+            fwd = {k: v for k, v in fwd.items() if k.lower() != "tailscale-user-login"}
+            fwd.update(sign_proxy(key, hv("tailscale-user-login").strip().lower(), hv("origin"),
+                                  hv("sec-fetch-site"), method, path, body))  # fmt: skip
         req = urllib.request.Request(  # noqa: S310 - the fixed private control address
             base.rstrip("/") + path, data=body if method == "POST" else None, method=method,
             headers=fwd,
@@ -659,6 +673,11 @@ class Dashboard:
     checklist: Callable[[], list[tuple[str, bool | None]]] = field(default=lambda: [])
     update_mode: str = "immediate"  # BF-D45 strategy.update_mode
     changelog: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
+    # BF-D46: the only source address whose Tailscale-User-Login header is believed (the
+    # gateway of the `dashboard` network, where the host's published port arrives from);
+    # empty = believe any (tests, local development)
+    trusted_peers: frozenset[str] = frozenset()
+    live: bool = False  # BF-D50
 
     def routes(self) -> dict[str, Callable[[], tuple[str, bytes]]]:
         """The fixed routes (screens with a path argument are matched in ``respond``)."""
@@ -725,9 +744,16 @@ class Dashboard:
         return None
 
     def respond(
-        self, method: str, path: str, headers: Mapping[str, str], body: bytes = b""
+        self,
+        method: str,
+        path: str,
+        headers: Mapping[str, str],
+        body: bytes = b"",
+        peer: str = "",
     ) -> tuple[int, dict[str, str], bytes]:
         hdrs = dict(webui.SECURITY_HEADERS)
+        if self.trusted_peers and peer not in self.trusted_peers:  # BF-D46: a forged log-in
+            headers = {k: v for k, v in headers.items() if k.lower() != "tailscale-user-login"}
         url = urllib.parse.urlsplit(path)
         p = url.path.rstrip("/") or "/"
         who = next((v for k, v in headers.items() if k.lower() == "tailscale-user-login"), "")
@@ -771,7 +797,9 @@ def make_handler(app: Dashboard) -> type[BaseHTTPRequestHandler]:
         def _go(self) -> None:
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(min(n, 16385)) if n > 0 else b""
-            status, hdrs, out = app.respond(self.command, self.path, dict(self.headers), body)
+            status, hdrs, out = app.respond(
+                self.command, self.path, dict(self.headers), body, self.client_address[0]
+            )
             self.send_response(status)
             for k, val in hdrs.items():
                 self.send_header(k, val)

@@ -178,6 +178,7 @@ class AppNotifier:
     push: WebPush | None = None
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     log: list[str] = field(default_factory=list)
+    label: str = "PAPER"  # BF-D50: push title prefix from the broker mode
 
     def enabled(self, kind: str) -> bool:
         if kind in ALWAYS_ON:
@@ -216,7 +217,8 @@ class AppNotifier:
         urgency = "high" if kind in ALWAYS_ON else "normal"
         body = text if len(text) < 1500 else text[:1500] + "..."
         payload: dict[str, Any] = {
-            "title": ("PAPER " if not title.startswith(("PAGE", "PAPER")) else "") + title[:120],
+            "title": (f"{self.label} " if not title.startswith(("PAGE", self.label)) else "")
+            + title[:120],
             "body": body,
             "url": link or "/inbox",
             "kind": kind,

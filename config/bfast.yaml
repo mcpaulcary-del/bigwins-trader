@@ -94,6 +94,7 @@ tax:                            # BF-D29: `trader-bf tax-report --fy 2026-27` (g
   parcel_method: FIFO           # FIFO (default) | min_tax = specific identification: only after the accountant confirms (O-8)
   discount_rule: 12_months      # BF-D44 (owner): 50% CGT discount when sold later than 12 months after buying
   discount_days: 367            #   (ATO test); "days" = from discount_days held (BF-D29's safety margin)
+  prior_losses_aud: 0           # BF-D51: net capital losses carried in from before this book
   marginal_rate: null           # BF-D44: your marginal rate incl. Medicare (e.g. 0.345) for the app's tax
                                 #   estimate; set on the server only, never in the repository
   fund_codes: [A200]            # trust distributions (band_trend.fund is added anyway); AMIT figures entered by hand:
@@ -108,7 +109,10 @@ app:                            # BF-D39: actions in the phone app (approve, pau
                                 #   Set on the server only (bigwins menu "Allow my phone to
                                 #   act"); keep it empty in the repository
   control_port: 8081            # the trader's action server on its private network (not published)
-  control_url: http://trader:8081  # where the dashboard forwards /act/... requests
+  control_url: http://trader-control:8081  # where the dashboard forwards /act/... requests
+  control_bind_host: trader-control  # BF-D46: the trader listens only on its control-network address
+  public_host: ""               # BF-D46: your app's host (bigwins.<tailnet>.ts.net); set on the server
+                                #   by `bigwins login`; with it, an action's Origin must be this host
 strategy:                       # BF-D45: strategy updates from the app (Server > Strategy)
   update_mode: immediate        # immediate (paper, early stage): applied once the ASX is closed and no
                                 #   order is working, then an out-of-cycle decision for your approval |
@@ -119,6 +123,8 @@ dashboard:                      # BF-D37: read-only phone page (`trader-bf dashb
   allowed_logins: []            # Tailscale log-ins allowed (tailscale serve's Tailscale-User-Login
                                 #   header); empty = anyone on your own tailnet
   index_code: A200              # the comparison line (the ASX 200 fund, from the price store)
+  trusted_proxies: [172.31.250.1]  # BF-D46: Tailscale-User-Login is believed only from the gateway of
+                                #   the `dashboard` network (deploy/docker-compose.yml pins its subnet)
 journal:
   url_env: TRADER_BF_JOURNAL_URL  # name of the env var holding a password-free URL; the
                                   # password comes from the db_password Docker secret

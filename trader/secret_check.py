@@ -28,21 +28,23 @@ from trader.secrets import KNOWN_SECRETS
 BASE_SECRETS: tuple[str, ...] = (
     "tws_password", "db_password", "totp_seed", "eodhd_api_token",
     "healthchecks_url", "ibkr_flex_token", "ibkr_flex_query_id",
+    "db_dashboard_password",  # BF-D52: the dashboard's SELECT-only role (made by bigwins)
 )  # fmt: skip
 
 
 def stack_secrets(channel: str = "app") -> tuple[str, ...]:
     """Every secret file the stack needs for ``notify.channel`` = ``channel``."""
     extra: list[str] = []
-    if channel in ("app", "both"):
-        extra.append("vapid_private_key")
+    if channel in ("app", "both"):  # BF-D40, BF-D46, BF-D48: all three made by bigwins
+        extra += ["vapid_private_key", "app_proxy_key", "worker_job_key"]
     if channel in ("telegram", "both"):
         extra.append("telegram_bot_token")
     return (*BASE_SECRETS, *extra)
 
 
 def trader_secrets(channel: str = "app") -> tuple[str, ...]:
-    return tuple(n for n in stack_secrets(channel) if n != "tws_password")
+    return tuple(n for n in stack_secrets(channel)
+                 if n not in ("tws_password", "db_dashboard_password"))  # fmt: skip
 
 
 STACK_SECRETS: tuple[str, ...] = stack_secrets("app")

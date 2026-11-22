@@ -31,6 +31,9 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "totp_seed",  # second factor (section 15)
         "tws_password",
         "vapid_private_key",  # BF-D40: Web Push signing key of the phone app (PEM)
+        "app_proxy_key",  # BF-D46: dashboard -> trader request signatures
+        "worker_job_key",  # BF-D48: trader -> host worker server-job signatures
+        "db_dashboard_password",  # BF-D52: the dashboard's SELECT-only database role
     }
 )
 

@@ -225,6 +225,8 @@ class TaxCfg(_M):
     # BF-D44: your marginal tax rate incl. Medicare levy (e.g. 0.345) for the app's estimate;
     # empty by default: set it on the server only, never in the repository
     marginal_rate: Decimal | None = Field(default=None, ge=0, le=Decimal("0.6"))
+    # BF-D51: net capital losses carried in from before this book (as --prior-losses)
+    prior_losses_aud: Decimal = Field(default=Decimal(0), ge=0)
 
     def params(self, funds: frozenset[str]) -> TaxParams:
         from trader.tax_report import TaxParams
@@ -262,7 +264,13 @@ class AppCfg(_M):
 
     allowed_logins: list[str] = Field(default_factory=list)
     control_port: int = Field(default=8081, ge=1024, le=65535)
-    control_url: str = "http://trader:8081"
+    control_url: str = "http://trader-control:8081"
+    # BF-D46: the trader listens only on this name's address (its `control` network alias),
+    # never 0.0.0.0
+    control_bind_host: str = "trader-control"
+    # BF-D46 / L2: the app's host name (https://<this>); with it the Origin of every action
+    # must be exactly this host. Written to bfast.local.yaml by `bigwins login`.
+    public_host: str = ""
     push_subject: str = "mailto:bigwins-paper-trader@users.noreply.github.com"
 
     @field_validator("push_subject")
@@ -310,6 +318,10 @@ class DashboardCfg(_M):
     # adds) allowed to see the page; empty = everyone on the owner's tailnet
     allowed_logins: list[str] = Field(default_factory=list)
     index_code: str = "A200"  # the comparison line: the ASX 200 fund of the L15 switch
+    # BF-D46: the Tailscale-User-Login header is believed only from these source addresses
+    # (the gateway of the `dashboard` Docker network, where the host's published port
+    # arrives from); a header from anywhere else is dropped. Empty = believe any (dev).
+    trusted_proxies: list[str] = Field(default_factory=lambda: ["172.31.250.1"])
 
 
 class BfastConfig(_M):

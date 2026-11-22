@@ -47,6 +47,11 @@ SECURITY_HEADERS = {
 }
 
 
+def mode_label(demo: bool = False, live: bool = False) -> str:
+    """BF-D50: the badge from the broker mode in the config (never hard-coded)."""
+    return "DEMO" if demo else ("LIVE" if live else "PAPER")
+
+
 def e(x: object) -> str:
     return html.escape(str(x), quote=True)
 
@@ -69,6 +74,7 @@ def page(
     notes: Sequence[str] = (),
     latest_inbox: int = 0,
     refresh: bool = True,
+    live: bool = False,
 ) -> str:
     """One whole page: header (brand, PAPER/DEMO badge, refresh, settings), the body in
     ``<main>`` and the bottom tab bar. ``active`` = the tab to highlight."""
@@ -81,7 +87,7 @@ def page(
     )
     head = (
         '<header class="top"><a class="brand" href="/" data-nav><span class="logo">BW</span>'
-        f'Big Wins</a><span class="badge">{"DEMO" if demo else "PAPER"}</span>'
+        f'Big Wins</a><span class="badge">{mode_label(demo, live)}</span>'
         '<span class="sp"></span>'
         f'<button class="iconbtn" id="refresh" type="button" aria-label="Refresh">{icon("refresh")}'
         f'</button><a class="iconbtn" href="/settings" data-nav aria-label="Settings">{icon("gear")}</a>'
@@ -334,14 +340,15 @@ function alerts(){
  function say(t){if(out)out.textContent=t;}
  if(!('serviceWorker' in navigator)||!('PushManager' in window)){say('This browser cannot show alerts. On iPhone: Share > Add to Home Screen first, then open Big Wins from the home screen.');b.disabled=true;return;}
  b.addEventListener('click',function(){
+  var cc=document.getElementById('alerts-code');if(cc&&!/^[0-9]{6}$/.test(cc.value)){say('Type your 6-digit code first.');return;}
   Notification.requestPermission().then(function(p){if(p!=='granted'){say('Alerts are blocked. Allow notifications for Big Wins in the phone settings.');throw 0;}
    return navigator.serviceWorker.register('/sw.js',{scope:'/'});})
   .then(function(){return navigator.serviceWorker.ready;})
   .then(function(reg){var k=b.dataset.key,raw=atob(k.replace(/-/g,'+').replace(/_/g,'/')+'=='.slice(0,(4-k.length%4)%4)),arr=new Uint8Array(raw.length);
    for(var i=0;i<raw.length;i++)arr[i]=raw.charCodeAt(i);
    return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:arr});})
-  .then(function(sub){return fetch('/act/push/subscribe',{method:'POST',credentials:'same-origin',
-   headers:{'Content-Type':'application/json','X-CSRF-Token':b.dataset.csrf},body:JSON.stringify(sub)});})
+  .then(function(sub){var c=document.getElementById('alerts-code');return fetch('/act/push/subscribe',{method:'POST',credentials:'same-origin',
+   headers:{'Content-Type':'application/json','X-CSRF-Token':b.dataset.csrf},body:JSON.stringify({subscription:sub,code:c?c.value:''})});})
   .then(function(r){return r.text().then(function(t){say(r.ok?'Alerts are on for this phone. A test alert is on its way.':'Not saved: '+t);});})
   .catch(function(x){if(x!==0)say('Could not turn alerts on: '+x);});
  });

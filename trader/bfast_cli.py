@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from trader.app_notify import AppNotifier, ChannelTransport
     from trader.bf_app import BfApp
     from trader.flex_pull import FlexPuller
+    from trader.secrets import SecretValue
     from trader.store_refresh import StoreRefresher
 
 DEFAULT_CONFIG = Path("config/bfast.yaml")
@@ -310,7 +311,7 @@ def _channels(
     notifier = None
     if cfg.notify.app:
         push = WebPush(read_secret("vapid_private_key"), cfg.app.push_subject)
-        notifier = AppNotifier(j, push)
+        notifier = AppNotifier(j, push, label="PAPER" if cfg.mode == "paper" else "LIVE")
     chats = frozenset(cfg.telegram.allowed_chat_ids if tg is not None else ())
     if notifier is not None:
         chats |= {APP_CHAT}
@@ -343,10 +344,15 @@ def _app_wiring(
             vapid_public=notifier.push.public_key if notifier.push else None,
             refresh_prices=app.refresh_prices_now, update_mode=cfg.strategy.update_mode,
             sessions=lambda: app.sessions,
+            proxy_key=key_bytes(read_secret("app_proxy_key")),  # BF-D46
+            public_host=cfg.app.public_host,
+            worker_key=key_bytes(read_secret("worker_job_key")),  # BF-D48
+            live=cfg.mode != "paper",  # BF-D50
         )  # fmt: skip
-        serve_control(ctl, "0.0.0.0", cfg.app.control_port)  # noqa: S104 - the private control network only
+        bind = control_bind_address(cfg.app.control_bind_host)  # BF-D46: never 0.0.0.0
+        serve_control(ctl, bind, cfg.app.control_port)
         print(
-            f"app actions on :{cfg.app.control_port} (control network); "
+            f"app actions on {bind}:{cfg.app.control_port} (control network); "
             f"{len(ctl.allowed_logins)} log-in(s) allowed",
             file=sys.stderr,
         )
@@ -358,6 +364,26 @@ def _app_wiring(
     print(f"heartbeat: {'on' if hb.enabled else 'off (healthchecks_url is none)'}", file=sys.stderr)
     hooks.append(hb.tick)
     return hooks, sleep
+
+
+def key_bytes(secret: SecretValue) -> bytes:
+    """A shared HMAC key from its secret file (hex or text, at least 32 characters)."""
+    v = secret.reveal().strip()
+    if len(v) < 32:
+        raise SystemExit("an app key secret is shorter than 32 characters: run `bigwins update`")
+    return v.encode()
+
+
+def control_bind_address(host: str) -> str:
+    """BF-D46: the address of the trader's ``control``-network alias; never a wildcard."""
+    import ipaddress
+    import socket
+
+    addr = socket.gethostbyname(host)
+    ip = ipaddress.ip_address(addr)
+    if ip.is_unspecified:
+        raise SystemExit(f"control_bind_host {host!r} resolves to {addr}: refused")
+    return addr
 
 
 def tell_server_jobs(j: Journal, notifier: AppNotifier) -> int:
@@ -417,10 +443,12 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:
     the latest jobs."""
     from trader.app_store import (
         FORCE_MARKET,
+        FORCE_MIGRATION,
         IMMEDIATE,
         SERVER_ACTIONS,
         STRATEGY,
         claim_server_job,
+        created_text,
         finish_server_job,
         server_job_rows,
         set_state,
@@ -437,6 +465,9 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:
         print(json.dumps({} if r is None else {
             "id": r["id"], "action": r["action"], "force": bool(r["force"] & FORCE_MARKET),
             "strategy": bool(r["force"] & STRATEGY), "immediate": bool(r["force"] & IMMEDIATE),
+            "migration": bool(r["force"] & FORCE_MIGRATION), "flags": int(r["force"]),
+            "commit": r.get("commit") or "", "created": created_text(r["requested_at"]),
+            "sig": r.get("sig") or "",
         }))  # fmt: skip
         return 0
     if args.op == "finish":
@@ -487,6 +518,7 @@ def update_info(u: dict[str, object], old_config: str | None) -> dict[str, objec
     return {
         "ahead": ahead, "head": h(u.get("head")), "remote": h(u.get("remote")),
         "previous": h(u.get("previous")), "strategy": cls["strategy"], "reasons": cls["reasons"],
+        "previous_migrations": bool(u.get("previous_migrations")),
         "files": files[:40], "subject": clean_line(str(u.get("subject") or ""))[:200],
         "notes": {k: clean_line(str(v))[:600] for k, v in notes[0].items()} if notes else {},
     }  # fmt: skip
@@ -560,7 +592,9 @@ def _read_only_journal(cfg: BfastConfig, explicit: str | None) -> Journal:
         raise SystemExit(f"{cfg.journal.url_env} is not set (a password-free database URL)")
     url = make_url(raw)
     if url.drivername.startswith("postgresql") and url.password is None:
-        url = url.set(password=read_secret("db_password").reveal())
+        # BF-D52: the dashboard's own SELECT-only role and its password secret
+        name = os.environ.get("TRADER_BF_DB_PASSWORD_SECRET", "db_password")
+        url = url.set(password=read_secret(name).reveal())
     return Journal.read_only(read_only_engine(url))
 
 
@@ -611,10 +645,13 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             out_dir=Path(args.out) if args.out else None,
             sessions=lambda: _sessions(datetime.now(ASX_TZ).date()),
             approval_deadline=cfg.execution.approval_deadline, tax_params=tax,
-            marginal_rate=cfg.tax.marginal_rate,
+            marginal_rate=cfg.tax.marginal_rate, live=cfg.mode != "paper",
+            prior_losses=cfg.tax.prior_losses_aud, amit_csv=cfg.tax.amit_csv,
         )  # fmt: skip
-        if cfg.notify.app:
-            actions = proxy_to(cfg.app.control_url)
+        if cfg.notify.app and not args.snapshot:
+            from trader.secrets import read_secret
+
+            actions = proxy_to(cfg.app.control_url, key_bytes(read_secret("app_proxy_key")))
     if args.snapshot:
         Path(args.snapshot).write_text(render(collect(src)), encoding="utf-8")
         print(f"wrote {args.snapshot}")
@@ -633,6 +670,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     app = Dashboard(
         src, logins, actions, acting, cfg.notify.channel, _version(), lambda: _checklist(cfg, j),
         cfg.strategy.update_mode, changelog,
+        trusted_peers=frozenset() if args.demo else frozenset(cfg.dashboard.trusted_proxies),
+        live=cfg.mode != "paper",
     )  # fmt: skip
     httpd = serve(app, args.host, args.port)
     print(f"phone app on http://{args.host}:{args.port}", file=sys.stderr)

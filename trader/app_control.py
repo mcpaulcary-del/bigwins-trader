@@ -18,8 +18,14 @@ checks everything again:
    and is handled by ``ApprovalBot._dispatch`` in the trader's main loop (the HTTP thread
    only queues it), so the TOTP verifier (single use, shared with Telegram), the 15:20
    deadline and the batch checks are the very same code. Nothing here approves anything.
-4. **Code lock-out**: 5 wrong codes in 15 minutes lock code actions from the app for 15
-   minutes (journaled, and paged to the owner). Pause, Kill and Stop stay available.
+4. **Code lock-out** (BF-D47): 3 wrong codes in 15 minutes lock code actions from the app
+   for 15 minutes (journaled, and paged to the owner); every wrong code also leaves a
+   quiet inbox note. The count is kept in the journal, cleared only by a correct code, and
+   checked when the code is verified (in the main loop); only one code-bearing request
+   may be queued at a time. Pause, Kill and Stop stay available.
+6. **Signed forwarding** (BF-D46): in production the trader accepts a request only with
+   the dashboard's signature (``app_sign``); the log-in comes from the signed headers, and
+   the server listens only on its ``control``-network address.
 5. **Confirm screens**: every action first shows what will happen ("Approve all 18 orders
    of <batch> - total about A$9,900") before the code is asked; Kill and Stop need the
    "Yes" button of their confirm screen.
@@ -44,18 +50,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from trader.app_sign import NonceCache, verify_proxy
 from trader.app_store import (
     FORCE_MARKET,
+    FORCE_MIGRATION,
     FORCE_MONTH_END,
     GUARDED_ACTIONS,
     IMMEDIATE,
     SERVER_ACTIONS,
+    SHA40,
     STRATEGY,
     add_inbox,
     add_push_sub,
     add_server_job,
+    cancel_server_job,
     drop_push_sub,
     get_state,
+    push_sub_rows,
+    server_job_rows,
     set_state,
 )
 from trader.approval import APP_CHAT, OPEN_FOR_APPROVAL, ApprovalBot, Incoming, approved_seqs
@@ -64,10 +76,11 @@ from trader.journal import Journal
 from trader.webui import SECURITY_HEADERS, e, page, section
 
 CODE_ACTS = frozenset({"ok", "ap", "rf", "veto", "re", "co", "idmap", "idmap_reject"})
-CONFIRM_ACTS = frozenset({"ki", "so"})
+CONFIRM_ACTS = frozenset({"ki", "so", "cancel"})
 ONE_TAP = frozenset({"pa", "st"})
-MAX_FAILS = 5
+MAX_FAILS = 3
 LOCK = timedelta(minutes=15)
+MAX_DEVICES = 5  # BF-D46 / L3: phones that may receive alerts
 BODY_MAX = 16384
 WAIT_S = 45.0
 COOKIE = "bw_sid"
@@ -76,7 +89,7 @@ ACTION_LABEL = {
     "ok": "Approve", "ap": "Approve batch", "rf": "Refuse batch", "veto": "Veto",
     "re": "Resume", "co": "Continue", "idmap": "Confirm code change",
     "idmap_reject": "Undo code change", "pa": "Pause", "ki": "KILL", "so": "STOP",
-    "st": "Status",
+    "st": "Status", "cancel": "Cancel the queued job",
 }  # fmt: skip
 
 
@@ -90,17 +103,25 @@ def header(headers: Mapping[str, str], name: str) -> str:
     return next((v for k, v in headers.items() if k.lower() == name), "").strip()
 
 
-def same_origin(headers: Mapping[str, str]) -> bool:
-    """Fetch metadata / Origin check for POSTs (CSRF defence in depth)."""
+def same_origin(headers: Mapping[str, str], pinned: str = "") -> bool:
+    """Fetch metadata / Origin check for POSTs (CSRF defence in depth). ``pinned``: the
+    app's own host name (``app.public_host``, BF-D46); with it the Origin must be exactly
+    that host, or, without an Origin, ``Sec-Fetch-Site`` must say same-origin."""
     site = header(headers, "sec-fetch-site").lower()
     if site and site != "same-origin":
         return False
     origin = header(headers, "origin")
-    if origin and origin != "null":
+    if origin == "null":
+        return False
+    if pinned:
+        if origin:
+            return urlsplit(origin).netloc.lower() == pinned.lower()
+        return site == "same-origin"
+    if origin:
         host = urlsplit(origin).netloc.lower()
         ok = {header(headers, "host").lower(), header(headers, "x-forwarded-host").lower()}
         return host in ok - {""}
-    return origin != "null"
+    return True
 
 
 def _cookie(headers: Mapping[str, str], name: str) -> str:
@@ -109,6 +130,10 @@ def _cookie(headers: Mapping[str, str], name: str) -> str:
         if k == name:
             return v
     return ""
+
+
+class _RefusedError(Exception):
+    """A request refused before it is queued (the message is shown)."""
 
 
 @dataclass
@@ -140,12 +165,18 @@ class Control:
     sessions: Callable[[], Sequence[date]] = field(default=lambda: [])
     demo: bool = False
     inline: bool = False
+    proxy_key: bytes | None = None  # BF-D46: app_proxy_key; None = unsigned (tests, demo)
+    public_host: str = ""  # BF-D46 / L2: the app's host name for the Origin check
+    worker_key: bytes | None = None  # BF-D48: signs server jobs for the host worker
+    live: bool = False  # BF-D50: labels from the broker mode (always paper in this build)
+    max_devices: int = MAX_DEVICES
     _key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     _q: queue.Queue[_Req] = field(default_factory=queue.Queue, repr=False)
     _wake: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _fails: list[datetime] = field(default_factory=list, repr=False)
     _locked_until: datetime | None = None
+    _code_busy: bool = False
+    _nonces: NonceCache = field(default_factory=NonceCache, repr=False)
 
     def __post_init__(self) -> None:
         self.allowed_logins = frozenset(x.strip().lower() for x in self.allowed_logins if x.strip())
@@ -167,20 +198,35 @@ class Control:
                 r = self._q.get_nowait()
             except queue.Empty:
                 return n
-            try:
-                r.result = self._execute(r)
-            except Exception as ex:  # an action never stops the trader
-                r.result = f"failed: {type(ex).__name__}"
-            r.done.set()
+            self._run(r)
             n += 1
+
+    def _run(self, r: _Req) -> None:
+        try:
+            r.result = self._execute(r)
+        except Exception as ex:  # an action never stops the trader
+            r.result = f"failed: {type(ex).__name__}"
+        finally:
+            if r.data.get("code_bearing"):
+                with self._lock:
+                    self._code_busy = False
+            r.done.set()
 
     def _submit(self, r: _Req) -> str | None:
         if self.inline:
-            r.result = self._execute(r)
+            self._run(r)
             return r.result
         self._q.put(r)
         self._wake.set()
         return r.result if r.done.wait(WAIT_S) else None
+
+    def _claim_code_slot(self) -> bool:
+        """H2: one code-bearing request in the queue at a time."""
+        with self._lock:
+            if self._code_busy:
+                return False
+            self._code_busy = True
+            return True
 
     def locked(self, now: datetime) -> datetime | None:
         with self._lock:
@@ -192,24 +238,36 @@ class Control:
         if r.kind == "bot":
             if self.bot is None:
                 return "the trader's command handler is not running"
+            coded = bool(r.data.get("code_bearing"))
+            if coded and self.locked(self.clock()):  # checked again where the code is used
+                return "refused: code actions are locked (too many wrong codes)"
             before = self.bot.verifier.failures
             m = Incoming(APP_CHAT, str(r.data["command"]), r.at, source="app", login=r.login)
             reply = self.bot.handle(m)
-            wrong = self.bot.verifier.failures > before
             shown = str(r.data["shown"])
             add_inbox(self.journal, self.clock(), "action", f"You (app): {shown}"[:200],
                       f"{shown}\n-> {reply}", "/inbox", src, "off")  # fmt: skip
-            self._count(wrong, r.at, r.login)
+            if coded:
+                self._count(self.bot.verifier.failures > before, r.at, r.login)
             return reply
         if r.kind == "subscribe":
-            d = r.data
-            add_push_sub(self.journal, d["endpoint"], d["p256dh"], d["auth"], r.login, r.at)
-            if self.notify is not None:
-                self.notify("Alerts are on for this phone. Approvals and PAGE alerts arrive "
-                            "here at high priority.", "info", "/settings", src, True)  # fmt: skip
-            return "ok"
+            return self._subscribe_exec(r, src)
         if r.kind == "unsubscribe":
             return "ok" if drop_push_sub(self.journal, str(r.data["endpoint"])) else "not found"
+        if r.kind == "unsubscribe_all":
+            n = 0
+            for sub in push_sub_rows(self.journal):
+                n += drop_push_sub(self.journal, str(sub["endpoint"]))
+            add_inbox(self.journal, self.clock(), "action", "You (app): alerts off on all devices",
+                      f"{n} device(s) switched off", "/settings", src, "off")  # fmt: skip
+            return f"alerts switched off on {n} device(s)"
+        if r.kind == "cancel":
+            jid = int(r.data["job"])
+            ok = cancel_server_job(self.journal, jid, r.login, r.at)
+            reply = f"server job {jid} cancelled" if ok else f"server job {jid} is not queued"
+            add_inbox(self.journal, self.clock(), "action", f"You (app): cancel job {jid}",
+                      reply, "/server", src, "off")  # fmt: skip
+            return reply
         if r.kind == "alerts":
             set_state(self.journal, "alerts", dict(r.data), r.at)
             add_inbox(self.journal, self.clock(), "action", "You (app): alert settings changed",
@@ -219,17 +277,43 @@ class Control:
             return self._server(r, src)
         return "unknown request"
 
-    def _server(self, r: _Req, src: str) -> str:
+    def _verify_code(self, r: _Req) -> str | None:
+        """Lock check, code check and failure count, all at verification time (H2)."""
+        if self.locked(self.clock()):
+            return "refused: code actions are locked (too many wrong codes)"
         if self.bot is None or not self.bot.verifier.verify(str(r.data["code"]), r.at):
             self._count(True, r.at, r.login)
-            reply = "refused: invalid or reused code"
+            return "refused: invalid or reused code"
+        self._count(False, r.at, r.login)
+        return None
+
+    def _subscribe_exec(self, r: _Req, src: str) -> str:
+        d = r.data
+        why = self._verify_code(r)
+        if why is not None:
+            return why
+        subs = push_sub_rows(self.journal)
+        if len(subs) >= self.max_devices and all(x["endpoint"] != d["endpoint"] for x in subs):
+            return (f"refused: alerts are already on for {len(subs)} devices (the limit); "
+                    "turn alerts off on all devices first")  # fmt: skip
+        add_push_sub(self.journal, d["endpoint"], d["p256dh"], d["auth"], r.login, r.at)
+        add_inbox(self.journal, self.clock(), "action", "You (app): alerts on for a new device",
+                  f"device {str(d['endpoint'])[:40]}...", "/settings", src, "off")  # fmt: skip
+        if self.notify is not None:
+            self.notify("Alerts are on for this phone. Approvals and PAGE alerts arrive "
+                        "here at high priority.", "info", "/settings", src, True)  # fmt: skip
+        return "ok"
+
+    def _server(self, r: _Req, src: str) -> str:
+        why = self._verify_code(r)
+        if why is not None:
+            reply = why
         elif r.kind == "refresh":
-            self._count(False, r.at, r.login)
             reply = self.refresh_prices(r.at) if self.refresh_prices else "no price refresher"
         else:
-            self._count(False, r.at, r.login)
             act = str(r.data["action"])
-            jid = add_server_job(self.journal, act, int(r.data["force"]), r.login, r.at)
+            jid = add_server_job(self.journal, act, int(r.data["force"]), r.login, r.at,
+                                 str(r.data.get("commit") or ""), self.worker_key)  # fmt: skip
             reply = (
                 f"server job {jid} '{act}' queued: the server runs it within a minute "
                 "(Server tab shows progress)"
@@ -239,24 +323,38 @@ class Control:
                   f"{shown}\n-> {reply}", "/server", src, "off")  # fmt: skip
         return reply
 
+    def _fails(self) -> list[datetime]:
+        st = get_state(self.journal, "app-code-fails")
+        raw = st[0] if st and isinstance(st[0], list) else []
+        return [datetime.fromisoformat(str(x)) for x in raw]
+
     def _count(self, wrong: bool, at: datetime, login: str) -> None:
-        """BF-D39 lock-out: 5 wrong codes within 15 minutes lock code actions for 15
-        minutes; journaled (app state + inbox) and paged."""
+        """BF-D47 lock-out (main loop only): the wrong codes of the last 15 minutes are kept
+        in the journal (``app-code-fails``) and cleared only by a correct code; 3 of them
+        lock code actions for 15 minutes (journaled and paged); each wrong code also leaves
+        a quiet inbox note."""
+        if not wrong:
+            if self._fails():
+                set_state(self.journal, "app-code-fails", [], at)
+            return
+        fails = [t for t in self._fails() if at - t < LOCK] + [at]
         page_text = None
         with self._lock:
-            if not wrong:
-                self._fails.clear()
-                return
-            self._fails = [t for t in self._fails if at - t < LOCK] + [at]
-            if len(self._fails) >= MAX_FAILS:
+            if len(fails) >= MAX_FAILS:
                 self._locked_until = at + LOCK
-                self._fails.clear()
+                fails = []
                 page_text = (
                     f"PAGE app code actions LOCKED until "
                     f"{self._locked_until.astimezone(ASX_TZ):%H:%M} Sydney: {MAX_FAILS} wrong "
                     f"codes in 15 minutes (log-in {login}). Pause, Kill and Stop still work. "
                     "If this was not you, use Kill and check the server."
                 )
+        set_state(self.journal, "app-code-fails", [t.isoformat() for t in fails], at)
+        if page_text is None:
+            add_inbox(self.journal, at, "info", "A wrong code was entered in the app",
+                      f"Wrong 6-digit code from log-in {login} ({len(fails)} of {MAX_FAILS} in "
+                      "15 minutes before code actions lock).", "/inbox", f"app:{login}",
+                      "off")  # fmt: skip
         if page_text is not None:
             assert self._locked_until is not None
             set_state(self.journal, "app-lockout",
@@ -267,14 +365,23 @@ class Control:
                 add_inbox(self.journal, at, "page", page_text[:200], page_text, "/inbox")
 
     # ------------------------------------------------------------ HTTP side
-    def respond(  # noqa: PLR0911 - one return per route
+    def respond(  # noqa: PLR0911, PLR0912 - one return per route
         self, method: str, path: str, headers: Mapping[str, str], body: bytes = b""
     ) -> tuple[int, dict[str, str], bytes]:
         hdrs = dict(SECURITY_HEADERS)
         url = urlsplit(path)
         p = url.path.rstrip("/") or "/act"
         qs = {k: v[-1] for k, v in parse_qs(url.query).items()}
-        login = "demo" if self.demo else header(headers, LOGIN_HEADER).lower()
+        if self.proxy_key is not None and not self.demo:  # BF-D46: only signed requests
+            signed = verify_proxy(self.proxy_key, headers, method, path, body, self._nonces)
+            if signed is None:
+                return 403, hdrs, b"unsigned or stale request\n"
+            login = signed["login"]
+            headers = {"Cookie": header(headers, "cookie"), "Origin": signed["origin"],
+                       "Sec-Fetch-Site": signed["site"], "Host": self.public_host,
+                       "X-CSRF-Token": header(headers, "x-csrf-token")}  # fmt: skip
+        else:
+            login = "demo" if self.demo else header(headers, LOGIN_HEADER).lower()
         sid = _cookie(headers, COOKIE)
         if len(sid) < 20:
             sid = secrets.token_urlsafe(24)
@@ -302,6 +409,11 @@ class Control:
                 _Req("unsubscribe", login, self.clock(), {"endpoint": form.get("endpoint", "")})
             )
             return self._html(200, hdrs, "Alerts", section("Alerts", f"<p>{e(r or 'queued')}</p>"))
+        if p == "/act/push/off-all":  # risk-reducing: no code
+            if self.demo:
+                return self._result(hdrs, "DEMO: nothing was done.", True)
+            r = self._submit(_Req("unsubscribe_all", login, self.clock(), {}))
+            return self._result(hdrs, r or "queued", True)
         return 404, hdrs, b"not found\n"
 
     def _token(self, sid: str, login: str) -> str:
@@ -316,7 +428,7 @@ class Control:
             return "This Tailscale log-in may not act."
         if len(body) > BODY_MAX:
             return "request too large"
-        if not same_origin(headers):
+        if not same_origin(headers, self.public_host):
             return "cross-site request refused"
         sent = header(headers, "x-csrf-token")
         if not sent:
@@ -330,7 +442,7 @@ class Control:
         self, status: int, hdrs: dict[str, str], title: str, body: str, active: str = ""
     ) -> tuple[int, dict[str, str], bytes]:
         hdrs["Content-Type"] = "text/html; charset=utf-8"
-        out = page(title, body, active, demo=self.demo, refresh=False)
+        out = page(title, body, active, demo=self.demo, refresh=False, live=self.live)
         return status, hdrs, out.encode()
 
     # ------------------------------------------------------------ GET pages
@@ -454,8 +566,17 @@ class Control:
                 out.append((bid, n, f"{xd:%a %d %b} {dl}"))
         return out
 
-    def _preview(self, qs: Mapping[str, str], now: datetime) -> tuple[str | None, str, str]:
+    def _preview(  # noqa: PLR0911 - one refusal per rule
+        self, qs: Mapping[str, str], now: datetime
+    ) -> tuple[str | None, str, str]:
         a = qs.get("a", "")
+        if a == "cancel":  # BF-D49: risk-reducing, confirm only
+            job = qs.get("job", "")
+            row = next((r for r in server_job_rows(self.journal, 50)
+                        if job.isdigit() and int(job) == r["id"]), None)  # fmt: skip
+            if row is None or row["status"] != "PENDING":
+                return f"server job {job} is not queued", "", ""
+            return None, "", f"cancel queued server job {job} ({row['action']})"
         if a.startswith("srv:"):
             act = a[4:]
             if act not in SERVER_ACTIONS:
@@ -506,7 +627,9 @@ class Control:
             return section(
                 "Cannot do this", f"<p>{e(why)}</p><a class='btn sec' href='/act'>Back</a>"
             )
-        fields = {k: qs.get(k, "") for k in ("a", "b", "n", "old", "new", "ratio")}
+        fields = {k: qs.get(k, "") for k in ("a", "b", "n", "old", "new", "ratio", "job")}
+        if a == "srv:update":  # BF-D48: the exact commit shown here is what gets applied
+            fields["commit"] = str(self.update_state().get("remote") or "")
         head = f"<h1>{e(ACTION_LABEL.get(a, 'Confirm'))}</h1>"
         summary = self._summary(qs)
         if a == "ok" and qs.get("n") == "all" and qs.get("b"):
@@ -613,7 +736,15 @@ class Control:
             prev = str(u.get("previous") or "")
             rows.append(
                 f"<p>Back to the commit before the last update: <b>{e(prev[:10] or '?')}</b></p>"
+                "<p class='small muted'>A rollback does not undo database migrations.</p>"
             )
+            if u.get("previous_migrations"):
+                rows.append(
+                    "<p class='warn'>The last update changed the database schema (a migration). "
+                    "The older code must still work with it.</p>"
+                    '<label class="chk"><input type="checkbox" name="migration" value="1" '
+                    "required> Roll back across the migration anyway</label>"
+                )
         if strat:
             if self.update_mode == "immediate":
                 rows.append(
@@ -656,8 +787,11 @@ class Control:
             + section(
                 "Turn on alerts on this phone",
                 "<p>Tap the button, then <b>Allow</b>. On iPhone, open Big Wins from the home "
-                "screen icon first (Share &rsaquo; Add to Home Screen).</p>"
-                '<button class="btn wide" id="alerts-on" type="button" '
+                "screen icon first (Share &rsaquo; Add to Home Screen). A new device needs your "
+                f"6-digit code (at most {self.max_devices} devices).</p>"
+                '<input class="code" id="alerts-code" inputmode="numeric" pattern="[0-9]{6}" '
+                'maxlength="6" autocomplete="one-time-code" placeholder="6-digit code">'
+                '<button class="btn wide" style="margin-top:8px" id="alerts-on" type="button" '
                 f'data-key="{e(self.vapid_public)}" data-csrf="{e(token)}">'
                 "🔔 Turn on alerts</button>"
                 '<p class="small muted" id="alerts-state"></p>',
@@ -669,10 +803,16 @@ class Control:
                 f'<form method="post" action="/act/alerts"><input type="hidden" name="csrf" '
                 f'value="{e(token)}">{boxes}<button class="btn sec wide">Save</button></form>',
             )
+            + section(
+                "Lost a phone?",
+                '<form method="post" action="/act/push/off-all"><input type="hidden" name="csrf" '
+                f'value="{e(token)}"><button class="btn sec wide">Turn alerts off on all '
+                "devices</button></form>",
+            )
         )
 
     # ------------------------------------------------------------ POST actions
-    def _do(  # noqa: PLR0911, PLR0912 - one refusal per rule
+    def _do(  # noqa: PLR0911 - one refusal per rule
         self, form: Mapping[str, str], login: str, hdrs: dict[str, str]
     ) -> tuple[int, dict[str, str], bytes]:
         now = self.clock()
@@ -699,6 +839,32 @@ class Control:
             return self._result(
                 hdrs, f"DEMO: nothing was done. In the real app this would {what}.", True
             )
+        if a == "cancel":
+            reply = self._submit(_Req("cancel", login, now, {"job": form.get("job", "0")}))
+            return self._result(hdrs, reply or "queued", bool(reply and "cancelled" in reply))
+        if needs_code and not self._claim_code_slot():
+            return self._result(hdrs, "Not done: another code request is still being checked; "
+                                "wait for its answer.", False)  # fmt: skip
+        return self._do_coded(a, form, login, hdrs, now, cmd, what, needs_code, code)
+
+    def _do_coded(
+        self, a: str, form: Mapping[str, str], login: str, hdrs: dict[str, str], now: datetime,
+        cmd: str, what: str, needs_code: bool, code: str,
+    ) -> tuple[int, dict[str, str], bytes]:  # fmt: skip
+        """Holds the single code slot (H2) when ``needs_code``; it is released when the
+        request has been executed (``_run``) or here when it is refused before queueing."""
+        try:
+            return self._do_queue(a, form, login, hdrs, now, cmd, what, needs_code, code)
+        except _RefusedError as r:
+            if needs_code:
+                with self._lock:
+                    self._code_busy = False
+            return self._result(hdrs, str(r), False)
+
+    def _do_queue(  # noqa: PLR0912 - one rule per branch
+        self, a: str, form: Mapping[str, str], login: str, hdrs: dict[str, str], now: datetime,
+        cmd: str, what: str, needs_code: bool, code: str,
+    ) -> tuple[int, dict[str, str], bytes]:  # fmt: skip
         if a.startswith("srv:") or a == "refresh":
             from trader.strategy_version import update_block
 
@@ -710,20 +876,35 @@ class Control:
                 block = update_block(self.update_mode, True, self.sessions(), now,
                                      form.get("override") == "1")  # fmt: skip
                 if block is not None:
-                    return self._result(hdrs, f"Not done: {block}.", False)
+                    raise _RefusedError(f"Not done: {block}.")
                 if form.get("override") == "1":
                     flags |= FORCE_MONTH_END
-                if act == "rollback" and not self.update_state().get("previous"):
-                    return self._result(hdrs, "Not done: no previous version is recorded.", False)
             elif act in GUARDED_ACTIONS and self.market_open(now) and not flags & FORCE_MARKET:
-                return self._result(hdrs, "Not done: the ASX is open; tick 'Do it anyway'.", False)
+                raise _RefusedError("Not done: the ASX is open; tick 'Do it anyway'.")
+            u = self.update_state()
+            commit = ""
+            if act == "update":  # BF-D48: exactly the commit the owner was shown
+                commit = str(u.get("remote") or "")
+                if not SHA40.fullmatch(commit) or form.get("commit") != commit:
+                    raise _RefusedError("Not done: the update changed since you looked at it; "
+                                   "open it again and check what it does.")  # fmt: skip
+            if act == "rollback":
+                commit = str(u.get("previous") or "")
+                if not SHA40.fullmatch(commit):
+                    raise _RefusedError("Not done: no previous version is recorded.")
+                if u.get("previous_migrations"):
+                    if form.get("migration") != "1":
+                        raise _RefusedError("Not done: the rollback crosses a database migration; "
+                                       "tick the box to do it anyway.")  # fmt: skip
+                    flags |= FORCE_MIGRATION
             kind = "refresh" if a == "refresh" else "server"
-            data = {"action": act, "force": flags, "code": code, "shown": what}
+            data = {"action": act, "force": flags, "code": code, "shown": what,
+                    "commit": commit, "code_bearing": True}  # fmt: skip
             reply = self._submit(_Req(kind, login, now, data))
         else:
             command = f"{cmd} {code}" if needs_code else cmd
-            shown = what
-            reply = self._submit(_Req("bot", login, now, {"command": command, "shown": shown}))
+            data = {"command": command, "shown": what, "code_bearing": needs_code}
+            reply = self._submit(_Req("bot", login, now, data))
         if reply is None:
             return self._result(hdrs, "Sent to the trader, which is busy with a job; the answer "
                                 "will be in your Inbox in a minute.", True)  # fmt: skip
@@ -753,7 +934,7 @@ class Control:
         r = self._submit(_Req("alerts", login, self.clock(), prefs))
         return self._result(hdrs, r or "queued", True)
 
-    def _subscribe(
+    def _subscribe(  # noqa: PLR0911 - one refusal per rule
         self, login: str, body: bytes, hdrs: dict[str, str]
     ) -> tuple[int, dict[str, str], bytes]:
         from trader.app_notify import push_host_ok
@@ -761,16 +942,26 @@ class Control:
         hdrs["Content-Type"] = "text/plain; charset=utf-8"
         try:
             d = json.loads(body)
-            data = {"endpoint": str(d["endpoint"]), "p256dh": str(d["keys"]["p256dh"]),
-                    "auth": str(d["keys"]["auth"])}  # fmt: skip
-        except (ValueError, KeyError, TypeError):
+            sub = d.get("subscription", d)
+            data = {"endpoint": str(sub["endpoint"]), "p256dh": str(sub["keys"]["p256dh"]),
+                    "auth": str(sub["keys"]["auth"]), "code": str(d.get("code", "")).strip(),
+                    "code_bearing": True}  # fmt: skip
+        except (ValueError, KeyError, TypeError, AttributeError):
             return 400, hdrs, b"bad subscription\n"
-        if not push_host_ok(data["endpoint"]) or len(data["endpoint"]) > 512:
+        ep, code = str(data["endpoint"]), str(data["code"])
+        if not push_host_ok(ep) or len(ep) > 512:
             return 400, hdrs, b"not a known push service\n"
+        if not (len(code) == 6 and code.isdigit()):
+            return 400, hdrs, b"enter your 6-digit code first\n"
         if self.demo:
             return 200, hdrs, b"DEMO: not saved\n"
+        if self.locked(self.clock()):
+            return 403, hdrs, b"code actions are locked (too many wrong codes)\n"
+        if not self._claim_code_slot():
+            return 429, hdrs, b"another code request is still being checked\n"
         r = self._submit(_Req("subscribe", login, self.clock(), data))
-        return 200, hdrs, (r or "queued").encode()
+        status = 200 if r == "ok" or r is None else 403
+        return status, hdrs, (r or "queued").encode()
 
 
 ACTIONS_OFF = (

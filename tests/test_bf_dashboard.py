@@ -254,7 +254,9 @@ def test_BF_D37_compose_service_is_loopback_and_read_only() -> None:
     d = svc["dashboard"]
     assert d["ports"] == ["127.0.0.1:8080:8080"]
     assert set(d["networks"]) == {"internal", "dashboard", "control"}
-    assert d["secrets"] == ["db_password"] and d["user"] == "10001:10001"
+    # BF-D52: its own SELECT-only role's password (never db_password) and the proxy key
+    assert d["secrets"] == ["db_dashboard_password", "app_proxy_key"] and d["user"] == "10001:10001"
+    assert "bigwins_dashboard@db" in d["environment"]["TRADER_BF_JOURNAL_URL"]
     assert d["read_only"] is True and d["cap_drop"] == ["ALL"]
     assert all(v.endswith(":ro") for v in d["volumes"])
     assert "egress" not in d["networks"]
