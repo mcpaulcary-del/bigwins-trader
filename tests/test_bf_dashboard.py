@@ -161,6 +161,7 @@ def test_BF_D37_postgres_session_is_read_only(pg_url: str) -> None:
         assert c.execute(text("SHOW default_transaction_read_only")).scalar() == "on"
     with pytest.raises(DBAPIError):
         j.add_cash("X", "DEPOSIT", Decimal(1), "forged")
+    j.engine.dispose()  # no pooled connection left for GC to close inside a later test
 
 
 def test_BF_D37_no_write_routes(tmp_path: Path) -> None:
