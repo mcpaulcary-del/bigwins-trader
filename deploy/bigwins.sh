@@ -316,7 +316,12 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
   if market_open; then asx=open; else asx=closed; fi
   ps=$(dc ps --format '{{.Service}}|{{.Status}}' 2>/dev/null)
   logs=$(dc logs --tail 30 --no-color trader 2>/dev/null | tail -30)
-  TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" python3 "$DEPLOY/host_status.py"
+  local n present="" missing=""  # BF-D63: secret names only (the files are never read)
+  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password; do
+    if [ -s "$SECRETS/$n" ]; then present="$present $n"; else missing="$missing $n"; fi
+  done
+  TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" SECRETS_PRESENT="$present" \
+    SECRETS_MISSING="$missing" python3 "$DEPLOY/host_status.py"
 }
 
 finish_job() {  # id status text: record a server job's result (retried while the trader restarts)

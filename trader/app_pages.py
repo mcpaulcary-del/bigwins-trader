@@ -1177,6 +1177,10 @@ def server(v: Any, x: Extras) -> str:
         "Open Claude ↗</a><p class='small muted'>First time only: sign in once on the server "
         "(Termius: <code>tmux attach -t remote</code>).</p>")))  # fmt: skip
     parts.append('<a class="btn sec wide" href="/act">⚙️ Trader controls (pause, kill…)</a>')
+    parts.append(
+        '<a class="btn sec wide" style="margin-top:10px" href="/setup" data-nav>'
+        "✅ Setup &amp; IBKR checklist</a>"
+    )
     return shell(v, x, "Server", "".join(parts), "server")
 
 
@@ -1309,6 +1313,8 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
         + section("Go-live checklist (docs/GO_LIVE_GUIDE.md part E)",
                   f'<ul class="list">{ck}</ul><p class="small muted">This build is PAPER ONLY; '
                   "going live is a separate, reviewed owner step.</p>")
+        + section("Setup", '<a class="btn sec wide" href="/setup" data-nav>Setup &amp; IBKR '
+                  "checklist ›</a>")
         + section("About", f"<p>App version <b>{e(version)}</b></p>")
     )  # fmt: skip
     return shell(v, x, "Settings", body, "")
@@ -1316,3 +1322,136 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
 
 def dumps_mapping(m: Mapping[str, Any]) -> str:
     return json.dumps(m, default=str)
+
+
+# ---------------------------------------------------------------- Setup & IBKR (BF-D63)
+
+IBKR_HOME = "https://www.interactivebrokers.com.au/"
+IBKR_LOGIN = "https://www.interactivebrokers.com.au/sso/Login"
+TWO_STEP = ("Google", "GitHub", "BinaryLane", "IBKR", "Claude", "EODHD")
+IBKR_SECRETS = ("tws_password", "ibkr_flex_token", "ibkr_flex_query_id")
+
+
+def _ext(href: str, label: str) -> str:
+    return (f'<a class="btn sec" href="{e(href)}" target="_blank" rel="noopener noreferrer">'
+            f"{e(label)} ↗</a>")  # fmt: skip
+
+
+def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str:
+    """A read-only guide: automatic ticks from what the app already reads (config, journal
+    records, the host worker's status); manual ticks are kept on this phone only."""
+    acct = str(facts.get("account_id") or "")
+    paper_ok = acct.startswith("DU") and acct[2:].isdigit()
+    flex = jobs(j, "flex-pull:") if j is not None else []
+    flex_fail = jobs(j, "flex-page:") if j is not None else []
+    flex_ok = bool(flex) and (
+        not flex_fail or flex[-1][0].split(":", 1)[1] >= flex_fail[-1][0].split(":", 1)[1]
+    )
+    recon = jobs(j, f"recon:{v.book}:") if j is not None else []
+    good = [k for k, r in recon if r.get("ok")]
+    gw_ok = bool(good)
+    host = x.host[0] if x.host else {}
+    sec = host.get("secrets") if isinstance(host.get("secrets"), dict) else None
+    sec_ok = sec is not None and all(sec.get(n) for n in IBKR_SECRETS)
+    sec_txt = ("<p class='small muted'>The server worker has not reported yet "
+               "(<code>sudo bigwins install-worker</code>).</p>" if sec is None else
+               "<ul class='list small'>" + "".join(
+                   f"<li>{e(n)}: <span class='pill {'ok' if sec.get(n) else 'bad'}'>"
+                   f"{'present' if sec.get(n) else 'missing'}</span></li>" for n in IBKR_SECRETS)
+               + "</ul><p class='small muted'>Names only; the app never sees a secret's value.</p>")  # fmt: skip
+    dry = min(len(good), 5)
+    items: list[tuple[str, str, str, str, bool | None, str]] = [
+        ("app", "1. Application approved (retail or wholesale)",
+         "Your IBKR application is approved. Retail is the usual choice. Wholesale needs a "
+         "qualified accountant's certificate: gross income of A$250,000 or more in each of the "
+         "last 2 financial years, or net assets of A$2.5 million or more.", IBKR_HOME, None, ""),
+        ("paper", "2. Paper account enabled, its id set",
+         "Client Portal: Settings → Account Settings → Paper Trading Account. Put the DU… id in "
+         "config/bfast.local.yaml on the server (broker.account_id).", IBKR_LOGIN, paper_ok,
+         "id set: " + ("a paper DU… id" if paper_ok else "not a paper id yet")),
+        ("pricing", "3. Tiered pricing",
+         "Client Portal: Settings → Account Settings → Configuration → Commission Type → "
+         "Tiered.", IBKR_LOGIN, None, ""),
+        ("precautions", "4. Order precautions: Total Value Limit above A$10,000",
+         "Client Portal (paper now, live later): Settings → Account Settings → Order "
+         "Precautions; set the Total Value Limit above A$10,000 (GO_LIVE_GUIDE A4).",
+         IBKR_LOGIN, None, ""),
+        ("data", "5. Market data (bid/ask) for ASX",
+         "Client Portal: Settings → User Settings → Market Data Subscriptions → ASX Total "
+         "(GO_LIVE_GUIDE A5).", IBKR_LOGIN, None, ""),
+        ("flex", "6. Flex query and Web Service token",
+         "Client Portal: Performance & Reports → Flex Queries: the Activity Flex query and "
+         "the Flex Web Service token (GO_LIVE_GUIDE A6).", IBKR_LOGIN, flex_ok,
+         "last Flex download " + ("succeeded" if flex_ok else "not seen yet")),
+        ("secrets", "7. IBKR secrets on the server",
+         "On the server: bigwins → 5) Add/replace a secret: tws_password, ibkr_flex_token, "
+         "ibkr_flex_query_id.", "", sec_ok, ""),
+        ("tfn", "8. TFN given to IBKR",
+         "Client Portal: Settings → Account Settings → Tax Information (so no withholding is "
+         "taken from dividends).", IBKR_LOGIN, None, ""),
+        ("mobile", "9. IBKR mobile app installed, logged in once",
+         "The emergency fallback: install IBKR Mobile and log in once, so you can cancel orders "
+         "from the phone even if this app or the server is down.", IBKR_HOME, None, ""),
+        ("twostep", "10. 2-step verification on every account",
+         "Turn on 2-step verification for " + ", ".join(TWO_STEP) + ".", "", None, ""),
+        ("authenticator", "11. Authenticator set up, seed backed up",
+         "Scan the trader's seed into your authenticator (GO_LIVE_GUIDE C4) and keep a paper "
+         "copy of the seed somewhere safe.", "", None, ""),
+        ("gateway", "12. Gateway connected to the paper account",
+         "Ticked once the trader has reconciled with the paper account (16:30 each session).",
+         "", gw_ok, "reconciled sessions: " + str(len(good))),
+        ("dryruns", "13. Five paper dry runs, then the go-live checklist",
+         "Five reconciled sessions with orders on paper, then GO_LIVE_GUIDE part E.", "",
+         True if dry >= 5 else None, f"{dry} of 5 reconciled paper sessions"),
+    ]  # fmt: skip
+    auto_done = sum(1 for it in items if it[4])
+    rows = []
+    for key, title, how, link, auto, status in items:
+        if auto:
+            st = '<span class="pill ok">✓ automatic</span>'
+            cls = "sitem done auto"
+        elif auto is False:
+            st = '<span class="pill amber">not yet</span>'
+            cls = "sitem auto"
+        else:
+            st = '<span class="pill">tick on this phone</span>'
+            cls = "sitem"
+        if key == "twostep":
+            ticks = "".join(
+                f'<label class="chk"><input type="checkbox" data-setup-id="2fa-{e(s.lower())}"> '
+                f"{e(s)}</label>"
+                for s in TWO_STEP
+            )
+        elif auto is None:
+            ticks = (f'<label class="chk"><input type="checkbox" data-setup-id="{e(key)}"> Done '
+                     "(saved on this phone)</label>")  # fmt: skip
+        else:
+            ticks = ""
+        extra = (
+            sec_txt
+            if key == "secrets"
+            else (f'<p class="small muted">{e(status)}</p>' if status else "")
+        )
+        btn = _ext(link, "Open IBKR" if "interactivebrokers" in link else "Open") if link else ""
+        rows.append(
+            f'<li class="{cls}" data-item="{e(key)}"><div class="rowlink"><span class="grow">'
+            f"<b>{e(title)}</b></span>{st}</div><p class='small'>{e(how)}</p>{extra}{ticks}"
+            f"{btn}</li>"
+        )
+    n = len(items)
+    ring_html = ring(auto_done / n, f"{auto_done}/{n}", "done", f"{auto_done} of {n} done")
+    body = (
+        '<p><a href="/server" data-nav>‹ Server</a></p><h1>Setup &amp; IBKR</h1>'
+        + section(
+            "",
+            f'<div class="rings" id="setup-ring" data-total="{n}">{ring_html}'
+            f'<p class="summary"><span id="setup-count">{auto_done} of {n} done</span></p></div>'
+            "<p class='small muted'>Automatic ticks come from the trader's own records. Your "
+            "own ticks are kept on this phone only (not on the server), so they show here "
+            "and nowhere else.</p>",
+        )
+        + section("Checklist", f'<ul class="list setup">{"".join(rows)}</ul>')
+        + "<footer>Links open IBKR's own site in a new tab; nothing here changes your "
+        "account or the trader.</footer>"
+    )
+    return shell(v, x, "Setup", body, "server")

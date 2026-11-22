@@ -715,6 +715,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         cfg.strategy.update_mode, changelog,
         trusted_peers=frozenset() if args.demo else frozenset(cfg.dashboard.trusted_proxies),
         live=cfg.mode != "paper",
+        setup_facts=lambda: {"account_id": cfg.broker.account_id},  # BF-D63 (form only)
     )  # fmt: skip
     httpd = serve(app, args.host, args.port)
     print(f"phone app on http://{args.host}:{args.port}", file=sys.stderr)

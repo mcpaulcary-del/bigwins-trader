@@ -39,6 +39,9 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         "tailscale": env.get("TS") or "?", "code_version": env.get("CV", ""),
         "asx": env.get("ASX", ""), "containers": cont,
         "log": env.get("LOGS", "").splitlines()[-30:],
+        # BF-D63: which secret files exist (names only; the worker tests -s, never reads)
+        "secrets": {**dict.fromkeys(env.get("SECRETS_PRESENT", "").split(), True),
+                    **dict.fromkeys(env.get("SECRETS_MISSING", "").split(), False)},
         # BF-D45: the branch on GitHub vs the running code (classified by the trader)
         "update": {
             "head": env.get("UPD_HEAD", ""), "remote": env.get("UPD_REMOTE", ""),

@@ -56,6 +56,11 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
              "state": clean_line(str(c.get("state", "")))[:80]}
             for c in cont[:12] if isinstance(c, Mapping)
         ]  # fmt: skip
+    sec = raw.get("secrets")
+    if isinstance(sec, Mapping):  # BF-D63: known secret NAMES -> present?; never a value
+        from trader.secrets import KNOWN_SECRETS
+
+        out["secrets"] = {str(k): bool(v) for k, v in sec.items() if k in KNOWN_SECRETS}
     log = raw.get("log")
     if isinstance(log, list):
         out["log"] = [clean_line(str(x)) for x in log[-LOG_LINES:]]

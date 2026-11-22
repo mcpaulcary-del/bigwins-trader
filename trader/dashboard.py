@@ -705,6 +705,8 @@ class Dashboard:
     # empty = believe any (tests, local development)
     trusted_peers: frozenset[str] = frozenset()
     live: bool = False  # BF-D50
+    # BF-D63: read-only facts for the Setup & IBKR checklist (e.g. the account id's form)
+    setup_facts: Callable[[], dict[str, Any]] = field(default=lambda: {})
 
     def routes(self) -> dict[str, Callable[[], tuple[str, bytes]]]:
         """The fixed routes (screens with a path argument are matched in ``respond``)."""
@@ -723,7 +725,7 @@ class Dashboard:
         return out
 
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
-               "/strategy")  # fmt: skip
+               "/strategy", "/setup")  # fmt: skip
 
     def _screen(  # noqa: PLR0911 - one return per screen
         self, path: str, qs: Mapping[str, str], viewer: str
@@ -758,6 +760,8 @@ class Dashboard:
             return html_t, app_pages.inbox(v, x, qs.get("kind", "all")).encode()
         if path == "/server":
             return html_t, app_pages.server(v, x).encode()
+        if path == "/setup":
+            return html_t, app_pages.setup(v, x, app_pages.safe(self.setup_facts, {}), j).encode()
         if path == "/strategy":
             return html_t, app_pages.strategy(v, x).encode()
         if path == "/settings":
