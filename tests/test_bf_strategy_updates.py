@@ -161,7 +161,7 @@ def test_BF_D45_server_whitelist_has_rollback_and_claude_jobs() -> None:
 
     assert {"rollback", "claude_remote", "claude_stop"} <= set(SERVER_ACTIONS)
     sh = (ROOT / "deploy/bigwins.sh").read_text()
-    assert "check|claude_remote|claude_stop) ;;" in sh
+    assert "check|claude_remote|claude_stop|" in sh
     assert "claude_remote) out=$(claude_remote_status start" in sh
     assert "tmux kill-session -t remote" in sh
 

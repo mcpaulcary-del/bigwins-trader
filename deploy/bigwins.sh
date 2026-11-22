@@ -3,7 +3,7 @@
 # Install once:  ln -sf /srv/asx-trader/deploy/bigwins.sh /usr/local/bin/bigwins
 # Then type:     bigwins          (menu)   or   bigwins status | logs | update | restart |
 #                secret <name> | check | claude | remote | app | demo | login | vapid |
-#                install-worker | worker
+#                install-worker | worker | backup | restore-test | onedrive | restore
 # Server-only settings (your Tailscale log-in, tax rate, paper account id...) go in
 # config/bfast.local.yaml: not in git, laid over config/bfast.yaml (BF-D39).
 set -uo pipefail
@@ -15,6 +15,10 @@ CONFIG=$REPO/config/bfast.yaml
 LOCAL=$REPO/config/bfast.local.yaml
 BASE_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id db_dashboard_password"
 APP_SECRETS="vapid_private_key app_proxy_key worker_job_key"  # BF-D40, BF-D46, BF-D48: made here
+BACKUP_DIR=/var/backups/bigwins              # BF-D64: local backups (root only)
+BKEY=/root/.bigwins-backup/backup.key         # the backup recovery key (age; root only)
+OD_REMOTE=bigwins-onedrive                    # the rclone remote for OneDrive
+OD_PATH="$OD_REMOTE:Big Wins server backups"
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
 TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token"
@@ -172,6 +176,9 @@ after_update() {  # secrets the new code needs, then rebuild and restart
 make_keys() {  # BF-D40/D46/D48/D52: generated secrets, made here once, never shown
   command -v openssl >/dev/null || { r "openssl is missing (apt install openssl): no keys made."; return 1; }
   [ -s "$SECRETS/vapid_private_key" ] || make_vapid || return 1
+  if command -v age-keygen >/dev/null && [ ! -s "$BKEY" ]; then  # BF-D64: the backup key
+    python3 "$DEPLOY/backup.py" keygen "$BKEY" >/dev/null && g "Made the backup recovery key (root only)."
+  fi
   local n tmp
   for n in app_proxy_key worker_job_key db_dashboard_password; do
     [ -s "$SECRETS/$n" ] && continue
@@ -321,7 +328,146 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
     if [ -s "$SECRETS/$n" ]; then present="$present $n"; else missing="$missing $n"; fi
   done
   TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" SECRETS_PRESENT="$present" \
-    SECRETS_MISSING="$missing" python3 "$DEPLOY/host_status.py"
+    SECRETS_MISSING="$missing" ONEDRIVE="$(onedrive_ok && echo 1 || echo 0)" \
+    python3 "$DEPLOY/host_status.py"
+}
+
+envval() { sed -n "s/^$1=//p" "$DEPLOY/.env" 2>/dev/null | head -1; }
+
+onedrive_ok() { command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -qx "$OD_REMOTE:"; }
+
+compose_json() {  # the docker compose command as JSON (for backup.py's pg_dump)
+  local f="docker-compose.yml"
+  case "$(channel)" in telegram|both) f="$f docker-compose.telegram.yml";; esac
+  python3 -c 'import json,sys; d=sys.argv[1]; fs=sys.argv[2].split()
+c=["docker","compose","--project-directory",d]
+for f in fs: c+=["-f",d+"/"+f]
+print(json.dumps(c))' "$DEPLOY" "$f"
+}
+
+do_backup() {  # BF-D64: one encrypted backup, local + OneDrive, and the readable report
+  command -v age >/dev/null || { echo '{"ok":false,"kind":"backup","error":"age is not installed (apt install age)"}'; return 1; }
+  make_keys >/dev/null || true
+  [ -s "$BKEY" ] || { echo '{"ok":false,"kind":"backup","error":"no backup key"}'; return 1; }
+  local jdb stage res rc day remote=""
+  jdb=$(envval JOURNAL_DB); jdb=${jdb:-ledger_bf_paper}
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+  stage=$(mktemp -d /var/tmp/bigwins-stage.XXXXXX) || return 1
+  dc exec -T trader sh -c 'tar -C /app/out -cf - .' > "$stage/trader_out.tar" 2>/dev/null
+  dc exec -T db psql -U trader -d "$jdb" -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" > "$stage/counts.txt" 2>/dev/null
+  onedrive_ok && remote="$OD_PATH/archives"
+  COMPOSE="$(compose_json)" JDB="$jdb" STAGE="$stage" OUT="$BACKUP_DIR" KEY="$BKEY" REMOTE="$remote" \
+  REPO="$REPO" DEPLOY="$DEPLOY" SECRETS="$SECRETS" STATE="$STATE" RECORD="$(envval RECORD_DIR)" \
+  FSTORE="$(envval FORWARD_STORE)" python3 - <<'PY'
+import json, os
+e = os.environ
+counts = {}
+try:
+    for line in open(e["STAGE"] + "/counts.txt"):
+        t, _, n = line.strip().partition("|")
+        if t and n.isdigit():
+            counts[t] = int(n)
+except OSError:
+    pass
+src = [["config", e["REPO"] + "/config"], ["trader_out.tar", e["STAGE"] + "/trader_out.tar"],
+       ["deploy_env", e["DEPLOY"] + "/.env"], ["secrets", e["SECRETS"]], ["worker_state", e["STATE"]]]
+if e.get("RECORD"):
+    src.append(["record", e["RECORD"]])
+if e.get("FSTORE"):
+    src.append(["forward_store", e["FSTORE"]])
+plan = {"out_dir": e["OUT"], "key_file": e["KEY"], "remote": e.get("REMOTE") or None,
+        "pg_dump": json.loads(e["COMPOSE"]) + ["exec", "-T", "db", "pg_dump", "-U", "trader", "-d", e["JDB"]],
+        "row_counts": counts, "sources": src, "work_dir": "/var/tmp"}
+open(e["STAGE"] + "/plan.json", "w").write(json.dumps(plan))
+PY
+  res=$(python3 "$DEPLOY/backup.py" run "$stage/plan.json"); rc=$?
+  day=$(date +%F)
+  if dc exec -T dashboard trader-bf daily-summary --out - > "$stage/report.html" 2>/dev/null && [ -s "$stage/report.html" ]; then
+    mkdir -p "$BACKUP_DIR/reports/${day:0:4}" && cp "$stage/report.html" "$BACKUP_DIR/reports/${day:0:4}/$day.html"
+    onedrive_ok && rclone copyto "$stage/report.html" "$OD_PATH/reports/${day:0:4}/$day.html" >/dev/null 2>&1
+  fi
+  res=$(printf '%s' "$res" | python3 -c 'import json,sys
+r=json.loads(sys.stdin.read() or "{}"); r["kind"]="backup"; r["onedrive"]=sys.argv[1]=="1"; print(json.dumps(r))' "$(onedrive_ok && echo 1 || echo 0)")
+  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
+  rm -rf "$stage"
+  echo "$res"
+  return $rc
+}
+
+do_restore_test() {  # BF-D64: unpack the latest backup in a throwaway place, check it, delete it
+  local arch tmp res cid pgok counts
+  arch=$(ls -1 "$BACKUP_DIR"/bigwins-*.tar.age 2>/dev/null | sort | tail -1)
+  [ -n "$arch" ] || { echo '{"ok":false,"kind":"restore_test","error":"no backup yet"}'; return 1; }
+  res=$(python3 "$DEPLOY/backup.py" verify "$arch" "$BKEY" /var/tmp)
+  tmp=$(mktemp -d /var/tmp/bigwins-rt.XXXXXX)
+  python3 "$DEPLOY/backup.py" restore "$arch" "$tmp" "$BKEY" && \
+  cid=$(docker run -d --rm -e POSTGRES_PASSWORD=restoretest -e POSTGRES_USER=trader -e POSTGRES_DB=rt postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74) && {
+    for i in $(seq 1 30); do docker exec "$cid" pg_isready -U trader -d rt >/dev/null 2>&1 && break; sleep 2; done
+    docker exec -i "$cid" psql -q -U trader -d rt < "$tmp/journal/journal.sql" >/dev/null 2>&1
+    counts=$(docker exec "$cid" psql -U trader -d rt -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" 2>/dev/null)
+    docker stop "$cid" >/dev/null 2>&1
+  }
+  rm -rf "$tmp"
+  res=$(printf '%s' "$res" | COUNTS="$counts" python3 -c 'import json,os,sys
+r=json.loads(sys.stdin.read() or "{}"); got={}
+for l in os.environ.get("COUNTS","").splitlines():
+    t,_,n=l.partition("|")
+    if n.strip().isdigit(): got[t]=int(n)
+want=r.get("row_counts") or {}
+r["kind"]="restore_test"; r["db_rows_match"]=bool(got) and all(got.get(k)==v for k,v in want.items())
+r["ok"]=bool(r.get("ok")) and r["db_rows_match"]
+if not r["db_rows_match"]: r["error"]="journal rows in the restored database differ from the backup"
+print(json.dumps(r))')
+  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
+  echo "$res"
+}
+
+cmd_onedrive() {  # BF-D64: connect OneDrive once (the token stays root-only on this server)
+  command -v rclone >/dev/null || { r "rclone is missing: apt install rclone"; return 1; }
+  echo "Connect OneDrive for the backups (once). You need a computer with a web browser:"
+  echo "  1. On that computer install rclone (rclone.org/downloads) and run:  rclone authorize \"onedrive\""
+  echo "  2. Sign in to Microsoft in the browser that opens and allow access."
+  echo "  3. rclone prints a token line starting with {\"access_token\": ... Copy all of it."
+  echo "Now rclone asks its questions here. Answer:  n (new remote) > name: $OD_REMOTE >"
+  echo "  storage: onedrive > client_id / secret: Enter > region: global > advanced: n >"
+  echo "  auto config: n > paste the token > type: onedrive (personal) > drive: the first > y > q"
+  confirm "Start?" || return 0
+  rclone config
+  chmod 600 /root/.config/rclone/rclone.conf 2>/dev/null
+  if rclone mkdir "$OD_PATH" >/dev/null 2>&1; then g "OneDrive connected: backups go to 'Big Wins server backups'."; else r "OneDrive is not working yet: run bigwins onedrive again."; fi
+}
+
+cmd_restore() {  # BF-D64: disaster recovery on a fresh server (bootstrap done, code cloned)
+  y "This restores the Big Wins server from a backup: journal, config, record, price store,"
+  y "the .env file and the secret files. It replaces what is on this server."
+  confirm "Continue?" || return 0
+  command -v age >/dev/null || { r "Install age first: apt install age"; return 1; }
+  if [ ! -s "$BKEY" ]; then
+    mkdir -p "$(dirname "$BKEY")" && chmod 700 "$(dirname "$BKEY")"
+    echo "Paste the recovery key (AGE-SECRET-KEY-...) and press Enter:"
+    local k; read -rs k; echo
+    printf '%s\n' "$k" > "$BKEY"; unset k; chmod 600 "$BKEY"
+  fi
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+  if onedrive_ok; then rclone copy "$OD_PATH/archives" "$BACKUP_DIR" --include 'bigwins-*' >/dev/null 2>&1; fi
+  local arch tmp
+  arch=$(ls -1 "$BACKUP_DIR"/bigwins-*.tar.age 2>/dev/null | sort | tail -1)
+  [ -n "$arch" ] || { r "No backup found (connect OneDrive with: bigwins onedrive)."; return 1; }
+  echo "Restoring $(basename "$arch") ..."
+  tmp=$(mktemp -d /var/tmp/bigwins-restore.XXXXXX)
+  python3 "$DEPLOY/backup.py" restore "$arch" "$tmp" "$BKEY" || { r "Could not decrypt: wrong key?"; return 1; }
+  cp -a "$tmp/config/." "$REPO/config/"
+  mkdir -p "$SECRETS" && cp -a "$tmp/secrets/." "$SECRETS/" && chmod 700 "$SECRETS" && chmod 444 "$SECRETS"/*
+  cp "$tmp/deploy_env" "$DEPLOY/.env" && chmod 600 "$DEPLOY/.env"
+  [ -d "$tmp/worker_state" ] && mkdir -p "$STATE" && cp -a "$tmp/worker_state/." "$STATE/"
+  local rec fs; rec=$(envval RECORD_DIR); fs=$(envval FORWARD_STORE)
+  [ -n "$rec" ] && [ -d "$tmp/record" ] && mkdir -p "$rec" && cp -a "$tmp/record/." "$rec/"
+  [ -n "$fs" ] && [ -d "$tmp/forward_store" ] && mkdir -p "$fs" && cp -a "$tmp/forward_store/." "$fs/"
+  dc up -d db && sleep 10
+  dc exec -T db psql -q -U trader -d "$(envval JOURNAL_DB || echo ledger_bf_paper)" < "$tmp/journal/journal.sql" >/dev/null && g "Journal restored."
+  dc up -d && dc exec -T trader sh -c 'tar -C /app/out -xf -' < "$tmp/trader_out.tar" 2>/dev/null
+  rm -rf "$tmp"
+  g "Restored. Check the app, then: bigwins 11 (allow my phone), sudo bigwins install-worker."
 }
 
 finish_job() {  # id status text: record a server job's result (retried while the trader restarts)
@@ -364,7 +510,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
         finish_job "$id" REFUSED "refused: a rollback is applied outside ASX hours; ask again after 16:15"
         return 0
       fi;;
-    check|claude_remote|claude_stop) ;;
+    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping) ;;
     *) finish_job "$id" REFUSED "refused: not an allowed server action"; return 0;;
   esac
   case "$action" in  # the fixed list only; nothing from the app is ever run as a command
@@ -373,6 +519,11 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     rollback) out=$(do_rollback "$commit" "$flags" 2>&1); rc=$?;;
     claude_remote) out=$(claude_remote_status start 2>&1); rc=$?;;
     claude_stop) out=$(tmux kill-session -t remote 2>&1 && echo "Claude remote control stopped."); rc=$?;;
+    backup_now) out=$(do_backup 2>&1); rc=$?;;
+    restore_test) out=$(do_restore_test 2>&1); rc=$?;;
+    backup_key) out=$(python3 "$DEPLOY/gitops.py" seal "$SECRETS/worker_job_key" "$BKEY" | dc exec -T trader trader-bf server-jobs reveal 2>&1); rc=$?;;
+    fetch) rm -f "$STATE/last_fetch"; out=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>&1); rc=$?;;
+    hc_ping) out=$(u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null); case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" && echo "ping ok";; *) echo "heartbeat is off (healthchecks_url is none)";; esac 2>&1); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
   esac
   if [ "$rc" = 0 ]; then finish_job "$id" DONE "$out"; else finish_job "$id" FAILED "$out"; fi
@@ -406,6 +557,28 @@ AccuracySec=5
 [Install]
 WantedBy=timers.target
 EOF
+  cat > /etc/systemd/system/bigwins-backup.service <<EOF
+[Unit]
+Description=Big Wins nightly backup (server + OneDrive, BF-D64)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=$DEPLOY/bigwins.sh backup
+TimeoutStartSec=14400
+EOF
+  cat > /etc/systemd/system/bigwins-backup.timer <<'EOF'
+[Unit]
+Description=Big Wins nightly backup at 23:30 Sydney
+
+[Timer]
+OnCalendar=*-*-* 23:30:00 Australia/Sydney
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl enable --now bigwins-backup.timer >/dev/null 2>&1 || y "Nightly backup timer not started."
   if systemctl daemon-reload && systemctl enable --now bigwins-worker.timer; then
     g "Server worker installed. The app's Server tab fills in within a minute."
   else
@@ -449,13 +622,15 @@ menu() {
   echo "  7) Open Claude here      8) Start Remote Control (use Claude from the app)"
   echo "  9) Turn on the phone app   10) Phone app with DEMO data (before IBKR)"
   echo " 11) Allow my phone to act (approve, pause...)   12) New phone-alert key"
-  echo " 13) Install the server worker (app Server tab)"
+  echo " 13) Install the server worker (app Server tab)   14) Connect OneDrive for backups"
+  echo " 15) Back up now   16) Restore from a backup (disaster recovery)"
   echo "  0) Exit"
   read -rp "Choose: " c
   case $c in
     1) cmd_status;; 2) cmd_logs;; 3) cmd_update;; 4) cmd_restart;; 5) cmd_secret;;
     6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; 9) cmd_app;; 10) cmd_demo;;
-    11) cmd_login;; 12) cmd_vapid;; 13) cmd_install_worker;; *) echo "Bye.";;
+    11) cmd_login;; 12) cmd_vapid;; 13) cmd_install_worker;; 14) cmd_onedrive;;
+    15) do_backup;; 16) cmd_restore;; *) echo "Bye.";;
   esac
 }
 
@@ -464,7 +639,8 @@ case ${1:-} in
   secret) cmd_secret "${2:-}";; check) cmd_check;; claude) cmd_claude;; remote) cmd_remote;;
   app) cmd_app;; demo) cmd_demo;; login) cmd_login;; vapid) cmd_vapid;;
   install-worker) cmd_install_worker;; worker) cmd_worker;;
-  after-pull) after_update;;  # BF-D61: run by update after the pull (the new script)
+  after-pull) after_update;;
+  backup) do_backup;; restore-test) do_restore_test;; onedrive) cmd_onedrive;; restore) cmd_restore;;  # BF-D61: run by update after the pull (the new script)
   ""|menu) menu;;
   *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker]";;
 esac

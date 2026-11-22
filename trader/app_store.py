@@ -28,6 +28,11 @@ SERVER_ACTIONS: dict[str, str] = {
     "check": "Re-run the server checks (secret files, containers)",
     "claude_remote": "Start Claude remote control on the server (tmux session 'remote')",
     "claude_stop": "Stop Claude remote control on the server",
+    "backup_now": "Back up now (server and OneDrive)",  # BF-D64
+    "restore_test": "Restore test: unpack the latest backup in a throwaway place and check it",
+    "backup_key": "Show the backup recovery key once",
+    "fetch": "Check for updates now",  # BF-D65
+    "hc_ping": "Send a test ping to healthchecks.io",
 }
 GUARDED_ACTIONS = frozenset({"restart", "update", "rollback"})  # ASX open: refused unless forced
 # bits of server_jobs.force (BF-D42, BF-D45)

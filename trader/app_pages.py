@@ -12,7 +12,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 from typing import Any, TypeVar
@@ -145,6 +145,9 @@ class Extras:
     update_mode: str = "immediate"
     changelog: list[dict[str, Any]] = field(default_factory=list)
     pending_jobs: list[dict[str, Any]] = field(default_factory=list)
+    backup: tuple[dict[str, Any], datetime] | None = None  # BF-D64
+    restore_test: tuple[dict[str, Any], datetime] | None = None
+    backup_history: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def latest_inbox(self) -> int:
@@ -211,6 +214,10 @@ def collect_extras(
         except ValueError:
             continue
     x.pending_jobs = [r for r in x.server_jobs if r["status"] in ("PENDING", "RUNNING")]
+    x.backup = safe(lambda: get_state(j, "backup-last"), None)
+    x.restore_test = safe(lambda: get_state(j, "restore-test-last"), None)
+    bh = safe(lambda: get_state(j, "backup-history"), None)
+    x.backup_history = list(bh[0]) if bh and isinstance(bh[0], list) else []
     lk = safe(lambda: get_state(j, "app-lockout"), None)
     if lk and isinstance(lk[0], dict) and lk[0].get("until"):
         until = datetime.fromisoformat(str(lk[0]["until"]))
@@ -1178,6 +1185,10 @@ def server(v: Any, x: Extras) -> str:
         "(Termius: <code>tmux attach -t remote</code>).</p>")))  # fmt: skip
     parts.append('<a class="btn sec wide" href="/act">⚙️ Trader controls (pause, kill…)</a>')
     parts.append(
+        '<div class="btns"><a class="btn sec" href="/backups" data-nav>💾 Backups</a>'
+        '<a class="btn sec" href="/accounts" data-nav>🔑 Accounts</a></div>'
+    )
+    parts.append(
         '<a class="btn sec wide" style="margin-top:10px" href="/setup" data-nav>'
         "✅ Setup &amp; IBKR checklist</a>"
     )
@@ -1455,3 +1466,173 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
         "account or the trader.</footer>"
     )
     return shell(v, x, "Setup", body, "server")
+
+
+# ---------------------------------------------------------------- Backups (BF-D64)
+
+
+def _size(n: object) -> str:
+    try:
+        b = float(str(n))
+    except ValueError:
+        return "-"
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024 or unit == "GB":
+            return f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}"
+        b /= 1024
+    return "-"
+
+
+def next_backup(now: datetime) -> datetime:
+    t = now.astimezone(ASX_TZ)
+    at = t.replace(hour=23, minute=30, second=0, microsecond=0)
+    return at if at > t else at + timedelta(days=1)
+
+
+def backups(v: Any, x: Extras) -> str:
+    host = x.host[0] if x.host else {}
+    od = host.get("onedrive")
+    parts = ['<p><a href="/server" data-nav>‹ Server</a></p><h1>Backups</h1>']
+    b = x.backup
+    if b is None:
+        last = "<p class='muted'>No backup yet. The first runs tonight at 23:30, or tap Back up now.</p>"
+    else:
+        r, at = b
+        loc, rem = r.get("local") or {}, r.get("remote")
+        last = (
+            f"<div class='htiles'><div class='ht {'good' if r.get('ok') else 'badt'}'><div class='tl'>"
+            f"On the server<span>{'✓' if loc.get('ok', r.get('ok')) else '⚠'}</span></div>"
+            f"<div class='tv'>{_size(loc.get('size'))}</div><div class='sub'>{when(at)}</div></div>"
+            f"<div class='ht {'good' if rem and rem.get('ok') else 'warn2'}'><div class='tl'>OneDrive"
+            f"<span>{'✓' if rem and rem.get('ok') else '–'}</span></div><div class='tv'>"
+            f"{'copied' if rem and rem.get('ok') else 'not copied'}</div><div class='sub'>"
+            f"{e(str((rem or {}).get('error', '')) or ('' if rem else 'not connected'))}</div></div></div>"
+            + (f"<p class='bad note'>Last backup failed: {e(r.get('error'))}</p>" if not r.get("ok") else "")
+        )  # fmt: skip
+    rt = x.restore_test
+    rt_html = ("<p class='muted small'>No restore test yet.</p>" if rt is None else
+               f"<p>Last restore test: <span class='pill {'ok' if rt[0].get('ok') else 'bad'}'>"
+               f"{'passed' if rt[0].get('ok') else 'FAILED'}</span> {when(rt[1])}<span class='sub'> · "
+               f"{rt[0].get('files') or 0} files checked, journal rows "
+               f"{'match' if rt[0].get('db_rows_match', rt[0].get('ok')) else 'differ'}</span></p>")  # fmt: skip
+    parts.append(section("Latest", last + rt_html
+                         + f"<p class='small muted'>Next backup: {next_backup(v.now):%a %d %b %H:%M} "
+                         "(nightly at 23:30 Sydney). Kept: 30 daily and 12 monthly, on the server "
+                         "and in OneDrive.</p>"))  # fmt: skip
+    parts.append(section("Actions", (
+        '<div class="btns">'
+        f'<a class="btn" href="{act_link(a="srv:backup_now")}">💾 Back up now…</a>'
+        f'<a class="btn sec" href="{act_link(a="srv:restore_test")}">🧪 Restore test…</a></div>'
+        '<a class="btn sec wide" href="/act/backup-key">🔐 Show recovery key…</a>'
+        "<p class='small muted'>Back up now and the restore test only need a confirm. The "
+        "recovery key needs your 6-digit code and is shown once; save it in your password "
+        "manager: with it and the backup files, the whole server can be rebuilt.</p>"
+        + actions_note(x, v.demo))))  # fmt: skip
+    od_html = (
+        "<p><span class='pill ok'>OneDrive: connected</span> Backups go to "
+        "<b>Big Wins server backups</b> (archives, encrypted) and <b>…/reports/YYYY/</b> "
+        "(a readable page of each day, no secrets).</p>"
+        if od else
+        "<p><span class='pill amber'>OneDrive: not connected</span></p><ol class='small'>"
+        "<li>On a Windows laptop: download rclone from rclone.org/downloads, unzip it, open "
+        "a Command Prompt in that folder and run <code>rclone authorize \"onedrive\"</code>.</li>"
+        "<li>Sign in to Microsoft in the browser window and allow access.</li>"
+        "<li>Copy the whole token line it prints (it starts with <code>{\"access_token\"</code>).</li>"
+        "<li>On the server (Termius): <code>bigwins</code> › 14) Connect OneDrive, and paste the "
+        "token when asked. The token stays on the server, root only.</li></ol>"
+        "<p class='small muted'>A phone alone cannot do step 1 (rclone needs a computer with "
+        "a browser, once).</p>"
+    )  # fmt: skip
+    parts.append(section("OneDrive", od_html))
+    hist = "".join(
+        f"<li><span class='pill {'ok' if h.get('ok') else 'bad'}'>{'OK' if h.get('ok') else 'FAILED'}</span> "
+        f"{e('Restore test' if h.get('kind') == 'restore_test' else 'Backup')} · "
+        f"{e(str(h.get('recorded', ''))[:16].replace('T', ' '))}"
+        f"<span class='sub'> · {_size((h.get('local') or {}).get('size'))}"
+        f"{' · OneDrive ✓' if (h.get('remote') or {}).get('ok') else ''}</span></li>"
+        for h in x.backup_history[:30]
+    )  # fmt: skip
+    if hist:
+        parts.append(section("History", f'<ul class="list small">{hist}</ul>'))
+    parts.append(section("If the server dies", (
+        "<p class='small'>Order a new server, run the bootstrap (GO_LIVE_GUIDE B1-B5), then "
+        "on it: <code>bigwins onedrive</code> (once) and <code>bigwins restore</code>, paste the "
+        "recovery key. It brings back the journal, settings, record, price store and secret "
+        "files from the latest backup. Full steps: GO_LIVE_GUIDE, 'If the server dies'.</p>")))  # fmt: skip
+    return shell(v, x, "Backups", "".join(parts), "server")
+
+
+# ---------------------------------------------------------------- Accounts & services (BF-D65)
+
+SERVICES: tuple[tuple[str, str, str, str], ...] = (
+    ("ibkr", "Interactive Brokers", "https://www.interactivebrokers.com.au/",
+     "Your broker. Account changes, deposits, market data and order precautions are made in "
+     "IBKR's Client Portal (see Setup & IBKR)."),
+    ("binarylane", "BinaryLane (the server)", "https://www.binarylane.com.au/",
+     "Billing and the server itself: resize, rebuild or console in BinaryLane's own site."),
+    ("tailscale", "Tailscale", "https://login.tailscale.com/admin",
+     "The private network between your phone and the server: devices, HTTPS and log-ins."),
+    ("github", "GitHub", "https://github.com/",
+     "Where the code lives. The server fetches updates from it; you approve them here."),
+    ("eodhd", "EODHD (prices)", "https://eodhd.com/",
+     "The daily ASX prices. Plan, key and API limits in your EODHD dashboard."),
+    ("onedrive", "OneDrive (backups)", "https://onedrive.live.com/",
+     "Your backup copies: 'Big Wins server backups'. Storage and sharing in OneDrive."),
+    ("healthchecks", "healthchecks.io", "https://healthchecks.io/",
+     "Emails you if the server goes quiet. Check period, alerts and contacts there."),
+    ("claude", "Claude", "https://claude.ai/code",
+     "Claude Code on the server for questions and maintenance (Server › Ask Claude)."),
+)  # fmt: skip
+
+
+def accounts(v: Any, x: Extras) -> str:
+    host = x.host[0] if x.host else {}
+    fresh = x.host is not None and (v.now - x.host[1]).total_seconds() < 600
+    hb = x.heartbeat[0] if x.heartbeat else None
+    status: dict[str, tuple[str, str]] = {}
+    status["ibkr"] = (("ok", "reconciled " + v.recon[0]) if v.recon and v.recon[1] else
+                      ("amber", "no reconciliation yet") if not v.recon else ("bad", "break"))  # fmt: skip
+    status["binarylane"] = ("ok", "server up") if fresh else ("amber", "no recent status")
+    ts = str(host.get("tailscale", ""))
+    status["tailscale"] = (("ok", "connected") if "Running" in ts or "connected" in ts else
+                           ("amber", ts or "unknown"))  # fmt: skip
+    status["github"] = (("ok", "updates fetched") if x.update.get("remote") else
+                        ("amber", "not fetched yet"))  # fmt: skip
+    status["eodhd"] = (("ok", f"prices refreshed {when(v.store_refreshed_at)}") if v.store_refreshed_at
+                       else ("amber", "no refresh yet"))  # fmt: skip
+    b = x.backup[0] if x.backup else {}
+    status["onedrive"] = (("ok", "last backup copied") if (b.get("remote") or {}).get("ok") else
+                          ("ok", "connected") if host.get("onedrive") else ("amber", "not connected"))  # fmt: skip
+    status["healthchecks"] = (("amber", "no ping yet") if hb is None else
+                              ("ok", "last ping OK") if hb.get("ok") else ("bad", "ping failed"))  # fmt: skip
+    status["claude"] = ("", "open when you need it")
+    actions = {
+        "github": f'<a class="btn sec" href="{act_link(a="srv:fetch")}">Check for updates…</a>',
+        "eodhd": f'<a class="btn sec" href="{act_link(a="refresh")}">Test EODHD key (refresh prices)…</a>',
+        "healthchecks": f'<a class="btn sec" href="{act_link(a="srv:hc_ping")}">Test ping…</a>',
+        "onedrive": '<a class="btn sec" href="/backups" data-nav>Backups ›</a>',
+        "ibkr": '<a class="btn sec" href="/setup" data-nav>Setup &amp; IBKR ›</a>',
+    }  # fmt: skip
+    rows = []
+    for key, name, url, how in SERVICES:
+        tone_, txt = status.get(key, ("", ""))
+        rows.append(
+            f'<li class="svc" data-svc="{e(key)}"><div class="rowlink"><span class="grow"><b>'
+            f"{e(name)}</b></span><span class='pill {tone_}'>{e(txt)}</span></div>"
+            f"<p class='small'>{e(how)}</p>"
+            f'<label class="chk small">Renewal / billing date (on this phone): <input type="date" '
+            f'data-remind="{e(key)}" aria-label="{e(name)} renewal date"></label>'
+            f'<p class="small warn" data-remind-out="{e(key)}"></p>'
+            f'<div class="btns"><a class="btn sec" href="{e(url)}" target="_blank" '
+            f'rel="noopener noreferrer">Open {e(name.split(" (")[0])} ↗</a>{actions.get(key, "")}</div></li>'
+        )
+    body = (
+        '<p><a href="/server" data-nav>‹ Server</a></p><h1>Accounts &amp; services</h1>'
+        + section("", "<p class='small'>For your safety, changes to your broker and server "
+                  "accounts are made on their own sites: this app never stores your IBKR, "
+                  "Tailscale or BinaryLane log-ins or API keys, so nobody can use the app to "
+                  "change them. The tests below only use what the server already has.</p>"
+                  '<a class="btn sec wide" href="/setup" data-nav>✅ Setup &amp; IBKR checklist ›</a>')
+        + section("Services", f'<ul class="list">{"".join(rows)}</ul>')
+    )  # fmt: skip
+    return shell(v, x, "Accounts", body, "server")

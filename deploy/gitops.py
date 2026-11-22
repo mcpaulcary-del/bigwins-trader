@@ -5,6 +5,8 @@
     python3 gitops.py done <state_dir>              after a rollback: forget it (no ping-pong)
     python3 gitops.py claim-id <state_dir> <id>     BF-D59: refuse a job id run before (exit 1)
     python3 gitops.py verify <key_file> <id> <action> <commit> <flags> <created> <sig>
+    python3 gitops.py seal <key_file> <secret_file>  BF-D64: seal the backup recovery key for a
+                                                    one-time view in the app (hex on stdout)
                                                     BF-D48: the trader's job signature, or exit 1
 
 The rollback target is only ever the commit this worker recorded before the last update
@@ -72,10 +74,31 @@ def verify(key_file: Path, job_id: str, action: str, commit: str, flags: str, cr
     return hmac.compare_digest(want, sig)
 
 
+def seal(key_file: Path, secret_file: Path) -> str:
+    """The same construction as trader/backups.py ``seal`` (HMAC-SHA256 keystream with a
+    random nonce, encrypt-then-MAC), with the worker / trader shared key."""
+    import os
+
+    key = key_file.read_text(encoding="utf-8").strip().encode()
+    plain = secret_file.read_bytes()
+    nonce = os.urandom(16)
+    stream = b""
+    i = 0
+    while len(stream) < len(plain):
+        stream += hmac.new(key, b"stream" + nonce + i.to_bytes(4, "big"), hashlib.sha256).digest()
+        i += 1
+    ct = bytes(a ^ b for a, b in zip(plain, stream[: len(plain)], strict=True))
+    tag = hmac.new(key, b"mac" + nonce + ct, hashlib.sha256).digest()
+    return (nonce + tag + ct).hex()
+
+
 def main(argv: list[str]) -> int:  # noqa: PLR0911 - one exit per operation
     op, state = argv[1], Path(argv[2])
     if op == "verify":
         return 0 if verify(state, *argv[3:9]) else 1
+    if op == "seal":
+        print(seal(state, Path(argv[3])))
+        return 0
     if op == "claim-id":
         return 0 if claim_id(state, argv[3]) else 1
     if op == "record":

@@ -352,6 +352,7 @@ def _app_wiring(
         start_control_when_resolvable(ctl, cfg.app.control_bind_host, cfg.app.control_port)
         hooks.append(lambda now: ctl.process())
         hooks.append(lambda now: tell_server_jobs(j, notifier))
+        hooks.append(lambda now: tell_backups(j, notifier))  # BF-D64
         sleep = ctl.wait
     hb = Heartbeat(ping_url(read_secret("healthchecks_url")), j, app.say,
                    every_s=cfg.heartbeat.every_seconds)  # fmt: skip
@@ -422,6 +423,30 @@ def control_bind_address(host: str, addr: str | None = None) -> str:
     return addr
 
 
+def tell_backups(j: Journal, notifier: AppNotifier) -> int:
+    """BF-D64: a failed backup or restore test is paged once (a good one is quiet: the
+    Backups screen shows it)."""
+    from trader.app_store import get_state, set_state
+
+    told = get_state(j, "backup-told")
+    seen = str(told[0]) if told and isinstance(told[0], str) else ""
+    n = 0
+    for key, what in (("backup-last", "Backup"), ("restore-test-last", "Restore test")):
+        st = get_state(j, key)
+        if not st or not isinstance(st[0], dict):
+            continue
+        mark = f"{key}@{st[1].isoformat()}"
+        if mark in seen.split("|"):
+            continue
+        if not st[0].get("ok"):
+            err = st[0].get("error") or "see the Backups screen"
+            notifier.notify(f"PAGE {what} FAILED: {err}", "page", "/backups")
+            n += 1
+        seen = "|".join([*seen.split("|")[-5:], mark])
+        set_state(j, "backup-told", seen, st[1])
+    return n
+
+
 def tell_server_jobs(j: Journal, notifier: AppNotifier) -> int:
     """BF-D42: push the result of each server job once (after a restart too)."""
     from trader.app_store import get_state, server_job_rows, set_state
@@ -458,6 +483,27 @@ def cmd_check_secrets(args: argparse.Namespace) -> int:
         return 2
     uid = os.getuid() if hasattr(os, "getuid") else -1
     print(f"ok: {len(names)} secret file(s) in {args.dir} readable by uid {uid}")
+    return 0
+
+
+def cmd_daily_summary(args: argparse.Namespace) -> int:
+    """BF-D64: the readable daily page for OneDrive (read-only journal; no secrets)."""
+    from trader.app_store import inbox_rows
+    from trader.backups import daily_summary
+    from trader.dashboard import Sources, collect
+
+    cfg = load_bfast_config(args.config)
+    j = _read_only_journal(cfg, args.journal)
+    v = collect(Sources(j, cfg.book, cfg.data.sim_book))
+    try:
+        inbox = inbox_rows(j, 200)
+    except Exception:
+        inbox = []
+    page = daily_summary(v, inbox, "PAPER" if cfg.mode == "paper" else "LIVE")
+    if args.out == "-":
+        sys.stdout.write(page)
+    else:
+        Path(args.out).write_text(page, encoding="utf-8")
     return 0
 
 
@@ -520,6 +566,21 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:
             old = args.config.read_text(encoding="utf-8") if args.config.is_file() else None
             set_state(j, "update-available", update_info(raw["update"], old), now)
         print("status stored")
+        return 0
+    if args.op == "backup":  # BF-D64: the worker's backup / restore-test result
+        from trader.backups import record_result
+
+        r = record_result(j, json.loads(sys.stdin.read() or "{}"), now)
+        print("backup result stored: " + ("ok" if r["ok"] else "FAILED"))
+        return 0
+    if args.op == "reveal":  # BF-D64: the sealed recovery key, for one view in the app
+        import re
+
+        sealed = sys.stdin.read().strip()
+        if not re.fullmatch(r"[0-9a-f]{100,4000}", sealed):
+            raise SystemExit("not a sealed key")
+        set_state(j, "backup-key-sealed", {"sealed": sealed}, now)
+        print("sealed key stored (shown once in the app, cleared after 10 minutes)")
         return 0
     for r in server_job_rows(j, 10):
         print(
@@ -807,7 +868,7 @@ def cmd_journal(a: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parser per command
     ap = argparse.ArgumentParser(prog="trader-bf", description="B-fast EMG2-20 (paper only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("validate-config")
@@ -839,10 +900,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--all", action="store_true", help="every file of the stack (secrets-check)")
     p.add_argument("--dir", type=Path, default=Path("/run/secrets"))
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p = sub.add_parser("daily-summary", help="the day's readable summary as HTML (BF-D64)")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("--journal", help="journal URL, explicit (tests/dev; opened read-only)")
+    p.add_argument("--out", default="-", help="file, or - for stdout")
     p = sub.add_parser("vapid-public", help="the phone app's Web Push public key (BF-D40)")
     p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
     p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
-    p.add_argument("op", choices=["claim", "finish", "status", "list"])
+    p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal"])
     p.add_argument("--id", type=int)
     p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])
     _journal_args(p)
@@ -872,6 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "check-secrets": cmd_check_secrets,
         "dashboard": cmd_dashboard,
         "vapid-public": cmd_vapid_public,
+        "daily-summary": cmd_daily_summary,
         "server-jobs": cmd_server_jobs,
     }
     if a.cmd in commands:

@@ -56,6 +56,8 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
              "state": clean_line(str(c.get("state", "")))[:80]}
             for c in cont[:12] if isinstance(c, Mapping)
         ]  # fmt: skip
+    if "onedrive" in raw:  # BF-D64
+        out["onedrive"] = bool(raw.get("onedrive"))
     sec = raw.get("secrets")
     if isinstance(sec, Mapping):  # BF-D63: known secret NAMES -> present?; never a value
         from trader.secrets import KNOWN_SECRETS

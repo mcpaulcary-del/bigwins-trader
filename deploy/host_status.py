@@ -39,6 +39,7 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         "tailscale": env.get("TS") or "?", "code_version": env.get("CV", ""),
         "asx": env.get("ASX", ""), "containers": cont,
         "log": env.get("LOGS", "").splitlines()[-30:],
+        "onedrive": env.get("ONEDRIVE") == "1",  # BF-D64: the backup remote is configured
         # BF-D63: which secret files exist (names only; the worker tests -s, never reads)
         "secrets": {**dict.fromkeys(env.get("SECRETS_PRESENT", "").split(), True),
                     **dict.fromkeys(env.get("SECRETS_MISSING", "").split(), False)},

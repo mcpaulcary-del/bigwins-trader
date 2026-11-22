@@ -725,9 +725,9 @@ class Dashboard:
         return out
 
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
-               "/strategy", "/setup")  # fmt: skip
+               "/strategy", "/setup", "/backups", "/accounts")  # fmt: skip
 
-    def _screen(  # noqa: PLR0911 - one return per screen
+    def _screen(  # noqa: PLR0911, PLR0912 - one return per screen
         self, path: str, qs: Mapping[str, str], viewer: str
     ) -> tuple[str, bytes] | None:
         src = self.sources
@@ -760,6 +760,10 @@ class Dashboard:
             return html_t, app_pages.inbox(v, x, qs.get("kind", "all")).encode()
         if path == "/server":
             return html_t, app_pages.server(v, x).encode()
+        if path == "/backups":
+            return html_t, app_pages.backups(v, x).encode()
+        if path == "/accounts":
+            return html_t, app_pages.accounts(v, x).encode()
         if path == "/setup":
             return html_t, app_pages.setup(v, x, app_pages.safe(self.setup_facts, {}), j).encode()
         if path == "/strategy":

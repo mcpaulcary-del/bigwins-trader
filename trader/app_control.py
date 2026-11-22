@@ -77,7 +77,12 @@ from trader.webui import SECURITY_HEADERS, e, page, section
 
 CODE_ACTS = frozenset({"ok", "ap", "rf", "veto", "re", "co", "idmap", "idmap_reject"})
 CONFIRM_ACTS = frozenset({"ki", "so", "cancel"})
-RISK_REDUCING = frozenset({"pa", "ki", "so"})  # allowed even when the app's address changed
+RISK_REDUCING = frozenset({"pa", "ki", "so"})
+# BF-D64 / BF-D65: low-risk server jobs: a confirm screen, no code (they change nothing the
+# trader trades with); still signed for the worker, still only for allowed log-ins
+NO_CODE_SERVER = frozenset(
+    {"backup_now", "restore_test", "fetch", "hc_ping"}
+)  # allowed even when the app's address changed
 ONE_TAP = frozenset({"pa", "st"})
 MAX_FAILS = 3
 LOCK = timedelta(minutes=15)
@@ -280,6 +285,17 @@ class Control:
             add_inbox(self.journal, self.clock(), "action", "You (app): alert settings changed",
                       json.dumps(r.data), "/settings", src, "off")  # fmt: skip
             return "alert settings saved"
+        if r.kind == "server_nocode":
+            act = str(r.data["action"])
+            if act not in NO_CODE_SERVER:
+                return "refused: this server job needs your code"
+            jid = add_server_job(self.journal, act, 0, r.login, r.at, "", self.worker_key)
+            reply = f"server job {jid} '{act}' queued: the server runs it within a minute"
+            add_inbox(self.journal, self.clock(), "action", f"You (app): {r.data['shown']}"[:200],
+                      reply, "/server", src, "off")  # fmt: skip
+            return reply
+        if r.kind == "reveal":
+            return self._reveal(r)
         if r.kind in ("server", "refresh"):
             return self._server(r, src)
         return "unknown request"
@@ -421,6 +437,11 @@ class Control:
             return self._do(form, login, hdrs)
         if p == "/act/alerts":
             return self._alerts_post(form, login, hdrs)
+        if p == "/act/backup-key":  # BF-D64: one view of the sealed recovery key
+            if self.demo:
+                return self._result(hdrs, "DEMO: there is no key to show.", True)
+            r = self._submit(_Req("reveal", login, self.clock(), {}))
+            return self._key_page(hdrs, r)
         if p == "/act/push/off":
             r = self._submit(
                 _Req("unsubscribe", login, self.clock(), {"endpoint": form.get("endpoint", "")})
@@ -488,7 +509,7 @@ class Control:
         return status, hdrs, out.encode()
 
     # ------------------------------------------------------------ GET pages
-    def _get(
+    def _get(  # noqa: PLR0911 - one return per page
         self, p: str, qs: dict[str, str], login: str, token: str, hdrs: dict[str, str]
     ) -> tuple[int, dict[str, str], bytes]:
         if not self.demo and not self.allowed_logins:
@@ -506,7 +527,54 @@ class Control:
             return self._html(200, hdrs, "Confirm", self._confirm(qs, token))
         if p == "/act/alerts":
             return self._html(200, hdrs, "Alerts", self._alerts_page(token), "server")
+        if p == "/act/backup-key":
+            return self._html(200, hdrs, "Recovery key", self._key_intro(token), "server")
         return 404, hdrs, b"not found\n"
+
+    # ------------------------------------------------------------ BF-D64 recovery key
+    def _key_intro(self, token: str) -> str:
+        from trader.backups import take_sealed
+
+        fresh = None if self.demo else take_sealed(self.journal, self.clock())
+        if fresh is None:
+            return ("<h1>Backup recovery key</h1>" + section("", (
+                "<p>The key that unlocks your backups is kept only on the server. To see it "
+                "once, ask the server for it (needs your 6-digit code); then come back here "
+                "within 10 minutes.</p>"
+                '<a class="btn wide" href="/act/confirm?a=srv:backup_key">Ask the server for '
+                "the key…</a>")))  # fmt: skip
+        return ("<h1>Backup recovery key</h1>" + section("", (
+            "<p class='note'>The server has sent the key. It is shown <b>once</b>: have your "
+            "password manager open, then tap the button.</p>"
+            '<form method="post" action="/act/backup-key"><input type="hidden" name="csrf" '
+            f'value="{e(token)}"><button class="btn wide">Show the key now</button>'
+            "</form>")))  # fmt: skip
+
+    def _reveal(self, r: _Req) -> str:
+        from trader.backups import clear_sealed, take_sealed, unseal
+
+        got = take_sealed(self.journal, self.clock())
+        if got is None or self.worker_key is None:
+            return ""
+        key = unseal(self.worker_key, str(got["sealed"]))
+        clear_sealed(self.journal, self.clock(), r.login)  # one view only
+        add_inbox(self.journal, self.clock(), "action", "You (app): backup recovery key shown",
+                  "The recovery key was shown once in the app (the key itself is never in "
+                  "the inbox).", "/backups", f"app:{r.login}", "off")  # fmt: skip
+        return key.decode("utf-8", "replace").strip() if key else ""
+
+    def _key_page(self, hdrs: dict[str, str], key: str | None) -> tuple[int, dict[str, str], bytes]:
+        if not key:
+            return self._result(hdrs, "No key to show (it was already shown, or more than 10 "
+                                "minutes passed). Ask the server for it again.", False)  # fmt: skip
+        lines = [x for x in key.splitlines() if x.startswith("AGE-SECRET-KEY-")]
+        body = ("<h1>Backup recovery key</h1>" + section("", (
+            "<p class='note'><b>Save this in your password manager now.</b> It is shown only "
+            "this once. Anyone with it and your backup files can read your backups.</p>"
+            f"<p><code style='word-break:break-all;font-size:15px'>{e(lines[0] if lines else key)}"
+            "</code></p><p class='small muted'>To see it again, ask the server again (needs "
+            "your code).</p>")))  # fmt: skip
+        return self._html(200, hdrs, "Recovery key", body, "server")
 
     def _form(self, token: str, fields: Mapping[str, str], inner: str, cls: str = "") -> str:
         hidden = "".join(
@@ -691,6 +759,15 @@ class Control:
                     "", f'<p class="summary">{e(what)}</p>' + self._form(token, fields, inner)
                 )
             )
+        if a.startswith("srv:") and a[4:] in NO_CODE_SERVER:
+            inner = (
+                '<input type="hidden" name="confirm" value="yes">'
+                '<button class="btn wide">Yes, run it</button>'
+            )
+            return head + demo + section(
+                "", f'<p class="summary">{e(what)}.</p>' + self._form(token, fields, inner)
+                + '<a class="btn sec wide" style="margin-top:8px" href="/act">Cancel</a>',
+            )  # fmt: skip
         if a in CONFIRM_ACTS:
             inner = (
                 '<input type="hidden" name="confirm" value="yes">'
@@ -868,7 +945,11 @@ class Control:
                 f"Not done: {ACTION_LABEL[a]} needs the Yes button of its confirm screen.",
                 False,
             )
-        needs_code = a in CODE_ACTS or a.startswith("srv:") or a == "refresh"
+        nocode_srv = a.startswith("srv:") and a[4:] in NO_CODE_SERVER
+        if nocode_srv and form.get("confirm") != "yes":
+            return self._result(hdrs, "Not done: it needs the Yes button of its confirm screen.",
+                                False)  # fmt: skip
+        needs_code = a in CODE_ACTS or (a.startswith("srv:") and not nocode_srv) or a == "refresh"
         code = form.get("code", "").strip()
         if needs_code:
             if self.locked(now):
@@ -881,6 +962,10 @@ class Control:
             return self._result(
                 hdrs, f"DEMO: nothing was done. In the real app this would {what}.", True
             )
+        if nocode_srv:
+            reply = self._submit(_Req("server_nocode", login, now,
+                                      {"action": a[4:], "shown": what}))  # fmt: skip
+            return self._result(hdrs, reply or "queued", bool(reply and "queued" in reply))
         if a == "cancel":
             reply = self._submit(_Req("cancel", login, now, {"job": form.get("job", "0")}))
             return self._result(hdrs, reply or "queued", bool(reply and "cancelled" in reply))

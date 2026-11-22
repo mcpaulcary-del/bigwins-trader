@@ -142,13 +142,23 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
     set_state(j, "host-status", {
         "load1": 0.18, "cpus": 2, "mem_used_pct": 41, "disk_used_pct": 37,
         "uptime_s": 9 * 86400 + 3600, "tailscale": "connected (DEMO)",
-        "code_version": "demo build", "asx": "open (DEMO)",
+        "code_version": "demo build", "asx": "open (DEMO)", "onedrive": True,
         "containers": [{"name": n, "state": "Up 9 days (DEMO)"}
                        for n in ("trader", "dashboard", "db", "gw-paper")],
         "log": ["DEMO log: scheduler idle, next job 14:30 remind",
                 "DEMO log: decision batch planned, waiting for approval"],
     }, now - timedelta(seconds=40))  # fmt: skip
     set_state(j, "strategy-running", dict(DEMO_VERSION), now - timedelta(days=1))
+    from trader.backups import record_result
+
+    for k in range(3, 0, -1):  # BF-D64: a few nights of (DEMO) backups and a restore test
+        local = {"archive": "bigwins-demo.tar.age", "size": 48_000_000 + k * 1_200_000,
+                 "files": 1840}  # fmt: skip
+        record_result(j, {"ok": True, "kind": "backup", "at": "demo", "local": local,
+                          "remote": {"ok": True}, "onedrive": True},
+                      now - timedelta(days=k, hours=-13))  # fmt: skip
+    record_result(j, {"ok": True, "kind": "restore_test", "files": 1840, "ledger_files": 3,
+                      "journal_dump": True}, now - timedelta(hours=10))  # fmt: skip
     set_state(j, "update-available", {
         "ahead": 2, "head": "a" * 40, "remote": "b" * 40, "previous": "c" * 40, "strategy": True,
         "reasons": ["strategy setting: live_emg2_20"], "files": ["config/bfast.yaml"],

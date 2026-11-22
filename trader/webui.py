@@ -477,7 +477,11 @@ function setup(){var box=document.getElementById('setup-ring');if(!box)return;
   c.checked=store(k)==='1';if(c.dataset.b)return;c.dataset.b='1';
   c.addEventListener('change',function(){store(k,c.checked?'1':'0');recount();if(c.checked){buzz();toast('Saved on this phone');}});});
  recount();}
-function enhance(){setup();badge();filters();charts();alerts();countup();rings();countdown();sorter();donut();sheet();inbox();resultToast();}
+function reminders(){document.querySelectorAll('input[data-remind]').forEach(function(i){var k='bw.remind.'+i.dataset.remind,
+ out=document.querySelector('[data-remind-out="'+i.dataset.remind+'"]');function show(){if(!out)return;if(!i.value){out.textContent='';return;}
+ var d=Math.ceil((Date.parse(i.value)-Date.now())/864e5);out.textContent=d<0?'Date passed '+(-d)+' days ago':d+' days to go'+(d<=14?' - soon':'');}
+ i.value=store(k)||'';show();if(i.dataset.b)return;i.dataset.b='1';i.addEventListener('change',function(){store(k,i.value);show();toast('Saved on this phone');});});}
+function enhance(){reminders();setup();badge();filters();charts();alerts();countup();rings();countdown();sorter();donut();sheet();inbox();resultToast();}
 function skeleton(){main.innerHTML='<div class="skel s"></div><div class="skel"></div><div class="skel"></div>';}
 function swap(html,url,push){
  var doc=new DOMParser().parseFromString(html,'text/html');var m=doc.getElementById('main');if(!m){location.href=url;return;}
