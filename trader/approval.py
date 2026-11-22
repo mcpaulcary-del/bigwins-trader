@@ -19,11 +19,22 @@ the second factor, as does ``/continue <code>`` (L11 stage 3 written confirmatio
 6-digit TOTP (RFC 6238, SHA-1, 30 s) from the owner's authenticator; each code is
 accepted once. Commands are accepted only from allow-listed Telegram chat ids
 (BP-11). The TOTP seed and the bot token are Docker secrets, never config.
+
+Buttons (BF-D38): an approval request carries Telegram inline buttons ("Approve all",
+"Refuse batch", one per order, "Status", "Pause"); ``/menu`` shows Status, Pause, Kill,
+Stop, Resume and Continue. A tap is only a shortcut for the typed command: it is turned
+into the same text and handled by the same code (``ApprovalBot._dispatch``), from the same
+allow-listed chats, with the same deadline and the same one-time code. A tap that adds
+risk or re-arms (approve, refuse, resume, continue) asks for the 6-digit code; the next
+code message from that chat within ``code_window_s`` (3 minutes) completes it, exactly as
+``/ok <batch> all <code>`` would. Pause needs nothing; Kill and Stop need a second
+confirming tap within ``confirm_window_s``. Typed commands work as before.
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -31,11 +42,11 @@ import re
 import struct
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from datetime import datetime, time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime, time, timedelta
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from trader.constants import ASX_TZ
 from trader.corporate_actions import CaError, parse_ratio
@@ -83,14 +94,35 @@ class TotpVerifier:
 
 @dataclass(frozen=True)
 class Incoming:
+    """A typed message, or (``callback_id`` set) a tap on an inline button (BF-D38)."""
+
     chat_id: int
     text: str
     at: datetime
+    callback_id: str | None = None  # Telegram callback_query id: a button tap
+    data: str = ""  # the tapped button's callback data
+    user_id: int | None = None  # who tapped (Telegram ``from.id``)
+    message_id: int | None = None  # the message that carries the button
+    message_text: str = ""  # its text (to show the outcome when the batch is decided)
+
+
+Markup = Mapping[str, Any]  # a Telegram ``reply_markup`` object
 
 
 class ChatTransport(Protocol):
     def send(self, chat_id: int, text: str) -> None: ...
     def poll(self) -> list[Incoming]: ...
+
+
+@runtime_checkable
+class ButtonTransport(Protocol):
+    """A transport that can also show buttons (BF-D38); others get plain text."""
+
+    def send(self, chat_id: int, text: str) -> None: ...
+    def poll(self) -> list[Incoming]: ...
+    def send_markup(self, chat_id: int, text: str, markup: Markup) -> int | None: ...
+    def answer_callback(self, callback_id: str, text: str = "") -> None: ...
+    def edit_text(self, chat_id: int, message_id: int, text: str) -> None: ...
 
 
 @dataclass
@@ -99,9 +131,23 @@ class FakeTransport:
 
     inbox: list[Incoming] = field(default_factory=list)
     outbox: list[tuple[int, str]] = field(default_factory=list)
+    markups: list[tuple[int, str, Markup]] = field(default_factory=list)
+    answers: list[tuple[str, str]] = field(default_factory=list)
+    edits: list[tuple[int, int, str]] = field(default_factory=list)
 
     def send(self, chat_id: int, text: str) -> None:
         self.outbox.append((chat_id, text))
+
+    def send_markup(self, chat_id: int, text: str, markup: Markup) -> int | None:
+        self.outbox.append((chat_id, text))
+        self.markups.append((chat_id, text, markup))
+        return len(self.outbox)  # a message id
+
+    def answer_callback(self, callback_id: str, text: str = "") -> None:
+        self.answers.append((callback_id, text))
+
+    def edit_text(self, chat_id: int, message_id: int, text: str) -> None:
+        self.edits.append((chat_id, message_id, text))
 
     def poll(self) -> list[Incoming]:
         out, self.inbox = self.inbox, []
@@ -138,6 +184,22 @@ class TelegramTransport:
     def send(self, chat_id: int, text: str) -> None:
         self._call("sendMessage", {"chat_id": chat_id, "text": text[:4000]})
 
+    def send_markup(self, chat_id: int, text: str, markup: Markup) -> int | None:
+        res = self._call(
+            "sendMessage",
+            {"chat_id": chat_id, "text": text[:4000], "reply_markup": json.dumps(markup)},
+        )
+        return int(res["message_id"]) if isinstance(res, dict) and "message_id" in res else None
+
+    def answer_callback(self, callback_id: str, text: str = "") -> None:
+        self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:200]})
+
+    def edit_text(self, chat_id: int, message_id: int, text: str) -> None:
+        # no reply_markup: Telegram removes the message's inline buttons
+        self._call(
+            "editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text[:4000]}
+        )
+
     def poll(self) -> list[Incoming]:
         res = self._call("getUpdates", {"offset": self._offset, "timeout": self._timeout})
         out: list[Incoming] = []
@@ -147,6 +209,21 @@ class TelegramTransport:
             if "text" in m:
                 at = datetime.fromtimestamp(int(m["date"]), tz=ASX_TZ)
                 out.append(Incoming(int(m["chat"]["id"]), str(m["text"]), at))
+            cq = u.get("callback_query") or {}
+            cm = cq.get("message") or {}
+            if cq.get("id") and "chat" in cm:  # BF-D38: a button tap, stamped on arrival
+                out.append(
+                    Incoming(
+                        int(cm["chat"]["id"]),
+                        "",
+                        datetime.now(ASX_TZ),
+                        callback_id=str(cq["id"]),
+                        data=str(cq.get("data") or ""),
+                        user_id=int((cq.get("from") or {}).get("id", 0)) or None,
+                        message_id=int(cm["message_id"]) if "message_id" in cm else None,
+                        message_text=str(cm.get("text") or ""),
+                    )
+                )
         return out
 
 
@@ -204,6 +281,80 @@ def render_batch(journal: Journal, batch_id: str, banner: str) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- buttons (BF-D38)
+
+CB_PREFIX = "bw"  # callback data "bw:<action>[:<batch>[:<n>|all]]", at most 64 bytes
+CB_MAX = 64
+CODE_RE = re.compile(r"\d{6}")
+OPEN_FOR_APPROVAL = (Status.PLANNED, Status.RISK_OK, Status.HELD)
+PER_ORDER_BUTTONS_MAX = 24  # beyond this the message keeps "Approve all" and typed /ok n
+# Replies of the typed handlers that mean the whole batch is decided (its buttons go)
+DECIDED = ("approved all ", "approved batch ", "refused batch ")
+BUTTON_HINT = "Or tap a button below, then send your 6-digit code (within 3 minutes)."
+
+
+def _cb(*parts: str) -> str:
+    return ":".join((CB_PREFIX, *parts))
+
+
+def _button(label: str, *parts: str) -> dict[str, str] | None:
+    data = _cb(*parts)
+    return {"text": label, "callback_data": data} if len(data.encode()) <= CB_MAX else None
+
+
+def _rows(*rows: list[dict[str, str] | None]) -> dict[str, Any]:
+    return {"inline_keyboard": [[b for b in r if b] for r in rows if any(r)]}
+
+
+def menu_markup() -> dict[str, Any]:
+    """``/menu``: the owner's one-tap commands."""
+    return _rows(
+        [_button("📊 Status", "st"), _button("⏸ Pause", "pa")],
+        [_button("🛑 Kill", "ki"), _button("✋ Stop", "so")],
+        [_button("▶️ Resume", "re"), _button("✔️ Continue", "co")],
+    )
+
+
+def batch_markup(journal: Journal, batch_id: str) -> dict[str, Any] | None:
+    """The buttons of an approval request; None for an auto batch (nothing to approve)."""
+    b = journal.batch(batch_id)
+    if b is None or b["approval_mode"] not in ("per_order", "batch"):
+        return None
+    tools = [_button("📊 Status", "st"), _button("⏸ Pause", "pa")]
+    refuse = _button("❌ Refuse batch", "rf", batch_id)
+    if b["approval_mode"] == "batch":
+        return _rows([_button("✅ Approve batch", "ap", batch_id), refuse], tools)
+    seqs = [it.seq for it, st in journal.intents_of(batch_id) if st in OPEN_FOR_APPROVAL]
+    each: list[list[dict[str, str] | None]] = []
+    if 1 < len(seqs) <= PER_ORDER_BUTTONS_MAX:
+        btns = [_button(f"✅ {n}", "ok", batch_id, str(n)) for n in seqs]
+        each = [btns[i : i + 6] for i in range(0, len(btns), 6)]
+    return _rows([_button("✅ Approve all", "ok", batch_id, "all"), refuse], *each, tools)
+
+
+def broadcast_batch(
+    transport: ChatTransport, chats: Iterable[int], text: str, journal: Journal, batch_id: str
+) -> None:
+    """An approval request with its buttons where the transport shows them (BF-D38)."""
+    markup = batch_markup(journal, batch_id)
+    if markup is None or not isinstance(transport, ButtonTransport):
+        broadcast(transport, chats, text)
+        return
+    for c in chats:
+        transport.send_markup(c, text + "\n" + BUTTON_HINT, markup)
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A tap waiting for the owner's 6-digit code: the typed command it completes."""
+
+    command: str  # e.g. "/ok EMG2_18_PAPER-2026-11-30-R all" (the code is appended)
+    what: str
+    at: datetime
+    message_id: int | None = None
+    message_text: str = ""
+
+
 # ---------------------------------------------------------------- the bot
 
 
@@ -215,6 +366,10 @@ class ApprovalBot:
     allowed_chats: frozenset[int]
     on_kill: Callable[[], int] | None = None  # cancels open orders; returns the count
     approval_deadline: str = "15:20"  # L8, config ``execution.approval_deadline``
+    code_window_s: int = 180  # BF-D38: a code completes a tap within 3 minutes
+    confirm_window_s: int = 60  # BF-D38: Kill / Stop need a second tap within 1 minute
+    _pending: dict[int, _Pending] = field(default_factory=dict, init=False, repr=False)
+    _confirm: dict[int, tuple[str, datetime]] = field(default_factory=dict, init=False, repr=False)
 
     def handle_all(self) -> int:
         n = 0
@@ -224,10 +379,169 @@ class ApprovalBot:
         return n
 
     def handle(self, m: Incoming) -> str:
+        if m.callback_id is not None:
+            return self._tap(m)
         if m.chat_id not in self.allowed_chats:
             return "ignored"  # BP-11: silently ignore strangers
-        reply = self._dispatch(m)
+        text = m.text.strip()
+        cmd = text.split()[0].lower().split("@")[0] if text else ""
+        if cmd in ("/menu", "/start") and isinstance(self.transport, ButtonTransport):
+            reply = "Big Wins (PAPER). Tap a button; approvals and re-arming ask for your code."
+            self.transport.send_markup(m.chat_id, reply, menu_markup())
+            return reply
+        reply = self._with_code(m, text) if CODE_RE.fullmatch(text) else self._dispatch(m)
         self.transport.send(m.chat_id, reply)
+        return reply
+
+    # ------------------------------------------------------------ taps (BF-D38)
+    def _say(self, chat_id: int, text: str, markup: Markup | None = None) -> None:
+        if markup is not None and isinstance(self.transport, ButtonTransport):
+            self.transport.send_markup(chat_id, text, markup)
+        else:
+            self.transport.send(chat_id, text)
+
+    def _quiet(self, fn: Callable[[], None]) -> None:
+        """Answer / edit calls are cosmetic: a Telegram error there changes nothing."""
+        with contextlib.suppress(RuntimeError, OSError):
+            fn()
+
+    def _tap(self, m: Incoming) -> str:
+        """A button tap: the same allow-list as typed commands (BP-11), and in a private
+        chat the tapper must be that chat's owner. The query is always answered (the
+        phone stops its spinner); a stranger gets an empty answer and nothing else."""
+        bt = self.transport if isinstance(self.transport, ButtonTransport) else None
+        cid = m.callback_id or ""
+        stranger = m.chat_id not in self.allowed_chats or (
+            m.chat_id > 0 and m.user_id is not None and m.user_id != m.chat_id
+        )
+        if stranger:
+            if bt is not None:
+                self._quiet(lambda: bt.answer_callback(cid, ""))
+            return "ignored"
+        reply, toast, markup = self._tap_action(m)
+        if bt is not None:
+            self._quiet(lambda: bt.answer_callback(cid, toast))
+        self._say(m.chat_id, reply, markup)
+        return reply
+
+    def _tap_action(self, m: Incoming) -> tuple[str, str, Markup | None]:  # noqa: PLR0911
+        parts = m.data.split(":")
+        if len(parts) < 2 or parts[0] != CB_PREFIX:
+            return "unknown button", "unknown button", None
+        act, args = parts[1], parts[2:]
+        if act == "st":
+            return self._dispatch(replace(m, text="/status")), "status", None
+        if act == "pa":  # risk-reducing: one tap, like /pause
+            return self._dispatch(replace(m, text="/pause")), "paused", None
+        if act in ("ki", "so"):  # Kill / Stop: a second tap confirms (no fat-finger)
+            self._confirm[m.chat_id] = (act, m.at)
+            name = "KILL" if act == "ki" else "STOP"
+            what = (
+                "stops all new orders and cancels open orders at the broker"
+                if act == "ki"
+                else "buys stay paused with no automatic resume; sells go on (L11 d)"
+            )
+            confirm = _rows(
+                [_button(f"{'🛑' if act == 'ki' else '✋'} Yes, {name}", act + "!"),
+                 _button("Cancel", "cx")]
+            )  # fmt: skip
+            return f"Tap again to confirm {name}: {what}.", "tap again to confirm", confirm
+        if act in ("ki!", "so!"):
+            want, at = self._confirm.pop(m.chat_id, ("", m.at))
+            fresh = timedelta(0) <= m.at - at <= timedelta(seconds=self.confirm_window_s)
+            if want != act[:2] or not fresh:
+                return "Not confirmed (too late or not asked): tap the button again.", "", None
+            cmd = "/kill" if act == "ki!" else "/stop"
+            return self._dispatch(replace(m, text=cmd)), "done", None
+        if act == "cx":
+            self._confirm.pop(m.chat_id, None)
+            self._pending.pop(m.chat_id, None)
+            return "Cancelled. Nothing changed.", "cancelled", None
+        if act in ("re", "co"):
+            cmd, what = ("/resume", "re-arm (resume buying)") if act == "re" else (
+                "/continue", "confirm continuing (L11 stage 3)")  # fmt: skip
+            return self._ask_code(m, cmd, what)
+        if act in ("ok", "ap", "rf") and args:
+            return self._tap_batch(m, act, args)
+        return "unknown button", "unknown button", None
+
+    def _tap_batch(  # noqa: PLR0911 - one refusal per rule
+        self, m: Incoming, act: str, args: list[str]
+    ) -> tuple[str, str, Markup | None]:
+        """Approve / refuse buttons: the batch must exist, be open and before its deadline
+        now; the code message is checked again by the typed handler (same rules)."""
+        batch_id = args[0]
+        b = self.journal.batch(batch_id)
+        if b is None:
+            return f"unknown batch {batch_id}", "refused", None
+        if b["execution_date"] is not None and m.at > deadline(
+            b["execution_date"], self.approval_deadline
+        ):
+            return (
+                f"refused: past the approval deadline ({self.approval_deadline}) of {batch_id}; "
+                "unapproved orders lapse",
+                "refused: too late",
+                None,
+            )
+        if any(a["action"] == "REFUSE" for a in self.journal.approvals(batch_id)):
+            return f"refused: batch {batch_id} was already refused", "refused", None
+        if act == "rf":
+            return self._ask_code(m, f"/refuse {batch_id}", f"refuse batch {batch_id}")
+        if act == "ap":
+            if b["approval_mode"] != "batch":
+                return "this batch needs per-order approval", "refused", None
+            return self._ask_code(m, f"/approve {batch_id}", f"approve batch {batch_id}")
+        target = args[1] if len(args) > 1 else ""
+        done = approved_seqs(self.journal, batch_id)
+        open_ = {
+            it.seq: it
+            for it, st in self.journal.intents_of(batch_id)
+            if st in OPEN_FOR_APPROVAL and it.seq not in done
+        }
+        if b["approval_mode"] != "per_order":
+            return "this batch is approved as a whole", "refused", None
+        if not open_:
+            return f"nothing left to approve in {batch_id}", "nothing to approve", None
+        if target == "all":
+            n = len(self.journal.intents_of(batch_id))
+            return self._ask_code(m, f"/ok {batch_id} all", f"approve all {n} orders of {batch_id}")
+        if not target.isdigit() or int(target) not in open_:
+            return f"order {target} of {batch_id} is not waiting for approval", "refused", None
+        it = open_[int(target)]
+        return self._ask_code(
+            m,
+            f"/ok {batch_id} {target}",
+            f"approve order {target} ({it.side.value} {it.qty} {it.entity}) of {batch_id}",
+        )
+
+    def _ask_code(self, m: Incoming, command: str, what: str) -> tuple[str, str, Markup | None]:
+        self._pending[m.chat_id] = _Pending(command, what, m.at, m.message_id, m.message_text)
+        mins = self.code_window_s // 60
+        return (
+            f"Send your 6-digit code to {what} (within {mins} minutes).",
+            "send your code",
+            {"force_reply": True, "input_field_placeholder": "6-digit code"},
+        )
+
+    def _with_code(self, m: Incoming, code: str) -> str:
+        """A bare 6-digit message completes the chat's waiting tap through the typed
+        command's own handler (same TOTP check, single use, same deadline at this
+        message's time). The waiting tap is used up either way."""
+        p = self._pending.pop(m.chat_id, None)
+        late = p is None or not (
+            timedelta(seconds=-5) <= m.at - p.at <= timedelta(seconds=self.code_window_s)
+        )
+        if p is None or late:
+            return (
+                "No button is waiting for a code (a code counts for "
+                f"{self.code_window_s // 60} minutes after a tap). Tap the button again."
+            )
+        reply = self._dispatch(replace(m, text=f"{p.command} {code}"))
+        bt = self.transport if isinstance(self.transport, ButtonTransport) else None
+        if bt is not None and p.message_id is not None and reply.startswith(DECIDED):
+            body = p.message_text or p.what
+            mid = p.message_id
+            self._quiet(lambda: bt.edit_text(m.chat_id, mid, f"{body}\n\nDONE: {reply}"))
         return reply
 
     def _dispatch(self, m: Incoming) -> str:  # noqa: PLR0911 - one return per command

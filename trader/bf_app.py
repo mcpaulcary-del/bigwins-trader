@@ -55,6 +55,7 @@ from trader.approval import (
     TotpVerifier,
     approved_seqs,
     broadcast,
+    broadcast_batch,
     render_batch,
     totp,
 )
@@ -391,6 +392,11 @@ class BfApp:
         broadcast(self.transport, self.s.chats, text)
         self.log.append(text.splitlines()[0] if text else "")
 
+    def say_batch(self, batch_id: str, text: str) -> None:
+        """An approval request: as ``say``, with its buttons (BF-D38)."""
+        broadcast_batch(self.transport, self.s.chats, text, self.j, batch_id)
+        self.log.append(text.splitlines()[0] if text else "")
+
     def _kill(self) -> int:
         return self.ex.kill(self.now)
 
@@ -644,9 +650,10 @@ class BfApp:
             ex.plan(batch, mode, x, ctx)
             self.j.mark_job(key, {"batch": batch.batch_id, "orders": len(batch.intents)}, now)
             if book == self.s.book:
-                self.say(
+                self.say_batch(
+                    batch.batch_id,
                     f"Fund sweep {day} (BF-D34, state: FUND): leftover shares sold and their "
-                    "cash put into the fund\n" + render_batch(self.j, batch.batch_id, "PAPER")
+                    "cash put into the fund\n" + render_batch(self.j, batch.batch_id, "PAPER"),
                 )
                 for p in ex.plan_pages:
                     self.say("PAGE " + p)
@@ -880,7 +887,7 @@ class BfApp:
                 if lvl not in BLOCKS_ALL
                 else "re-arm; sells wait for the re-arm too"
             )
-        self.say(head + "\n" + render_batch(self.j, batch_id, "PAPER"))
+        self.say_batch(batch_id, head + "\n" + render_batch(self.j, batch_id, "PAPER"))
         for p in pages:  # BF-D3: a sell above A$800 goes through, paged
             self.say("PAGE " + p)
 
@@ -1030,9 +1037,10 @@ class BfApp:
         for key in keys:
             self.j.mark_job(key, {"carried": True, "batch": bid}, now)
         if book == self.s.book:
-            self.say(
+            self.say_batch(
+                bid,
                 f"Carried to {x} (L7): {len(intents)} order(s)\n"
-                + render_batch(self.j, bid, "PAPER")
+                + render_batch(self.j, bid, "PAPER"),
             )
 
     def job_flex_pull(self, day: date, now: datetime) -> None:
@@ -1295,9 +1303,10 @@ class BfApp:
                 ctx = self._ctx(self.s.book, self.broker, x, sd, now, True)
                 self.ex.plan(batch, self.s.approval_mode, x, ctx)
                 self.j.mark_job(done_key, {"batch": batch.batch_id}, now)
-                self.say(
+                self.say_batch(
+                    batch.batch_id,
                     f"Canary filled and reconciled to the cent. Remaining {len(batch.intents)} "
-                    f"start buys for {x}:\n" + render_batch(self.j, batch.batch_id, "PAPER")
+                    f"start buys for {x}:\n" + render_batch(self.j, batch.batch_id, "PAPER"),
                 )
             elif can and all(st in TERMINAL for _, st in can):
                 self.j.mark_job(done_key, {"stopped": [st for _, st in can]}, now)
@@ -1707,9 +1716,10 @@ class BfApp:
         ctx = self._ctx(self.s.book, self.broker, x, day, now, False, data_as_of=as_of)
         self.ex.plan(wind, self.s.approval_mode, x, ctx)
         self.j.mark_job(key, {"digest": digest, "batch": wind.batch_id}, now)
-        self.say(
+        self.say_batch(
+            wind.batch_id,
             f"PAGE HIGH PRIORITY L11 wind-down {day}: {len(wind.intents)} sell(s)\n"
-            + render_batch(self.j, wind.batch_id, "PAPER")
+            + render_batch(self.j, wind.batch_id, "PAPER"),
         )
         return {(i.entity, i.side.value) for i in wind.intents}
 
