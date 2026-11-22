@@ -34,25 +34,41 @@ def _clean(r: Mapping[str, Any]) -> dict[str, Any]:
     def part(x: Any) -> dict[str, Any] | None:
         if not isinstance(x, Mapping):
             return None
-        out: dict[str, Any] = {"ok": bool(x.get("ok", True))}
-        for k in ("archive", "size", "files", "error"):
+        out: dict[str, Any] = {"ok": x.get("ok", True) is True}
+        for k in ("archive", "error"):
             if k in x:
-                out[k] = str(x[k])[:120] if k in ("archive", "error") else x[k]
+                out[k] = str(x[k])[:120]
+        for k in ("size", "files"):
+            if isinstance(x.get(k), int) and not isinstance(x.get(k), bool):
+                out[k] = x[k]
         return out
 
+    def num(x: Any) -> int | float | None:  # security review L5: typed fields only
+        return x if isinstance(x, int | float) and not isinstance(x, bool) else None
+
+    def flag(x: Any) -> bool | None:
+        return x if isinstance(x, bool) else None
+
+    fp = str(r.get("key_fp", ""))
+    bad: list[Any] = r["bad"] if isinstance(r.get("bad"), list) else []
+    miss: list[Any] = r["missing_sources"] if isinstance(r.get("missing_sources"), list) else []
     return {
         "kind": str(r.get("kind", "backup"))[:20],
-        "ok": bool(r.get("ok")),
+        "ok": r.get("ok") is True,
         "at": str(r.get("at", ""))[:20],
-        "seconds": r.get("seconds"),
+        "seconds": num(r.get("seconds")),
         "local": part(r.get("local")),
         "remote": part(r.get("remote")),
-        "files": r.get("files"),
-        "bad": [str(b)[:120] for b in (r.get("bad") or [])][:10],
-        "ledger_files": r.get("ledger_files"),
-        "journal_dump": r.get("journal_dump"),
+        "files": num(r.get("files")),
+        "bad": [str(b)[:120] for b in bad][:10],
+        "ledger_files": num(r.get("ledger_files")),
+        "journal_dump": flag(r.get("journal_dump")),
+        "db_rows_match": flag(r.get("db_rows_match")),
+        "missing_sources": [str(m)[:40] for m in miss][:10],
         "error": str(r.get("error", ""))[:200],
-        "onedrive": r.get("onedrive"),
+        "warn": str(r.get("warn", ""))[:120],
+        "onedrive": flag(r.get("onedrive")),
+        "key_fp": fp if fp.isalnum() and len(fp) <= 16 else "",
     }
 
 
@@ -107,9 +123,17 @@ def take_sealed(j: Journal, now: datetime) -> dict[str, Any] | None:
     return dict(st[0])
 
 
-def clear_sealed(j: Journal, now: datetime, login: str) -> None:
+def clear_sealed(j: Journal, now: datetime, login: str, fp: str = "") -> None:
     set_state(j, "backup-key-sealed", {}, now)
-    j.mark_job(f"backup-key-shown:{now.isoformat()}", {"login": login}, now)
+    j.mark_job(f"backup-key-shown:{now.isoformat()}", {"login": login, "fp": fp}, now)
+    if fp:  # security review M3: the key with this fingerprint has been shown (and saved)
+        set_state(j, "backup-key-shown", {"fp": fp, "login": login}, now)
+
+
+def key_saved(j: Journal, fp: str) -> bool:
+    """Security review M3: the key with fingerprint ``fp`` has been shown in the app."""
+    st = get_state(j, "backup-key-shown")
+    return bool(fp) and bool(st) and isinstance(st[0], dict) and st[0].get("fp") == fp  # type: ignore[index]
 
 
 # ---------------------------------------------------------------- readable daily summary

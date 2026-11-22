@@ -57,6 +57,8 @@ from trader.reconcile import Expected
 
 CENT = Decimal("0.01")
 COMPANY_TAX_RATE = Decimal("0.30")  # franking credit gross-up; base-rate entities use 25%
+TAKEOVER_NOTE = ("PROVISIONAL takeover - accountant to decide roll-over (Subdiv 124-M) and "
+                 "apportion the cash")  # fmt: skip
 OVERRIDE_DAYS = 7  # a CSV event replaces vendor dividends of the code within a week
 CASH_MATCH_DAYS = 120  # a Flex cash row settles a calendar event with ex-date this far back
 PENDING_DAYS = 60  # with no pay date: an expectation lasts this long after the ex-date
@@ -97,6 +99,9 @@ class CaEvent:
     pay_date: date | None = None
     per_share: Decimal | None = None  # cash per share; in-specie: value per share
     franked_pct: Decimal | None = None  # 0..100; None = unknown
+    # tax F7: the company tax rate of the franking (0.30 or 0.25), from the statement;
+    # None = not known: no franking credit is computed ("enter from statement")
+    franking_rate: Decimal | None = None
     capital_per_share: Decimal | None = None  # in-specie: the capital-reduction part
     new_code: str | None = None
     ratio: Decimal | None = None  # new shares per parent share
@@ -146,6 +151,14 @@ class IdentityHint:
 
 def money(x: Decimal) -> Decimal:
     return x.quantize(CENT, ROUND_HALF_EVEN)
+
+
+def _credit(amount: Decimal, fp: Decimal | None, rate: Decimal | None) -> Decimal:
+    """Tax F7: the franking credit of a dividend only with a known rate (never an assumed
+    30%); an unfranked dividend has none. 0 = none or not known (see ``franked_pct``)."""
+    if fp is None or fp == 0 or rate is None:
+        return Decimal(0)
+    return franking_credit(amount * fp / 100, rate)
 
 
 def franking_credit(franked_amount: Decimal, rate: Decimal = COMPANY_TAX_RATE) -> Decimal:
@@ -270,6 +283,7 @@ def load_ca_csv(path: Path) -> list[CaEvent]:
                         key=f"CSV:{code}:{ex}:{k.value}", kind=k, code=code, ex_date=ex,
                         pay_date=_date(r.get("pay_date")), per_share=_dec(r.get("value_per_share")),
                         franked_pct=_dec(r.get("franked_pct")),
+                        franking_rate=_dec(r.get("franking_rate")),
                         capital_per_share=_dec(r.get("capital_per_share")), new_code=child,
                         ratio=ratio, ratio_approx=approx, cost_base_pct=pct, source="CSV",
                         status=(r.get("status") or "confirmed").strip().lower(), note=note[:200],
@@ -406,7 +420,7 @@ def book_event(  # noqa: PLR0911 - one return per kind
                 cost_reduction=cash, source=ev.source, note=ev.note[:120],
             )  # fmt: skip
         fp = ev.franked_pct
-        credit = franking_credit(cash * fp / 100) if fp is not None else Decimal(0)
+        credit = _credit(cash, fp, ev.franking_rate)
         return Booking(
             key, ev.kind, ev.code, ev.ex_date, ev.pay_date, held, cash=cash, income=cash,
             franked_pct=fp, franking_credit=credit, source=ev.source, note=ev.note[:120],
@@ -420,7 +434,7 @@ def book_event(  # noqa: PLR0911 - one return per kind
             cap = money(ev.capital_per_share * held)
             inc = value - cap
             fp = ev.franked_pct
-            credit = franking_credit(inc * fp / 100) if fp is not None else Decimal(0)
+            credit = _credit(inc, fp, ev.franking_rate)
             return Booking(
                 key, ev.kind, ev.code, ev.ex_date, ev.pay_date, held, income=inc,
                 franked_pct=fp, franking_credit=credit, cost_reduction=cap,
@@ -576,7 +590,7 @@ def _cash_booking(
         fp = ev.franked_pct
     if "IN LIEU" in c.type.upper():
         fp = Decimal(0)  # a payment in lieu carries no franking
-    credit = franking_credit(c.amount * fp / 100) if fp is not None else Decimal(0)
+    credit = _credit(c.amount, fp, ev.franking_rate if ev is not None else None)
     return Booking(
         key, kind, code, ex, paid, held, cash=c.amount, income=c.amount, franked_pct=fp,
         franking_credit=credit, source="FLEX", expected_key=ev.key if ev else None,
@@ -635,6 +649,16 @@ def _action_bookings(  # noqa: PLR0911, PLR0912, PLR0915 - one return per action
                         int(q_out), cash=cash, qty_change=int(q_in - q_out), ratio=ratio,
                         source="FLEX", expected_key=sev.key if sev else None,
                         note=desc[:200])  # fmt: skip
+            return [b], []
+        if rows[0].type in ("TC", "TO") or "MERGED" in desc.upper() or "TENDER" in desc.upper():
+            # tax F1: a takeover by another company (scrip, maybe cash): the old shares are
+            # disposed of and the new ones acquired (PROVISIONAL: roll-over is the
+            # accountant's call); no identity hint, the codes are different companies
+            val = ins[0].value
+            b = Booking(key, CaKind.DISPOSAL, old, when, when, int(q_out), cash=cash,
+                        qty_change=-int(q_out), new_code=new, new_shares=int(q_in),
+                        child_cost=money(val) if val is not None else None, ratio=ratio,
+                        source="FLEX", tax_class=TAKEOVER_NOTE, note=desc[:200])  # fmt: skip
             return [b], []
         b = Booking(key, CaKind.CODE_CHANGE, old, when, when, int(q_out), cash=cash,
                     new_code=new, ratio=ratio, source="FLEX", note=desc[:200])  # fmt: skip

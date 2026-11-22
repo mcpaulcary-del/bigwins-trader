@@ -43,6 +43,7 @@ class DailyInputs:
     a200_value: Decimal | None = None  # the same money in A200 (L14 monthly)
     random_twins: str | None = None  # the twin's percentile among its random twins (BF-D18)
     state: str | None = None  # L15 band-trend switch: "state: EMG2 / FUND ..." (BF-D28)
+    fixed_costs_to_date: Decimal | None = None  # BF-D72: server + data, pro rata
 
 
 def value_of(positions: Mapping[str, int], prices: Mapping[str, Decimal], cash: Decimal) -> Decimal:
@@ -66,6 +67,15 @@ def daily_report(x: DailyInputs) -> str:
     lines.append(
         f"Brokerage to date A${x.commission_to_date.quantize(CENT)} ({share:.2%} of capital)"
     )
+    if x.fixed_costs_to_date is not None:  # BF-D72 (strategy review H4)
+        fc = x.fixed_costs_to_date.quantize(CENT)
+        after = ((value - fc) / x.capital_in - 1) if x.capital_in else Decimal(0)
+        lines.append(
+            f"Fixed costs to date (server, data) A${fc} ({fc / x.capital_in:.2%} of capital); "
+            f"result after all costs {after:+.2%}"
+            if x.capital_in
+            else f"Fixed costs A${fc}"
+        )
     if x.sim_value is not None:
         lines.append(
             f"Simulated twin A${x.sim_value.quantize(CENT)} "
@@ -74,7 +84,7 @@ def daily_report(x: DailyInputs) -> str:
     if x.random_twins is not None:
         lines.append(x.random_twins)
     if x.a200_value is not None:
-        lines.append(f"Same money in A200: A${x.a200_value.quantize(CENT)}")
+        lines.append(f"Same money in A200: A${x.a200_value.quantize(CENT)} (no fixed costs)")
     lines.append(f"Holdings ({len([q for q in x.positions.values() if q])}):")
     for e, q in sorted(x.positions.items()):
         px = x.prices.get(e)

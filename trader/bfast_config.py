@@ -207,10 +207,15 @@ class DataCfg(_M):
     random_prefix: str = Field(default="EMG2_18_RND", pattern=r"^[A-Z0-9_]{1,30}$")
     random_seed_base: int = Field(default=8550000, ge=8550000, le=8550000)
     etp_list: Path
+    # BF-D72 (strategy review M4): the ETP list is pinned like the LIC list; a missing or
+    # changed file refuses every decision and order (fail closed, owner paged)
+    etp_list_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     lic_list: Path
     # BF-D21: the pin is required and there is no fallback list; a missing or changed
     # frozen file refuses every decision and every order (fail closed, owner paged)
     lic_list_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # BF-D72 (strategy review H3): the research record's month-end band-index steps
+    band_trend_steps: Path = Path("config/band_trend_steps.csv")
     history_sessions: int = Field(ge=300)
     # BF-D23: the record keeper's CORPORATE_ACTIONS.csv (capital returns, specials,
     # demergers, in-specie, code changes; overrides the vendor's dividends); env
@@ -328,6 +333,13 @@ class StrategyCfg(_M):
     update_mode: Literal["immediate", "next_decision"] = "immediate"
 
 
+class CostsCfg(_M):
+    """BF-D72 (strategy review H4): the book's fixed costs (server, price data) shown in
+    the L14 cost statement and against the "same money in A200" comparison."""
+
+    fixed_aud_per_year: Decimal = Field(default=Decimal(600), ge=0)
+
+
 class HeartbeatCfg(_M):
     """BF-D41: ping the ``healthchecks_url`` secret every ``every_seconds`` (``none``: off)."""
 
@@ -373,6 +385,18 @@ class BfastConfig(_M):
     app: AppCfg = Field(default_factory=AppCfg)  # BF-D39
     heartbeat: HeartbeatCfg = Field(default_factory=HeartbeatCfg)  # BF-D41
     strategy: StrategyCfg = Field(default_factory=StrategyCfg)  # BF-D45
+    costs: CostsCfg = Field(default_factory=CostsCfg)  # BF-D72
+
+    @model_validator(mode="after")
+    def _immediate_only_on_paper(self) -> BfastConfig:
+        """BF-D72 (strategy review M3): ``update_mode: immediate`` only for a paper book."""
+        if self.strategy.update_mode == "immediate" and (
+            self.mode != "paper" or self.broker.allow_live
+        ):
+            raise ValueError(
+                "strategy.update_mode immediate is for a paper book only (use next_decision)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _limits_fit_the_book(self) -> BfastConfig:
@@ -511,6 +535,29 @@ class LicList:
             f"LIC list: frozen record list {self.path} ({len(self.codes)} codes, "
             f"sha256 {self.sha256[:12]}...)"
         )
+
+
+def etp_codes(cfg: BfastConfig) -> frozenset[str]:
+    """BF-D72 (strategy review M4): the ETP list (``data.etp_list`` or
+    ``$TRADER_BF_ETP_LIST``), byte for byte the pinned file; else ``LicListError`` (the
+    same fail-closed path as the LIC list: no decision, no order)."""
+    env = os.environ.get("TRADER_BF_ETP_LIST")
+    path = Path(env) if env else cfg.data.etp_list
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise LicListError(f"ETP list {path} is missing or unreadable ({e})") from e
+    got = hashlib.sha256(raw).hexdigest()
+    if got != cfg.data.etp_list_sha256:
+        raise LicListError(f"{path}: sha256 {got[:12]}... is not the pinned "
+                           f"{cfg.data.etp_list_sha256[:12]}...")  # fmt: skip
+    return frozenset(x.strip() for x in raw.decode("utf-8").splitlines() if x.strip())
+
+
+def pinned_lists(cfg: BfastConfig) -> LicList:
+    """Both pinned lists (LIC and ETP); the LIC list is returned (BF-D21 / BF-D72)."""
+    etp_codes(cfg)
+    return lic_codes(cfg)
 
 
 def lic_codes(cfg: BfastConfig) -> LicList:

@@ -1,0 +1,14 @@
+# review F21: only what the image needs reaches the build context (no secrets, no data)
+.git
+.venv
+**/__pycache__
+**/*.pyc
+deploy/secrets
+deploy/.env
+deploy/.worker
+config/bfast.local.yaml
+tests
+scripts
+migrations/**/__pycache__
+.claude
+*.sqlite

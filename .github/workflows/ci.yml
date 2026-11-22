@@ -4,11 +4,11 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, bigwins-fast]  # review F13: every push to the server's branch is checked
   pull_request:
 
 permissions:
-  contents: read
+  contents: write  # review F13: the ci-ok/<sha> tag the server's update card reads
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -80,3 +80,15 @@ jobs:
           uv run --locked python scripts/req_coverage.py --milestone BF --junit junit.xml \
             | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${PIPESTATUS[0]}"
+
+      - name: Mark the commit green for the server (review F13)
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/bigwins-fast'
+        run: |
+          git tag "ci-ok/${GITHUB_SHA}"
+          git push origin "ci-ok/${GITHUB_SHA}"
+
+      - name: Mark the commit red for the server (review F13)
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/bigwins-fast'
+        run: |
+          git tag "ci-fail/${GITHUB_SHA}"
+          git push origin "ci-fail/${GITHUB_SHA}"

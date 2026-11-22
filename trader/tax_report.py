@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Literal
 
 from trader.constants import ASX_TZ
-from trader.corporate_actions import Booking, CaKind
+from trader.corporate_actions import TAKEOVER_NOTE, Booking, CaKind
 from trader.data.flex import FlexCashTransaction, FlexStatement
 from trader.journal import FillRecord, Journal
 from trader.orders import Side
@@ -52,6 +52,8 @@ SMALL_SHAREHOLDER_CREDITS = Decimal(5000)  # 45-day rule exemption threshold (al
 NEAR_LINE_DAYS = 365  # held 365..discount_days-1: flagged "near the 12-month line"
 NOT_ADVICE = "General information, not tax advice."
 AMIT_MANUAL = "from the annual tax statement - enter manually"
+TAKEOVER_ROW = "PROVISIONAL: takeover (roll-over not applied)"
+WASH_DAYS = 30
 Method = Literal["FIFO", "min_tax"]
 
 FY_RE = re.compile(r"^(\d{4})-(\d{2})$")
@@ -380,7 +382,14 @@ class TaxEngine:
         self.dispose(code, f.qty * k, net, d, "SALE", f.exec_id)
 
     def dispose(
-        self, code: str, qty: Decimal, proceeds: Decimal, d: date, event: str, ref: str
+        self,
+        code: str,
+        qty: Decimal,
+        proceeds: Decimal,
+        d: date,
+        event: str,
+        ref: str,
+        note: str = "",
     ) -> None:
         if qty <= 0:
             return
@@ -397,7 +406,7 @@ class TaxEngine:
             p.cost -= c
             if p.qty <= 0:
                 p.qty, p.cost, p.closed = ZERO, ZERO, d
-            self._row(event, p, code, d, t, c, pr, ref)
+            self._row(event, p, code, d, t, c, pr, ref, note)
         if left > 0:
             self._row(
                 event,
@@ -413,10 +422,18 @@ class TaxEngine:
             self.flags.append(f"{ref}: {qty_s(left)} {code} sold without a parcel in the journal")
 
     def reduce_cost(
-        self, code: str, amount: Decimal, d: date, kind: str, ref: str, event: str
+        self,
+        code: str,
+        amount: Decimal,
+        d: date,
+        kind: str,
+        ref: str,
+        event: str,
+        gain_date: date | None = None,
     ) -> None:
-        """A capital return (or AMIT decrease) of ``amount`` over the open parcels by
-        quantity; any part above a parcel's cost base is a capital gain (G1 / E10)."""
+        """A capital return (or AMIT decrease) of ``amount`` over the parcels held at
+        ``d`` (the ex-date) by quantity; any part above a parcel's cost base is a capital
+        gain (G1 / E10), dated ``gain_date`` (tax F6: the payment date)."""
         ps = self.open_of(code)
         tot = sum((p.qty for p in ps), ZERO)
         if tot <= 0:
@@ -435,7 +452,7 @@ class TaxEngine:
                     event,
                     p,
                     code,
-                    d,
+                    gain_date or d,
                     p.qty,
                     ZERO,
                     share - cut,
@@ -478,11 +495,8 @@ class TaxEngine:
             return
         done = ZERO
         for i, p in enumerate(ps):
-            q = (
-                new_total - done
-                if i == len(ps) - 1
-                else (p.qty * new_total / tot).quantize(Decimal(1))
-            )
+            # tax F5: exact (fractional) counts, so no parcel loses its cost base
+            q = new_total - done if i == len(ps) - 1 else p.qty * new_total / tot
             done += q
             self.adjust.append(
                 AdjustRow(
@@ -511,9 +525,12 @@ class TaxEngine:
             kind = b.kind.value
             if code in self.params.fund_codes and b.kind is not CaKind.WITHHOLDING:
                 kind = "DISTRIBUTION"
+            # tax F4: a fund distribution belongs to the year it is attributed to (its
+            # ex / record date, e.g. a June distribution paid in July)
+            year = fy_of(b.ex_date) if kind == "DISTRIBUTION" and b.ex_date else fy_of(pay)
             self.income.append(
                 IncomeRow(
-                    fy_of(pay),
+                    year,
                     kind,
                     code,
                     b.ex_date,
@@ -528,7 +545,7 @@ class TaxEngine:
                 )
             )
         elif b.kind is CaKind.CAPITAL_RETURN:
-            self.reduce_cost(code, b.cost_reduction, d, "CAPITAL_RETURN", b.key, "G1")
+            self.reduce_cost(code, b.cost_reduction, d, "CAPITAL_RETURN", b.key, "G1", pay)
         elif b.kind is CaKind.IN_SPECIE:
             self.income.append(
                 IncomeRow(
@@ -576,7 +593,8 @@ class TaxEngine:
             tot = sum((p.qty for p in self.open_of(code)), ZERO)
             self.rescale(code, tot + b.qty_change, d, "SPLIT", b.key)
         elif b.kind is CaKind.DISPOSAL:
-            self.dispose(code, Decimal(-b.qty_change), b.cash, b.pay_date or d, "DISPOSAL", b.key)
+            self.disposal(b, code, new_code, d)
+            return
         elif b.kind is CaKind.CODE_CHANGE:
             self.adjust.append(
                 AdjustRow(
@@ -615,6 +633,45 @@ class TaxEngine:
             )
         if b.tax_class:
             self.flags.append(f"{b.key} {b.kind.value} {b.code}: {b.tax_class} (confirm figures)")
+
+    def disposal(self, b: Booking, code: str, new_code: str | None, d: date) -> None:
+        """Tax F1 / F2: shares out for cash and / or another company's shares. Flagged
+        every time; the accountant decides."""
+        when = b.pay_date or d
+        qty = Decimal(-b.qty_change)
+        desc = (b.note or "").upper()
+        takeover = bool(new_code and b.new_shares)
+        if not takeover and b.cash == 0:  # delisted, nothing received: no loss yet
+            held = self.open_of(code)
+            cost = sum((p.cost for p in held), ZERO)
+            self.flags.append(
+                f"{b.key} {code}: possible capital loss A${m2(cost)} ({qty_s(qty)} shares "
+                "delisted, nothing received) - NOT booked: needs the liquidator's declaration "
+                "(CGT event G3), deregistration (C2) or a sale"
+            )
+            return
+        value = b.child_cost if takeover and b.child_cost is not None else ZERO
+        note = TAKEOVER_ROW if takeover else ""
+        self.dispose(code, qty, b.cash + value, when, "TAKEOVER" if takeover else "DISPOSAL",
+                     b.key, note)  # fmt: skip
+        self.flags.append(
+            f"{b.key} {code}: disposal dated {when} from IBKR's report date - accountant to "
+            "confirm the contract / scheme implementation date"
+        )
+        if takeover:
+            assert new_code is not None
+            if b.child_cost is None:
+                self.flags.append(f"{b.key}: {new_code} received without a market value (cost 0)")
+            p = self._new(new_code, when, Decimal(b.new_shares), value, ZERO,
+                          f"TAKEOVER {b.key}", new_code)  # fmt: skip
+            self.adjust.append(AdjustRow(fy_of(when), when, "TAKEOVER", new_code, p.pid, ZERO,
+                                         p.qty, ZERO, value, b.key,
+                                         f"received for {code}; PROVISIONAL cost = "
+                                         "market value"))  # fmt: skip
+            self.flags.append(f"{b.key} {code} -> {new_code}: {TAKEOVER_NOTE}")
+        if any(w in desc for w in ("BUY BACK", "BUY-BACK", "BUYBACK")):
+            self.flags.append(f"{b.key} {code}: off-market buy-back - part of the price may be a "
+                              "dividend (check the company's notice)")  # fmt: skip
 
     def demerge(self, b: Booking, code: str, new_code: str | None, d: date) -> None:
         ps = sorted(self.open_of(code), key=lambda p: (p.acquired, p.pid))
@@ -716,6 +773,40 @@ def run_engine(
 # ---------------------------------------------------------------------------
 # Capital gains summary (losses, carry-forward, discount)
 # ---------------------------------------------------------------------------
+
+
+def wash_flags(j: Journal, book: str, rows: Sequence[CgtRow], start: date, end: date
+               ) -> list[str]:  # fmt: skip
+    """Tax F9 (TR 2008/1 wash-sale scrutiny; information only): a sale at a LOSS with a buy
+    of the same code within 30 days before or after it while the position is kept, per
+    sale fill."""
+    fl = j.fills(book)
+    ids = j.identity_map()
+
+    def t(f: FillRecord) -> datetime:
+        return f.executed_at if f.executed_at.tzinfo else f.executed_at.replace(tzinfo=UTC)
+
+    loss = {r.ref for r in rows if r.event == "SALE" and r.gain < 0}
+    out = []
+    for s in sorted((f for f in fl if f.side is Side.SELL and f.exec_id in loss), key=t):
+        sd = sydney_date(s.executed_at)
+        if not start <= sd <= end:
+            continue
+        code = ids.get(s.entity, s.entity)
+        for b in sorted((f for f in fl if f.side is Side.BUY), key=t):
+            if ids.get(b.entity, b.entity) != code or b.exec_id == s.exec_id:
+                continue
+            gap = (t(b) - t(s)).total_seconds() / 86400
+            if abs(gap) > WASH_DAYS:
+                continue
+            kept = gap > 0 or j.positions(book, before=t(s) + timedelta(seconds=1)).get(code, 0) > 0
+            if kept:
+                bd = sydney_date(b.executed_at)
+                when = "after" if gap > 0 else "before"
+                out.append(f"{code}: sold at a loss {sd:%d %b %Y} (fill {s.exec_id}), bought "
+                           f"{abs((bd - sd).days)} days {when} ({bd:%d %b %Y}, fill {b.exec_id}) "
+                           "- re-bought within 30 days (TR 2008/1, information only)")  # fmt: skip
+    return out
 
 
 @dataclass(frozen=True)
@@ -1036,14 +1127,16 @@ class TaxReport:
 
     def totals(self) -> dict[str, Decimal | None]:
         inc = [r for r in self.income if r.kind in ("DIVIDEND", "SPECIAL", "IN_SPECIE")]
-        known = [r for r in inc if r.franked_pct is not None]
+        # tax F7: franked with no credit = the rate is not known (enter from statement)
+        known = [r for r in inc if r.franked_pct is not None
+                 and (r.franked_pct == 0 or r.franking_credit > 0)]  # fmt: skip
         dist = [r for r in self.income if r.kind == "DISTRIBUTION"]
         return {
             "dividends": sum((r.income for r in inc if r.kind != "SPECIAL"), ZERO),
             "specials": sum((r.income for r in inc if r.kind == "SPECIAL"), ZERO),
             "franked": sum((r.franked or ZERO for r in known), ZERO),
             "unfranked": sum((r.unfranked or ZERO for r in known), ZERO),
-            "franking_not_known": sum((r.income for r in inc if r.franked_pct is None), ZERO),
+            "franking_not_known": sum((r.income for r in inc if r not in known), ZERO),
             "franking_credits": sum((r.franking_credit for r in known), ZERO),
             "withholding": sum((r.cash for r in self.income if r.kind == "WITHHOLDING"), ZERO),
             "distributions": sum((r.cash for r in dist), ZERO),
@@ -1054,6 +1147,43 @@ class TaxReport:
             "brokerage_buys": sum((t.brokerage for t in self.trades if t.side == "BUY"), ZERO),
             "brokerage_sells": sum((t.brokerage for t in self.trades if t.side == "SELL"), ZERO),
         }
+
+
+# tax review (BF-D71): what the accountant is asked to look at, each ticked "not applicable
+# this year" when the data shows none; item 10 is always shown
+ACCOUNTANT_ITEMS: tuple[tuple[str, str], ...] = (
+    ("parcels", "1. Parcel method (FIFO by default) and the cost bases incl. brokerage + GST"),
+    ("discount", "2. Sales close to the 12-month discount line: the exact contract dates"),
+    ("takeover", "3. Takeovers / mergers: roll-over (Subdiv 124-M) and the cash part"),
+    ("disposal", "4. Other disposals (cash takeovers, buy-backs): dates and any dividend part"),
+    ("delisting", "5. Delisted shares: a loss only with a liquidator's declaration (G3/C2)"),
+    ("capital_return", "6. Capital returns: cost base reductions and any G1 gain"),
+    ("amit", "7. Fund (A200) AMIT cost base adjustments and their apportionment"),
+    ("franking", "8. Franking credits: from the dividend statements"),
+    ("withholding", "9. TFN amounts withheld: a claimable credit"),
+    ("trader", "10. Investor or share trader status (always: monthly trading, automated)"),
+    ("wash", "11. Sales at a loss with a re-buy within 30 days (TR 2008/1)"),
+)
+
+
+def accountant_items(r: TaxReport) -> list[tuple[str, bool]]:
+    """(item, relevant this year) for the review's 11 accountant items."""
+    t = r.totals()
+    fl = " ".join(r.flags).lower()
+    rel = {
+        "parcels": bool(r.cgt),
+        "discount": any(c.near_line for c in r.cgt),
+        "takeover": any(c.event == "TAKEOVER" for c in r.cgt),
+        "disposal": any(c.event == "DISPOSAL" for c in r.cgt) or "buy-back" in fl,
+        "delisting": "possible capital loss" in fl,
+        "capital_return": bool(t["capital_returns"]) or any(c.event == "G1" for c in r.cgt),
+        "amit": bool(r.amit_missing or r.amit_entered) or "amit" in fl,
+        "franking": bool(t["franking_not_known"]) or bool(t["franking_credits"]),
+        "withholding": bool(t["withholding"]),
+        "trader": True,
+        "wash": "tr 2008/1" in fl,
+    }
+    return [(text, rel[k]) for k, text in ACCOUNTANT_ITEMS]
 
 
 def build_report(
@@ -1100,12 +1230,22 @@ def build_report(
         for x in holdings_check(parcels, j.positions(book, before=_at(end + timedelta(days=1))))
     ]
     flags += [f"{c}: AMIT cost base adjustment for {label}: {AMIT_MANUAL}" for c in missing]
+    sold_funds = sorted({r.code for r in rows if r.code in params.fund_codes})
+    for c in sold_funds:  # tax F3
+        if any(e.code == c for e in entered):
+            flags.append(f"{c}: units sold in {label} and the AMIT adjustment entered: it is "
+                         "applied to the units held at 30 June only - accountant to apportion "
+                         "it to the units sold (no per-unit amounts entered)")  # fmt: skip
+        else:
+            flags.append(f"{c}: units sold in {label} with no AMIT entry: enter the annual "
+                         "statement's figures (or confirm there are none)")  # fmt: skip
     flags += [
-        f"{r.pid} {r.code} sold {r.disposed}: held {r.days_held} days, near the 12-month line"
-        " (marked short-term by the 367-day margin): check the exact dates"
+        f"{r.pid} {r.code} sold {r.disposed}: held {r.days_held} days, close to the discount "
+        f"line ({params.rule_text()}): check the exact dates"
         for r in rows
         if r.near_line
     ]
+    flags += wash_flags(j, book, rows, start, end)  # tax F9
     return TaxReport(
         book,
         label,

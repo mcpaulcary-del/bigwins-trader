@@ -34,13 +34,20 @@ from trader.bf_app import (
     mock_auction,
     owner_approves_all,
 )
-from trader.bfast_config import BfastConfig, LicListError, corporate_actions_csv, lic_codes
+from trader.bfast_config import (
+    BfastConfig,
+    LicListError,
+    corporate_actions_csv,
+    etp_codes,
+    lic_codes,
+)
 from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
 from trader.broker.mock_gateway import MockGateway
 from trader.broker.paper_sim import SimBroker
 from trader.ca_book import CaSource, calendar_source
 from trader.data.forward_store import ForwardStore
 from trader.journal import Journal
+from trader.lines.band_trend import load_steps
 from trader.lines.emg2 import SellRule
 from trader.panel import PricePanel
 from trader.secrets import SecretValue
@@ -89,6 +96,8 @@ def settings_from(
         dry_run_until=cfg.paper_dry_run.until if cfg.paper_dry_run else None,
         app_logins=frozenset(x.strip().lower() for x in cfg.app.allowed_logins if x.strip()),
         latest_send=cfg.execution.latest_send,  # review H3
+        band_trend_steps=load_steps(cfg.data.band_trend_steps),  # BF-D72 (strategy H3)
+        fixed_costs_per_year=cfg.costs.fixed_aud_per_year,  # BF-D72 (strategy H4)
         no_order_days=frozenset(cfg.execution.no_order_days),  # review H4
     )
 
@@ -105,12 +114,11 @@ def store_providers(
     cached panel is rebuilt after that long, so data that arrives late is seen. The
     day's closes are empty until the day's data is in (``data_ready``)."""
     etp: frozenset[str] = frozenset()
-    if cfg.data.etp_list.is_file():
-        etp = frozenset(x.strip() for x in cfg.data.etp_list.read_text().splitlines() if x.strip())
     try:
         note = lic_codes(cfg).describe()
+        etp = etp_codes(cfg)  # BF-D72: pinned; refused like the LIC list
     except LicListError as e:  # BF-D21: the app starts, pages and refuses to decide
-        note = f"LIC list REFUSED (BF-D21): {e}"
+        note = f"LIC / ETP list REFUSED (BF-D21, BF-D72): {e}"
     fs = ForwardStore(store)
     bt = cfg.band_trend_params()
     protect = frozenset({bt.fund}) if bt.enabled else frozenset()  # BF-D28: A200 stays priceable
@@ -180,7 +188,9 @@ def mock_app(
     seed = seed or base64.b32encode(secrets.token_bytes(10)).decode()
     chat = 1
     fresh = gw is None
-    gw = gw or MockGateway(accounts=("DU0000001",), cash=float(cfg.live_emg2_20.capital_cap_aud))
+    cm = cfg.commission_model()  # review M1: the mock charges the configured plan
+    gw = gw or MockGateway(accounts=("DU0000001",), cash=float(cfg.live_emg2_20.capital_cap_aud),
+                           commission_fn=lambda v: cm(Decimal(repr(round(v, 6)))))  # fmt: skip
     broker = IbkrPaperBroker(
         IbkrSettings(cfg.broker.host, cfg.broker.port, cfg.broker.client_id, "DU0000001"),
         ib_factory=lambda: gw,

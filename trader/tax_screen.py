@@ -19,14 +19,13 @@ import csv
 import io
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from trader.app_pages import Extras, aud, safe, shell, tone
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord
-from trader.orders import Side
 from trader.tax_report import (
     NOT_ADVICE,
     TaxParams,
@@ -48,7 +47,10 @@ def label(src: Any) -> str:
 
 
 CSV_COLUMNS = ("section", "code", "qty", "acquired", "disposed", "cost_base", "proceeds",
-               "gain", "discount_eligible", "discount_applied", "method", "note")  # fmt: skip
+               "gain", "discount_eligible", "discount_applied", "method", "note",
+               "parcel", "ref", "asset_type")  # fmt: skip  # tax F11
+INCOME_COLUMNS = ("section", "code", "units", "ex_date", "pay_date", "cash", "assessable",
+                  "franked_pct", "franking_credit", "kind", "note")  # fmt: skip
 WASH_DAYS = 30
 
 
@@ -82,9 +84,18 @@ class Unrealised:
     eligible_from: date
 
 
+def _amit(src: Any) -> list[Any]:
+    from pathlib import Path
+
+    from trader.tax_report import load_amit_csv
+
+    amit_path = getattr(src, "amit_csv", None)
+    return load_amit_csv(Path(amit_path)) if amit_path and Path(amit_path).is_file() else []
+
+
 def unrealised(src: Any, marks: Mapping[str, Decimal], today: date) -> list[Unrealised]:
     p = _params(src)
-    eng = run_engine(src.journal, src.book, p, today)
+    eng = run_engine(src.journal, src.book, p, today, _amit(src))  # tax F3: as the report
     out = []
     for par in eng.parcels:
         if par.qty <= 0:
@@ -97,36 +108,12 @@ def unrealised(src: Any, marks: Mapping[str, Decimal], today: date) -> list[Unre
 
 
 def rebuy_flags(src: Any, start: date, end: date, report_: TaxReport | None = None) -> list[str]:
-    """A sale at a LOSS followed, within 30 days after it, by a buy of the same code
-    (TR 2008/1 "wash sale" scrutiny; information only). Times are compared timezone-aware
-    and only buys after the sale count (L4)."""
+    """Tax F9: the report's own wash-sale flags (a buy within 30 days before or after a
+    loss sale, per fill; in the CLI report and the CSVs too)."""
     r = report_
     if r is None:
         return []
-    allf: list[FillRecord] = safe(lambda: src.journal.fills(src.book), [])
-
-    def t(f: FillRecord) -> datetime:
-        return f.executed_at if f.executed_at.tzinfo else f.executed_at.replace(tzinfo=UTC)
-
-    sells = sorted((f for f in allf if f.side is Side.SELL), key=t)
-    buys = sorted((f for f in allf if f.side is Side.BUY), key=t)
-    loss_days = {(c.code, c.disposed) for c in r.cgt if c.event == "SALE" and c.gain < 0}
-    ids: dict[str, str] = safe(src.journal.identity_map, {})
-    out = []
-    for sf in sells:
-        sd = t(sf).astimezone(ASX_TZ).date()
-        code = ids.get(sf.entity, sf.entity)
-        if not start <= sd <= end or (code, sd) not in loss_days:
-            continue
-        for b in buys:
-            if ids.get(b.entity, b.entity) != code or t(b) <= t(sf):
-                continue
-            bd = t(b).astimezone(ASX_TZ).date()
-            if bd <= sd + timedelta(WASH_DAYS):
-                out.append(f"{code}: sold at a loss {sd:%d %b %Y}, bought again "
-                           f"{bd:%d %b %Y} ({(bd - sd).days} days later)")  # fmt: skip
-            break
-    return out
+    return [f for f in r.flags if "TR 2008/1" in f]
 
 
 def report(src: Any, y: int) -> TaxReport:
@@ -188,11 +175,14 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         + tile("Brokerage", aud((t["brokerage_buys"] or 0) + (t["brokerage_sells"] or 0)),
                "in cost bases and proceeds")
     )  # fmt: skip
+    withheld = -(t["withholding"] or Decimal(0))  # tax F8: negative cash rows
     if rate is not None:
         taxable = s.net_gain + divs + specials + credits + (t["distributions"] or 0)
-        est = (taxable * Decimal(str(rate)) - credits).quantize(Decimal("0.01"))
+        est = (taxable * Decimal(str(rate)) - credits - withheld).quantize(Decimal("0.01"))
         tiles += tile(
-            "Estimated tax", aud(est), f"at {Decimal(str(rate)) * 100:.1f}% less franking credits"
+            "Estimated tax",
+            aud(est),
+            f"at {Decimal(str(rate)) * 100:.1f}% less franking credits and TFN amounts withheld",
         )
     else:
         tiles += tile("Estimated tax", "-", "set tax.marginal_rate on the server")
@@ -230,11 +220,11 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
                   if sales else "<p class='muted'>No sales in this year.</p>")  # fmt: skip
     fr = ("<p>Franking credits: <b>" + aud(credits) + "</b></p>"
           if not t["franking_not_known"] else
-          f"<p class='warn'>Franking credits: not in the data for {aud(t['franking_not_known'])} "
-          "of dividends — enter them from your dividend statements.</p>")  # fmt: skip
+          f"<p class='warn'>Franking: enter from statement for {aud(t['franking_not_known'])} "
+          "of dividends (no rate is assumed; the statement shows the credit).</p>")  # fmt: skip
     div_html = (
-        f"<p>Dividends {aud(divs)} · specials {aud(specials)} · withholding "
-        f"{aud(t['withholding'])} · fund distributions {aud(t['distributions'])}</p>{fr}"
+        f"<p>Dividends {aud(divs)} · specials {aud(specials)} · TFN amounts withheld – "
+        f"claimable credit {aud(withheld)} · fund distributions {aud(t['distributions'])}</p>{fr}"
     )
     marks = {h.code: h.mark for h in v.holdings if h.mark is not None}
     unr: list[Unrealised] = safe(lambda: unrealised(src, marks, today), [])
@@ -248,10 +238,15 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     un_html = (f"<table><tbody>{un_rows}</tbody></table><p class='small muted'>Gain if sold at "
                "the last price, before selling brokerage.</p>" if un_rows
                else "<p class='muted'>Nothing held.</p>")  # fmt: skip
-    start, end = date(y, 7, 1), date(y + 1, 6, 30)
-    flags = list(r.flags) + [f"Re-bought within 30 days (TR 2008/1, information only): {f}"
-                             for f in rebuy_flags(src, start, end, r)]  # fmt: skip
+    flags = list(r.flags)  # tax F9: the wash-sale flags are in the report itself
     fl = "".join(f"<li class='small'>{e(f)}</li>" for f in flags)
+    from trader.tax_report import accountant_items
+
+    chk = "".join(
+        f"<li class='small'><span class='pill {'amber' if rel else 'ok'}'>"
+        f"{'check' if rel else 'n/a this year'}</span> {e(text)}</li>"
+        for text, rel in accountant_items(r)
+    )
     body = (
         head
         + section(f"FY {fy_label(y)}", f'<div class="tiles">{tiles}</div>')
@@ -259,6 +254,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         + section("Sales, parcel by parcel", sales_html)
         + section("Dividends", div_html)
         + section("If you sold today", un_html)
+        + section("Accountant checklist", f'<ul class="list">{chk}</ul>')
         + (section("Check with your accountant", f'<ul class="list">{fl}</ul>') if fl else "")
         + f'<a class="btn sec wide" href="/tax.csv?fy={fy_label(y)}" download>⬇ EOFY CSV for '
         "your accountant / myTax</a>"
@@ -278,22 +274,32 @@ def csv_export(src: Any, qs: Mapping[str, str]) -> str:
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(CSV_COLUMNS)
     s = r.summary
+    funds = p.fund_codes
+    discs: list[Decimal] = []
     for c in r.cgt:
         disc = Decimal(0)
         if c.long and c.gain > 0 and s.long_gains:  # losses used on discount gains, pro rata
             used = s.applied_long * c.gain / s.long_gains
             disc = ((c.gain - used) * Decimal("0.5")).quantize(Decimal("0.01"))
+        discs.append(disc)
+    if discs and any(discs):  # tax F10: the rows add up to the summary's discount
+        last = max(i for i, d in enumerate(discs) if d)
+        discs[last] += s.discount - sum(discs)
+    for c, disc in zip(r.cgt, discs, strict=True):
         w.writerow(["disposal", c.code, f"{c.qty.normalize():f}", c.acquired or "", c.disposed,
                     f"{c.cost_base:.2f}", f"{c.proceeds:.2f}", f"{c.gain:.2f}",
-                    "yes" if c.long else "no", f"{disc:.2f}", p.method, c.event])  # fmt: skip
-    for i in r.income:
-        w.writerow(["income", i.code, i.held, "", i.pay_date or i.ex_date or "", "", f"{i.cash:.2f}",
-                    f"{i.income:.2f}", "", "", "", f"{i.kind} franking credit {i.franking_credit:.2f}"
-                    + ("" if i.franked_pct is not None else " (franking not known)")])  # fmt: skip
+                    "yes" if c.long else "no", f"{disc:.2f}", p.method,
+                    (c.event + (f" {c.note}" if c.note else "")).strip(), c.pid, c.ref,
+                    "units in a listed trust" if c.code in funds else "listed shares"])  # fmt: skip
     cur, old = losses_used(s)
     blank = ["", "", "", "", ""]
+    shares_gain = sum((c.gain for c in r.cgt if c.gain > 0 and c.code not in funds), Decimal(0))
+    trust_gain = sum((c.gain for c in r.cgt if c.gain > 0 and c.code in funds), Decimal(0))
     for name, val in (  # BF-D51: the summary for myTax / the accountant
         ("total current-year capital gains", s.short_gains + s.long_gains),
+        ("  of which listed shares", shares_gain),  # tax F11
+        ("  of which units in listed trusts", trust_gain),
+        ("total current-year capital losses", s.losses),
         ("current-year capital losses applied", cur),
         ("prior-year (carried-in) losses applied", old),
         ("CGT discount applied", s.discount),
@@ -302,5 +308,21 @@ def csv_export(src: Any, qs: Mapping[str, str]) -> str:
     ):
         w.writerow(["summary", name, *blank, f"{val:.2f}", "", "", p.method,
                     f"FY {fy_label(y)}"])  # fmt: skip
-    w.writerow(["note", "", "", "", "", "", "", "", "", "", "", label(src)])
+    # tax F11: income in its own section with its own columns (the gain column above holds
+    # capital gains only)
+    w.writerow(INCOME_COLUMNS)
+    for i in r.income:
+        w.writerow(["income", i.code, i.held, i.ex_date or "", i.pay_date or "", f"{i.cash:.2f}",
+                    f"{i.income:.2f}", "" if i.franked_pct is None else f"{i.franked_pct:.2f}",
+                    f"{i.franking_credit:.2f}" if i.franking_credit else "enter from statement",
+                    i.kind, ("TFN amount withheld - claimable credit" if i.kind == "WITHHOLDING"
+                             else "")])  # fmt: skip
+    w.writerow(["checklist", "item", "relevant this year"])
+    from trader.tax_report import accountant_items
+
+    for text, rel in accountant_items(r):
+        w.writerow(["checklist", text, "yes" if rel else "not applicable this year"])
+    for f in r.flags:
+        w.writerow(["flag", f])
+    w.writerow(["note", label(src)])
     return buf.getvalue()

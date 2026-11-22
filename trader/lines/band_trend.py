@@ -22,6 +22,7 @@ Deterministic: ``BandTrend.digest`` is the SHA-256 of its canonical JSON.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
@@ -91,11 +92,50 @@ def month_end_rows(dates: tuple[date, ...], months: int) -> list[int]:
     return rows[-months:]
 
 
+Steps = Mapping[tuple[str, str], tuple[tuple[str, float], ...]]
+
+
+def load_steps(path: object) -> dict[tuple[str, str], tuple[tuple[str, float], ...]]:
+    """BF-D72 (review H3): the recorded month-end steps ``(from, to) -> ((source as-of,
+    step), ...)`` of the band index (``config/band_trend_steps.csv``); empty if the file
+    is missing."""
+    from pathlib import Path
+
+    out: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    p = Path(str(path))
+    if not p.is_file():
+        return {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        a, b, st, _n, src, *_ = [x.strip() for x in line.split(",")] + [""]
+        v = float(st)
+        if v > 0:
+            out.setdefault((a, b), []).append((src, v))
+    return {k: tuple(sorted(v)) for k, v in out.items()}
+
+
+def pick_steps(steps: Steps | None, as_of: str) -> dict[tuple[str, str], float]:
+    """For a decision on ``as_of``: each step from the paper run nearest at or after it
+    (the paper value of that day), else from the latest run."""
+    out: dict[tuple[str, str], float] = {}
+    for k, runs in (steps or {}).items():
+        after = [v for src, v in runs if src >= as_of]
+        out[k] = after[0] if after else runs[-1][1]
+    return out
+
+
 def band_trend(
-    panel: PricePanel, params: BandTrendParams | None = None, list_params: Emg2Params | None = None
+    panel: PricePanel,
+    params: BandTrendParams | None = None,
+    list_params: Emg2Params | None = None,
+    steps: Steps | None = None,
 ) -> BandTrend:
-    """BT1/BT2 at the panel's session D."""
+    """BT1/BT2 at the panel's session D. ``steps``: recorded month-end steps from the
+    research record (delisted names included); a step not recorded is computed from the
+    panel (the store only holds names listed when it was built, review H3)."""
     p = params or BandTrendParams()
+    chosen = pick_steps(steps, panel.as_of.isoformat())
     rows = month_end_rows(panel.dates, p.months)
     r = panel.ret
     lg = np.cumsum(np.log1p(np.where(np.isnan(r), 0.0, r)), axis=0)
@@ -104,10 +144,16 @@ def band_trend(
     lev = 1.0
     for q, m in enumerate(rows):
         d = panel.dates[m]
+        m1 = rows[q + 1] if q + 1 < len(rows) else None
+        rec = chosen.get((d.isoformat(), panel.dates[m1].isoformat())) if (
+            m1 is not None) else None  # fmt: skip
+        if rec is not None:
+            levels.append((d.isoformat(), lev, -1))  # -1: members from the record
+            lev *= rec
+            continue
         members = [col[x.entity] for x in emg2_list(panel.truncate(d), list_params).band_c]
         levels.append((d.isoformat(), lev, len(members)))
-        if q + 1 < len(rows) and members:
-            m1 = rows[q + 1]
+        if m1 is not None and members:
             lev *= float(np.mean(np.exp(lg[m1, members] - lg[m, members])))
     vals = [v for _, v, _ in levels]
     mean = float(np.mean(vals))

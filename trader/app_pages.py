@@ -199,12 +199,17 @@ def collect_extras(
         x.twin_values = [float(v) for v in r.get("values", [])]
         x.twin_sim = float(r["sim"]) if "sim" in r else None
     x.heartbeat = safe(lambda: get_state(j, "heartbeat"), None)
-    x.host = safe(lambda: get_state(j, "host-status"), None)
+    hs = safe(lambda: get_state(j, "host-status"), None)
+    if hs is not None and isinstance(hs[0], Mapping):  # security review L5: typed values only
+        from trader.server_status import clean_status
+
+        x.host = (clean_status(hs[0]), hs[1])
     x.server_jobs = safe(lambda: server_job_rows(j, 10), [])
     al = safe(lambda: get_state(j, "alerts"), None)
     x.alerts = al[0] if al and isinstance(al[0], dict) else {}
     up = safe(lambda: get_state(j, "update-available"), None)
     x.update = dict(up[0]) if up and isinstance(up[0], dict) else {}
+    x.update["ahead"] = _as_int(x.update.get("ahead"))
     rn = safe(lambda: get_state(j, "strategy-running"), None)
     x.running = dict(rn[0]) if rn and isinstance(rn[0], dict) else {}
     for k, r in jobs(j, "strategy:"):
@@ -223,6 +228,13 @@ def collect_extras(
         until = datetime.fromisoformat(str(lk[0]["until"]))
         x.lockout = until if until > now else None
     return x
+
+
+def _as_int(v: object) -> int:
+    try:
+        return int(str(v or 0))
+    except ValueError:
+        return 0
 
 
 def act_link(**kw: str) -> str:
@@ -1239,6 +1251,20 @@ def server(v: Any, x: Extras) -> str:
     return shell(v, x, "Server", "".join(parts), "server")
 
 
+def _ci_line(u: Mapping[str, Any]) -> str:
+    """Review F13: the GitHub CI result of the update's commit; anything but green warns."""
+    ci = str(u.get("ci") or "unknown")
+    if ci == "green":
+        return (
+            "<p class='small'><span class='pill ok'>CI passed</span> on GitHub for this commit</p>"
+        )
+    what = "FAILED" if ci == "red" else "not known yet"
+    return (
+        f"<p class='note'>⚠ GitHub CI for this commit: <b>{what}</b>. Wait for a green "
+        "run before approving (the tests and checks have not passed).</p>"
+    )
+
+
 def strategy_card(x: Extras) -> str:
     u = x.update
     run = x.running
@@ -1249,7 +1275,7 @@ def strategy_card(x: Extras) -> str:
         strat = bool(u.get("strategy", True))
         card = (f'<p class="note"><b>{"Strategy update" if strat else "App-only update"} available</b>'
                 f" · {int(u['ahead'])} commit(s)" + (f" · {e(u['notes'].get('version', ''))}"
-                if u.get("notes") else "") + "</p>")  # fmt: skip
+                if u.get("notes") else "") + "</p>" + _ci_line(u))  # fmt: skip
     return section("Strategy", head + card + '<a class="btn sec wide" href="/strategy" data-nav>'
                    "Strategy, updates and versions ›</a>")  # fmt: skip
 
@@ -1293,7 +1319,8 @@ def strategy(v: Any, x: Extras) -> str:
         strat = bool(u.get("strategy", True))
         n = u.get("notes") or {}
         body = (f'<p class="summary">{"Strategy update" if strat else "App-only update"} available</p>'
-                f"<p class='small muted'>{int(u['ahead'])} commit(s) · {e(u.get('subject', ''))}</p>")  # fmt: skip
+                f"<p class='small muted'>{int(u['ahead'])} commit(s) · {e(u.get('subject', ''))}</p>"
+                + _ci_line(u))  # fmt: skip
         for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),
                        ("tested", "Tested"), ("takes_effect", "Takes effect")):  # fmt: skip
             if n.get(k):
@@ -1540,6 +1567,11 @@ def next_backup(now: datetime) -> datetime:
     return at if at > t else at + timedelta(days=1)
 
 
+def _int(x: object) -> int:
+    """Security review L5: a number from a stored record, or 0 (never markup)."""
+    return x if isinstance(x, int) and not isinstance(x, bool) else 0
+
+
 def backups(v: Any, x: Extras) -> str:
     host = x.host[0] if x.host else {}
     od = host.get("onedrive")
@@ -1553,7 +1585,7 @@ def backups(v: Any, x: Extras) -> str:
         last = (
             f"<div class='htiles'><div class='ht {'good' if r.get('ok') else 'badt'}'><div class='tl'>"
             f"On the server<span>{'✓' if loc.get('ok', r.get('ok')) else '⚠'}</span></div>"
-            f"<div class='tv'>{_size(loc.get('size'))}</div><div class='sub'>{when(at)}</div></div>"
+            f"<div class='tv'>{e(_size(loc.get('size')))}</div><div class='sub'>{when(at)}</div></div>"
             f"<div class='ht {'good' if rem and rem.get('ok') else 'warn2'}'><div class='tl'>OneDrive"
             f"<span>{'✓' if rem and rem.get('ok') else '–'}</span></div><div class='tv'>"
             f"{'copied' if rem and rem.get('ok') else 'not copied'}</div><div class='sub'>"
@@ -1564,12 +1596,24 @@ def backups(v: Any, x: Extras) -> str:
     rt_html = ("<p class='muted small'>No restore test yet.</p>" if rt is None else
                f"<p>Last restore test: <span class='pill {'ok' if rt[0].get('ok') else 'bad'}'>"
                f"{'passed' if rt[0].get('ok') else 'FAILED'}</span> {when(rt[1])}<span class='sub'> · "
-               f"{rt[0].get('files') or 0} files checked, journal rows "
+               f"{_int(rt[0].get('files'))} files checked, journal rows "
                f"{'match' if rt[0].get('db_rows_match', rt[0].get('ok')) else 'differ'}</span></p>")  # fmt: skip
-    parts.append(section("Latest", last + rt_html
+    fp = str(host.get("key_fp") or "")  # security review M3
+    from trader.backups import key_saved
+
+    jj = getattr(v, "journal", None)
+    saved = key_saved(jj, fp) if jj is not None and fp else False
+    key_html = (
+        f"<p class='small'>Recovery key fingerprint: <code>{e(fp)}</code>"
+        + (" <span class='pill ok'>shown and saved</span></p>" if saved else
+           "</p><p class='note'>⚠ The recovery key with this fingerprint has not been shown in "
+           "the app yet: tap <b>Show recovery key</b> and save it in your password manager. "
+           "Without it the backups cannot be opened.</p>")
+    ) if fp else ""  # fmt: skip
+    parts.append(section("Latest", last + rt_html + key_html
                          + f"<p class='small muted'>Next backup: {next_backup(v.now):%a %d %b %H:%M} "
-                         "(nightly at 23:30 Sydney). Kept: 30 daily and 12 monthly, on the server "
-                         "and in OneDrive.</p>"))  # fmt: skip
+                         "(nightly at 23:30 Sydney). Kept: 7 days on the server; 30 daily and 12 "
+                         "monthly in OneDrive. A restore test runs every Sunday.</p>"))  # fmt: skip
     parts.append(section("Actions", (
         '<div class="btns">'
         f'<a class="btn" href="{act_link(a="srv:backup_now")}">💾 Back up now…</a>'
@@ -1622,7 +1666,9 @@ SERVICES: tuple[tuple[str, str, str, str], ...] = (
     ("binarylane", "BinaryLane (the server)", "https://www.binarylane.com.au/",
      "Billing and the server itself: resize, rebuild or console in BinaryLane's own site."),
     ("tailscale", "Tailscale", "https://login.tailscale.com/admin",
-     "The private network between your phone and the server: devices, HTTPS and log-ins."),
+     "The private network between your phone and the server: devices, HTTPS and log-ins. "
+     "Important: Machines > the server > Disable key expiry (else it drops off your "
+     "tailnet after 180 days and the app stops working)."),
     ("github", "GitHub", "https://github.com/",
      "Where the code lives. The server fetches updates from it; you approve them here."),
     ("eodhd", "EODHD (prices)", "https://eodhd.com/",

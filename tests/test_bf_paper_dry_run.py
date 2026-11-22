@@ -36,7 +36,9 @@ D_SWITCH, D_BACK = DAYS[3], DAYS[8]  # the FUND switch (REAL), then EMG2 forced 
 PLAN = ((D0, "EMG2"), (D_SWITCH, "REAL"), (D_BACK, "EMG2"))
 
 
-def _always_fund(panel: PricePanel, params: BandTrendParams | None = None) -> BandTrend:
+def _always_fund(
+    panel: PricePanel, params: BandTrendParams | None = None, **kw: object
+) -> BandTrend:
     """The record's situation: the rule says FUND on every decision day."""
     return BandTrend(
         panel.as_of.isoformat(), "FUND", 0.9, 1.0, ((panel.as_of.isoformat(), 0.9, 200),)

@@ -264,7 +264,6 @@ def calendar_events(  # noqa: PLR0912 - one block per kind of date
                 out.append(Ev(pay, "pay", f"{code} dividend paid", f"/holdings/{quote(code)}"))
     if share is not None and j is not None:
         from trader import share_pages
-        from trader.tax_report import TaxParams
 
         infos = share_pages.collect(share, [h.code for h in v.holdings])
         lists = share_pages._lists(j)
@@ -278,11 +277,11 @@ def calendar_events(  # noqa: PLR0912 - one block per kind of date
                 if due and a <= due <= b:
                     out.append(Ev(due, "c6", f"{h.code}: earliest C6 review (6 month-ends held)",
                                   f"/holdings/{quote(h.code)}"))  # fmt: skip
-            if f.entry:
-                cg = TaxParams(discount_rule="12_months").eligible_from(f.entry)
+            for acq, qty, cg in share_pages.parcel_dates(j, v.book, h.code, b):  # per parcel
                 if a <= cg <= b:
-                    out.append(Ev(cg, "cgt", f"{h.code}: 50% CGT discount from today "
-                                  "(estimate)", f"/holdings/{quote(h.code)}"))  # fmt: skip
+                    out.append(Ev(cg, "cgt", f"{h.code}: 50% CGT discount from today for the "
+                                  f"{qty:f} bought {acq:%d %b %Y} (estimate)",
+                                  f"/holdings/{quote(h.code)}"))  # fmt: skip
     return sorted(out, key=lambda x: (x.day, x.kind))
 
 
@@ -426,7 +425,7 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
     def bar(r: list[Any], cls: str = "") -> str:
         p = share_pages._f(r[4]) or 0
         return (f'<li class="rb {cls}"><span class="rbn">{e(r[0])}</span><span class="rbb">'
-                f'<b style="width:{p * 100:.0f}%"></b></span><span class="rbv">#{r[5]}</span></li>')  # fmt: skip
+                f'<b style="width:{p * 100:.0f}%"></b></span><span class="rbv">#{e(r[5])}</span></li>')  # fmt: skip
 
     steps = []
     steps.append(("Band C ranked", (
@@ -451,7 +450,7 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
     words = []
     for it in its:
         r = rank.get(it.entity)
-        where = (f"rank {r[5]} of {n}, percentile {(share_pages._f(r[4]) or 0) * 100:.0f}"
+        where = (f"rank {e(r[5])} of {n}, percentile {(share_pages._f(r[4]) or 0) * 100:.0f}"
                  if r else "not in band C")  # fmt: skip
         if it.side is Side.BUY:
             why = (f"<b>Bought {e(it.entity)}</b>: {where}; on the buy list T and a slot was free "

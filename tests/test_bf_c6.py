@@ -243,7 +243,7 @@ def _panel(day: date) -> PricePanel:
 
 
 def _scripted(states: Mapping[date, str]) -> Callable[..., BandTrend]:
-    def f(panel: PricePanel, params: BandTrendParams | None = None) -> BandTrend:
+    def f(panel: PricePanel, params: BandTrendParams | None = None, **kw: object) -> BandTrend:
         s = states.get(panel.as_of, "EMG2")
         return BandTrend(panel.as_of.isoformat(), s, 0.9 if s == "FUND" else 1.1, 1.0,  # type: ignore[arg-type]
                          ((panel.as_of.isoformat(), 1.0, 200),))  # fmt: skip

@@ -201,6 +201,11 @@ class AppSettings:
     early_closes: Mapping[date, str] = field(default_factory=dict)
     no_order_days: frozenset[date] = frozenset()
     stale_mark_sessions: int = 5  # review L4: a held name without a close this long pages
+    # BF-D72 (review H3): the recorded month-end steps of the band index
+    band_trend_steps: Mapping[tuple[str, str], tuple[tuple[str, float], ...]] = field(
+        default_factory=dict
+    )
+    fixed_costs_per_year: Decimal = Decimal(600)  # BF-D72: config costs.fixed_aud_per_year
 
     def forced(self, d: date) -> str | None:
         """The paper dry run's state for a decision on ``d`` (None: no dry-run decision)."""
@@ -604,7 +609,9 @@ class BfApp:
                     "an order not approved is not sent (L8)."
                 )
 
-    def job_decide(self, day: date, now: datetime, kind: str | None = None) -> bool:
+    def job_decide(  # noqa: PLR0912, PLR0915 - the decision's steps in one place
+        self, day: date, now: datetime, kind: str | None = None
+    ) -> bool:
         kinds = {book: kind or self.decision_kind(day, book) for book, *_ in self._books()}
         refused = self._decision_refused(day, now, kinds)  # BF-D21: before any panel
         if refused is not None:
@@ -664,7 +671,10 @@ class BfApp:
             )
             ctx = self._ctx(book, broker, x, day, now, kind in ("S", "B"), data_as_of=panel.as_of)
             ex.plan(batch, mode, x, ctx)
-            self.j.mark_job(key, {"digest": dec.digest, "batch": batch.batch_id}, now)
+            rec_: dict[str, Any] = {"digest": dec.digest, "batch": batch.batch_id}
+            if kinds[book] == "R" and not self.is_month_end(day) and self.s.forced(day) is None:
+                rec_["out_of_cycle"] = True  # BF-D72 (review M3): excluded from comparisons
+            self.j.mark_job(key, rec_, now)
             if book in seeds:
                 continue  # random twins: not part of the L13 comparison
             acted[book] = {(i.entity, i.side.value) for i in batch.intents}
@@ -843,8 +853,14 @@ class BfApp:
         (then the decision is a rule-14 data block anyway)."""
         if not self.s.band_trend.enabled or lst is None:
             return None
-        trend = band_trend(panel, self.s.band_trend)
+        trend = band_trend(panel, self.s.band_trend, steps=self.s.band_trend_steps)
         forced = self.s.forced(day)
+        ooc = forced is None and day != self.s.start_date and not self.is_month_end(day)
+        if ooc:  # BF-D72 (review M3): an out-of-cycle decision never switches the fund state
+            prev = [r for k, r in self.j.job_records("bt:") if k.split(":", 1)[1] < str(day)
+                    and self.is_month_end(date.fromisoformat(k.split(":", 1)[1]))]  # fmt: skip
+            if prev and prev[-1].get("state") in ("EMG2", "FUND"):
+                trend = replace(trend, state=prev[-1]["state"])
         if forced in ("EMG2", "FUND") and forced != trend.state:
             self._forced_from[day] = trend.state  # BF-D32: the rule's own state, shown
             trend = replace(trend, state=forced)  # type: ignore[arg-type]
@@ -1802,8 +1818,17 @@ class BfApp:
             sim_value=sim_value,
             random_twins=self._rnd_line(day, now),
             state=self.state_line(day),
+            fixed_costs_to_date=self._fixed_costs(day),
         )
         self.say(daily_report(x))
+
+    def _fixed_costs(self, day: date) -> Decimal | None:
+        """BF-D72: the fixed costs pro rata since the book's first value record."""
+        recs = self.j.job_records(f"value:{self.s.book}:")
+        if not recs:
+            return None
+        first = date.fromisoformat(recs[0][0].rsplit(":", 1)[1])
+        return self.s.fixed_costs_per_year * Decimal((day - first).days + 1) / Decimal(365)
 
     def _carry_marks(self, px: dict[str, Decimal], day: date, now: datetime) -> list[str]:
         """A held name with no mark today (suspended, missing from the day's feed, an

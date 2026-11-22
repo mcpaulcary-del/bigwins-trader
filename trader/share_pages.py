@@ -45,6 +45,9 @@ class ShareCtx:
     index_label: str = "index"
     bands: dict[str, fc.Bands | None] = field(default_factory=dict)
     demo: bool = False
+    # BF-D72 (strategy review L2): a share's total-return level (dividends in, splits
+    # neutral); None = the closes (then dividends are missing from the actual line)
+    tr: Callable[[str], Series] | None = None
 
     @property
     def today(self) -> date:
@@ -526,8 +529,40 @@ def _index_series(ctx: ShareCtx) -> Series:
 # ---------------------------------------------------------------- the sections
 
 
-def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Series) -> str:
+def bandc_index(j: Journal) -> Series:
+    """BF-D72 (strategy review L1): the band C equal-weight index at month-ends, chained
+    from the band-trend records (``bt:<day>``: the same index L15 uses); later records
+    win for a step."""
+    from trader.app_pages import jobs
+
+    steps: dict[tuple[str, str], float] = {}
+    for _, r in jobs(j, "bt:"):
+        lv = r.get("levels") or []
+        for a, b in pairwise(lv):
+            try:
+                if float(a[1]) > 0:
+                    steps[(str(a[0]), str(b[0]))] = float(b[1]) / float(a[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+    out: Series = []
+    for (a, b), s in sorted(steps.items()):
+        if not out:
+            out.append((date.fromisoformat(a), 1.0))
+        if out[-1][0].isoformat() == a:
+            out.append((date.fromisoformat(b), out[-1][1] * s))
+    return out
+
+
+def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Series) -> str:  # noqa: PLR0912, PLR0915 - one block per pane
     code = info.code
+    trs: Series = []
+    if ctx.tr is not None:  # L2: the actual line uses the share's total return
+        try:
+            trs = [(d, float(v)) for d, v in ctx.tr(code) if v and v > 0]
+        except Exception:
+            trs = []
+    line = trs or px
+    base = None if trs else f.entry_price  # a TR level's base is its entry-day level
     if f.entry is None:
         return section("Expected vs actual", "<p class='muted'>No buy or buy-list date yet, so "
                        "there is no starting point for the range.</p>")  # fmt: skip
@@ -539,13 +574,20 @@ def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Serie
         return section("Expected vs actual", "<p class='muted'>Not available: its score bucket at "
                        "the buy decision was not recorded (BF-D43 lists start with the app).</p>")  # fmt: skip
     end = f.exit_day or ctx.today
-    act = fc.actual_path(px, idx, f.entry, end, ctx.sessions, f.entry_price)
-    exit_pt: tuple[int, float] | None = None
-    if f.exit_day is not None:
-        x = fc.excess_on(px, idx, f.entry, f.exit_day, f.entry_price, f.exit_price)
-        m = max(1, min(12, len(fc.month_ends(f.entry, f.exit_day, ctx.sessions, px)) or 1))
-        if x is not None:
-            exit_pt = (m, x)
+    bci = bandc_index(ctx.journal)
+
+    def path_for(bench: Series) -> tuple[list[fc.Actual], tuple[int, float] | None]:
+        assert f.entry is not None
+        a = fc.actual_path(line, bench, f.entry, end, ctx.sessions, base)
+        ep: tuple[int, float] | None = None
+        if f.exit_day is not None:
+            x = fc.excess_on(line, bench, f.entry, f.exit_day, base,
+                             None if trs else f.exit_price)  # fmt: skip
+            m = max(1, min(12, len(fc.month_ends(f.entry, f.exit_day, ctx.sessions, px)) or 1))
+            if x is not None:
+                ep = (m, x)
+        return a, ep
+
     lead = (f"<p>Bought on <b>{f.entry:%d %b %Y}</b>" if not f.hypothetical else
             f"<p><b>Never bought.</b> The line shows what would have happened if it had been "
             f"bought on <b>{f.entry:%d %b %Y}</b>")  # fmt: skip
@@ -562,6 +604,14 @@ def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Serie
         b = avail[k]
         assert b is not None
         rows = b.bucket(f.bucket)
+        bench_note = ""
+        if k == "bandc" and len(bci) > 1:  # L1: against band C itself
+            act, exit_pt = path_for(bci)
+        else:
+            act, exit_pt = path_for(idx)
+            if k == "bandc":
+                bench_note = ("<p class='small muted'>The band C index is not recorded yet "
+                              f"(it starts with the L15 records); the line is vs {e(ctx.index_label)}.</p>")  # fmt: skip
         track = ""
         if exit_pt and rows.get(exit_pt[0]):
             p = fc.percentile_of(exit_pt[1], rows[exit_pt[0]])
@@ -585,7 +635,9 @@ def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Serie
             + f"entries {e(b.period[0])} to {e(b.period[1])}; method {e(b.method)}. "
             "Excess return = the share's total return minus the benchmark's over the same days, "
             "no costs or tax. Past picks overlap in time, so the real sample is closer to the "
-            "number of months.</p><p class='small'><a href=\"/forecast-method\">How these ranges "
+            "number of months. Most sample months before about 2015 had a thin band C (often "
+            "under 150 names), so the early years weigh less than the count suggests.</p>"
+            "<p class='small'><a href=\"/forecast-method\">How these ranges "
             "were made (the full note)</a></p></details>"
         )  # fmt: skip
         mean_note = ""
@@ -599,6 +651,7 @@ def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Serie
         panes.append(
             f'<div data-bench-pane="{k}"{"" if k == order[0] else " hidden"}>'
             + track
+            + bench_note
             + fan_chart(b, f.bucket, act, code, exit_pt)
             + f"<p class='small'><b>{NOT_PREDICTION}</b></p><p class='small'>{e(SKEW)}</p>"
             + mean_note
@@ -681,12 +734,12 @@ def next_section(ctx: ShareCtx, info: Info, f: Facts, lists: Sequence[tuple[date
                 + (f", percentile {pct * 100:.0f}" if pct is not None else ", not in band C")
                 + "). At the review it is kept while it stays in the top 40%; outside it, C6 "
                 "sells it.</li>")  # fmt: skip
-        if f.entry:
-            from trader.tax_report import TaxParams
-
-            cg = TaxParams(discount_rule="12_months").eligible_from(f.entry)
+        pds = parcel_dates(ctx.journal, ctx.book, info.code, ctx.today)  # tax review: per parcel
+        for acq, qty, cg in pds:
             left = (cg - ctx.today).days
-            items.append(f"<li><b>Capital gains discount:</b> from <b>{cg:%d %b %Y}</b>"
+            items.append("<li><b>Capital gains discount</b>"
+                         + (f" (parcel of {qty:f} bought {acq:%d %b %Y})" if len(pds) > 1 else "")
+                         + f": from <b>{cg:%d %b %Y}</b>"
                          + (" (applies now)" if left <= 0 else f" ({left} days)")
                          + "; estimate, not tax advice.</li>")  # fmt: skip
     elif f.exit_day is not None:
@@ -719,6 +772,24 @@ def next_section(ctx: ShareCtx, info: Info, f: Facts, lists: Sequence[tuple[date
     body = "".join(i for i in items if i)
     return section("What happens next", f'<ul class="bul">{body}</ul>' if body else
                    "<p class='muted'>Nothing scheduled.</p>")  # fmt: skip
+
+
+def parcel_dates(j: Journal, book: str, code: str, today: date
+                 ) -> list[tuple[date, Any, date]]:  # fmt: skip
+    """The open tax parcels of ``code``: (acquired, quantity, discount date), so a holding
+    bought in parts shows each parcel's 12-month date (tax review)."""
+    from decimal import Decimal
+
+    from trader.tax_report import TaxParams, run_engine
+
+    p = TaxParams(discount_rule="12_months")
+    try:
+        eng = run_engine(j, book, p, today)
+    except Exception:
+        return []
+    return [(x.acquired, x.qty.normalize() if isinstance(x.qty, Decimal) else x.qty,
+             p.eligible_from(x.acquired))
+            for x in sorted(eng.open_of(code), key=lambda x: (x.acquired, x.pid))]  # fmt: skip
 
 
 def detail_sections(ctx: ShareCtx, code: str, info: Info | None = None) -> str:

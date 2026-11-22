@@ -678,7 +678,8 @@ function cmp(){$$('[data-compare]').forEach(function(box){if(box.dataset.b)retur
   ser.forEach(function(s){g+='<path d="'+smooth(s.r.map(function(p){return [X(p[0]),Y(p[1])];}))+'" class="s1 '+s.c+'" style="stroke:var(--'+s.c+')"/>';});
   g+='<text x="'+pl+'" y="'+(H-6)+'" class="ax">'+fd(t0)+'</text><text x="'+(W-pr)+'" y="'+(H-6)+'" class="ax" text-anchor="end">'+fd(t1)+'</text>'+
    '<g id="cx" style="display:none"><line class="xh" y1="'+pt+'" y2="'+(H-pb)+'"/></g>';svg.innerHTML=g;cur={ser:ser,X:X,Y:Y,t0:t0,t1:t1};
-  if(leg)leg.innerHTML=ser.map(function(s){return '<span class="key k-'+s.c+'"></span>'+s.k;}).join(' ')+' · 100 = '+fd(t0);
+  if(leg){leg.textContent='';ser.forEach(function(s){var k=document.createElement('span');k.className='key k-'+s.c;leg.appendChild(k);leg.appendChild(document.createTextNode(s.k+' '));});
+   leg.appendChild(document.createTextNode('· 100 = '+fd(t0)));}  // security review L5: names as text
   out.textContent='Drag across the chart to read each line.';}
  function at(ev){if(!cur)return;var p=ev.touches?ev.touches[0]:ev,r=svg.getBoundingClientRect(),cx=(p.clientX-r.left)/r.width*W,
   t=cur.t0+(cx-pl)/(W-pl-pr)*(cur.t1-cur.t0);var g=svg.querySelector('#cx');if(!g)return;g.style.display='';var ln=g.querySelector('line');
@@ -737,7 +738,7 @@ function search(){var b=document.getElementById('searchbtn');if(!b||b.dataset.b)
  function close(){o.classList.remove('on');}o.querySelector('#sx').addEventListener('click',close);
  document.addEventListener('keydown',function(ev){if(ev.key==='Escape')close();if(ev.key==='/'&&!o.classList.contains('on')&&!/INPUT|TEXTAREA/.test((ev.target||{}).tagName||'')){ev.preventDefault();open();}});
  function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
- function hl(s,t){s=esc(s);if(!t)return s;var i=s.toLowerCase().indexOf(esc(t).toLowerCase());return i<0?s:s.slice(0,i)+'<mark>'+s.slice(i,i+t.length)+'</mark>'+s.slice(i+t.length);}
+ function hl(s,t){s=String(s);if(!t)return esc(s);var i=s.toLowerCase().indexOf(t.toLowerCase());return i<0?esc(s):esc(s.slice(0,i))+'<mark>'+esc(s.slice(i,i+t.length))+'</mark>'+esc(s.slice(i+t.length));}
  function render(){if(!SIDX)return;var t=q.value.trim().toLowerCase(),groups={};
   SIDX.forEach(function(r){if(t&&(r.t+' '+r.s+' '+r.g).toLowerCase().indexOf(t)<0)return;(groups[r.g]=groups[r.g]||[]).push(r);});
   var h='';['Shares','Orders','Inbox','Tax'].forEach(function(g){var rs=groups[g];if(!rs)return;h+='<h3>'+g+' ('+rs.length+')</h3>'+rs.slice(0,t?20:5).map(function(r){

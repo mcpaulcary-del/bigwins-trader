@@ -110,7 +110,8 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     assert "carried as KAN" in summ.pages[0] and "/idmap HGO KAN <code>" in summ.pages[0]
     idr = app.j.identity_records()["HGO"]
     assert (idr["new_code"], idr["status"], idr["rule"]) == ("KAN", "PROPOSED", "A7b")
-    assert summ.positions["KAN"] == summ.sim_positions["KAN"] == 458
+    # 459 with IBKR tiered pricing (review M1; 458 with the fixed plan's larger commission)
+    assert summ.positions["KAN"] == summ.sim_positions["KAN"] == 459
     assert "HGO" not in summ.positions and "HGO" not in summ.sim_positions
     held_hgo = [
         b
@@ -321,6 +322,7 @@ def test_BF_D28_record_replay_switch_on_holds_the_fund(rec: Rec) -> None:
     cfg, sess, prov = rec
     days = _days(sess)
     assert cfg.band_trend is not None and cfg.band_trend.enabled
+    assert cfg.live_emg2_20.sell_rule == "C6"  # BF-D72 (M2): the live configuration as shipped
     summ, app, tr = forward_store_dry_run(
         cfg, Path(str(FWD)), sess, days, {START: "S", END: "R"}, providers=prov, random_twins=3
     )

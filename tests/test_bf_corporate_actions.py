@@ -77,7 +77,7 @@ def test_BF_D23_BW_UNI_23_cash_dividend_from_flex_is_income_with_franking() -> N
     assert b.kind is CaKind.DIVIDEND
     assert (b.cash, b.income, b.held) == (Decimal(55), Decimal(55), 100)
     assert b.franked_pct == 100
-    assert b.franking_credit == Decimal("23.57")  # 55 x 30/70
+    assert b.franking_credit == Decimal(0)  # tax F7: no rate assumed (enter from statement)
     assert b.expected_key == "VENDOR:AAA:2026-11-18"
     assert r.skipped == ("Deposits/Withdrawals 9100001",)  # deposits are booked by hand
     assert j.cash(BOOK) == cash0 + 55
@@ -85,7 +85,7 @@ def test_BF_D23_BW_UNI_23_cash_dividend_from_flex_is_income_with_franking() -> N
     assert j.cash(BOOK) == cash0 + 55
     tv = j.tax_view(BOOK, date(2027, 6, 30))
     assert (tv["dividends"], tv["franking_credits"], tv["capital_returns"]) == (
-        "55.00", "23.57", "0.00",
+        "55.00", "0.00", "0.00",  # tax F7
     )  # fmt: skip
     assert "100% franked" in describe(b)
 
@@ -118,8 +118,8 @@ def test_BF_D23_special_dividend_is_reported_apart_with_its_franking() -> None:
     j = _journal(("DDD", 200, "9", date(2026, 11, 2)))
     (b,) = ingest_flex(j, BOOK, _flex("special_dividend.xml"), CaCalendar()).booked
     assert (b.kind, b.cash, b.franked_pct, b.franking_credit) == (
-        CaKind.SPECIAL, Decimal(140), Decimal(50), Decimal("30.00"),
-    )  # fmt: skip
+        CaKind.SPECIAL, Decimal(140), Decimal(50), Decimal(0),
+    )  # fmt: skip  # tax F7: the credit comes from the statement
     tv = j.tax_view(BOOK, date(2027, 6, 30))
     assert (tv["dividends"], tv["specials"], tv["franked_amount"]) == ("0.00", "140.00", "70.00")
 
@@ -223,8 +223,8 @@ def test_BF_D23_simulated_books_follow_the_calendar_on_the_ex_date() -> None:
         CaKind.IN_SPECIE, "CHD", 25, Decimal("200.00"),
     )  # fmt: skip
     assert (x.income, x.cost_reduction, x.franking_credit) == (
-        Decimal("150.00"), Decimal("50.00"), Decimal("64.29"),
-    )  # fmt: skip
+        Decimal("150.00"), Decimal("50.00"), Decimal(0),
+    )  # fmt: skip  # tax F7: no franking rate in the CSV row
     assert by["AAA"].cash == Decimal("2.50") and by["AAA"].franked_pct is None
     assert j.positions(BOOK) == {"AAA": 10, "CHD": 25, "XYZ": 100}
     assert j.cash(BOOK) == cash0 + Decimal("2.50")

@@ -86,7 +86,8 @@ def test_BF_D18_random_order_same_count_from_band_c_without_pegged_names() -> No
     m = month_index(D0)
     pegged = frozenset(c[:5])
     t1 = RandomOrder(8550001, m, m)(lst, pegged)
-    assert len(t1) == len(lst.targets) and set(t1) <= set(c) and not set(t1) & pegged
+    n = len([e for e in lst.targets if e not in pegged])  # BF-D72 (M6): pegged names out
+    assert len(t1) == n and set(t1) <= set(c) and not set(t1) & pegged
     assert t1 == RandomOrder(8550001, m, m)(lst, pegged)  # deterministic
     assert t1 != RandomOrder(8550002, m, m)(lst, pegged)
     assert t1 != lst.targets  # the order of rule 3 is replaced
@@ -249,8 +250,9 @@ def test_BF_D36_pegged_names_stay_out_and_order_is_band_order_free() -> None:
     c = [r.entity for r in lst.band_c]
     pegged = frozenset(c[:7])
     t = RandomOrder(8550001, m, m, NEW)(lst, pegged, lot)
-    assert not set(t) & pegged and len(t) == len(lst.targets)
-    assert _buyable(t, lot) == _buyable(lst.targets, lot)
+    unpegged = [e for e in lst.targets if e not in pegged]  # BF-D72 (M6): pegged names out
+    assert not set(t) & pegged and len(t) == len(unpegged)
+    assert _buyable(t, lot) == _buyable(tuple(unpegged), lot)
     rows = list(lst.band_c)
     random.Random(3).shuffle(rows)
     assert RandomOrder(8550001, m, m, NEW)(replace(lst, band_c=tuple(rows)), pegged, lot) == t

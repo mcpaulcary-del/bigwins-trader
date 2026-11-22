@@ -161,7 +161,7 @@ def test_BF_D21_store_providers_refuse_to_build_a_panel_without_the_list(
     monkeypatch.setenv(LIC_LIST_ENV, str(tmp_path / "gone.csv"))
     cfg = load_bfast_config(CFG)
     panel, _, _, note = store_providers(cfg, tmp_path, [date(2026, 11, 30)])
-    assert note.startswith("LIC list REFUSED (BF-D21)")
+    assert note.startswith("LIC / ETP list REFUSED (BF-D21, BF-D72)")
     with pytest.raises(LicListError):
         panel(date(2026, 11, 30))
 

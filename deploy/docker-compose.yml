@@ -57,8 +57,10 @@ services:
     secrets: [tws_password]
     depends_on:
       secrets-check: {condition: service_completed_successfully}
-    networks: [internal]
-    # no "ports:" on purpose; the trader reaches gw-paper:4004 on the internal network
+    mem_limit: 1500m  # review F11
+    # internal: the trader reaches gw-paper:4004 there; gw-egress (review F1): the gateway's
+    # own route to IBKR's servers (the internal network has none). No "ports:" on purpose.
+    networks: [internal, gw-egress]
 
   db:
     image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
@@ -81,6 +83,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args: {BUILD_SHA: "${BUILD_SHA:-unknown}"}  # review F22
     image: asx-trader-bfast-trader:local
     restart: unless-stopped
     depends_on:
@@ -117,7 +120,9 @@ services:
     # `trader-bf run` (scheduler + app actions/alerts + paper gateway) exists; the container stays
     # idle until the reality spike and the piece-2 dry runs pass, then the command changes.
     # (`trader-bf run` checks its secret files again first, BF-D33)
-    command: ["sh", "-c", "trader-bf check-secrets && trader-bf validate-config && exec sleep infinity"]
+    # review F5: what runs is TRADER_CMD in deploy/.env (`bigwins start-trader <date>` sets
+    # it after a confirmation); until then the container idles
+    command: ["sh", "-c", "trader-bf check-secrets && trader-bf validate-config && exec ${TRADER_CMD:-sleep infinity}"]
 
   db-roles:
     # BF-D52: (re)creates the dashboard's SELECT-only database role, idempotently, at every
@@ -165,6 +170,7 @@ services:
       - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
       - traderout:/app/out:ro
     read_only: true
+    mem_limit: 512m  # review F11
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -190,6 +196,7 @@ networks:
   internal:
     internal: true        # no internet: gateway<->trader<->db only
   egress: {}              # trader only: EODHD, IBKR Flex, Web Push, healthchecks, Telegram
+  gw-egress: {}           # review F1: gw-paper only, its route to IBKR (nothing published)
   control:
     internal: true        # dashboard -> trader:8081 (the app's actions, BF-D39) only
 

@@ -40,6 +40,9 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         "asx": env.get("ASX", ""), "containers": cont,
         "log": env.get("LOGS", "").splitlines()[-30:],
         "onedrive": env.get("ONEDRIVE") == "1",  # BF-D64: the backup remote is configured
+        # review F9 / security M3: hours since the newest good backup; the key's fingerprint
+        "backup_age_h": int(env["BACKUP_AGE_H"]) if env.get("BACKUP_AGE_H", "").isdigit() else None,
+        "key_fp": env.get("KEY_FP", ""),
         # BF-D63: which secret files exist (names only; the worker tests -s, never reads)
         "secrets": {**dict.fromkeys(env.get("SECRETS_PRESENT", "").split(), True),
                     **dict.fromkeys(env.get("SECRETS_MISSING", "").split(), False)},
@@ -50,6 +53,7 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
             "new_config": env.get("UPD_CFG") or None, "new_changelog": env.get("UPD_LOG", ""),
             "subject": env.get("UPD_SUBJECT", ""), "previous": env.get("UPD_PREV", ""),
             "previous_migrations": bool(env.get("UPD_PREV_MIG", "").strip()),
+            "ci": env.get("UPD_CI", "unknown"),  # review F13
         },
     }  # fmt: skip
 

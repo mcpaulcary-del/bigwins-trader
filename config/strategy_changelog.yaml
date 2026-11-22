@@ -3,6 +3,24 @@
 # Add an entry with every change to the strategy (config/bfast.yaml strategy settings,
 # trader/lines/, trader/universe.py, trader/features.py, trader/panel.py, the LIC list).
 versions:
+  - version: "EMG2-18 C6 v1.1"
+    date: 2026-11-22
+    fingerprint: "a50dfa0b4eb1"
+    what: >-
+      Fixes from the strategy-correctness review (BF-D72): dividends and splits counted once
+      per ex-date; the L15 band index uses the research record's month-end steps (delisted
+      names included); bid-peg needs 5 closes in its 10-session window (the registered rule)
+      and the random twins' list leaves pegged names out; new codes from the bulk feed get
+      columns; the ETP list is pinned; an out-of-cycle decision keeps the month-end L15 state.
+      Trading-core fixes (BF-D69): sells never count against the L10 orders limit, the day
+      limits fit a whole book, IBKR tiered commissions.
+    why: >-
+      The independent reviews of 22 Nov 2026: the live list and band index now match the
+      paper record on 13 month-ends.
+    tested: >-
+      Full test suite; the live-parameter golden on 13 month-ends and the band-trend level /
+      mean pinned on four dates with the record mounted; the record replay.
+    takes_effect: "With the next decision after the update is approved."
   - version: "EMG2-18 C6 v1.0"
     date: 2026-11-22
     what: >-

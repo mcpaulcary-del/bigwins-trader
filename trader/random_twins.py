@@ -93,10 +93,12 @@ class RandomOrder:
         scored = sorted(
             pool, key=lambda e: (-random_score(self.seed, e, self.month, self.origin), e)
         )
-        n = len(lst.targets)
+        # BF-D72 (strategy review M6): as the paper book, the count leaves pegged names out
+        t = [e for e in lst.targets if e not in pegged]
+        n = len(t)
         if lottery is None or lst.as_of < self.buyable_from.isoformat():
             return tuple(scored[:n])
-        m = sum(1 for e in lst.targets if not lottery.get(e, True))
+        m = sum(1 for e in t if not lottery.get(e, True))
         buy = [e for e in scored if not lottery.get(e, True)][:m]
         lot = [e for e in scored if lottery.get(e, True)][: n - m]
         chosen = set(buy) | set(lot)

@@ -38,9 +38,9 @@ STRATEGY_KEYS = ("line", "live_emg2_20", "band_trend", "risk", "execution")
 # trading / strategy change, except these UI-only files; docs/, tests/ and the rest
 # (deploy scripts, README) are app-only. deploy/classify.py holds the same lists for the
 # root worker (a test keeps them equal).
-TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/")
+TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/", ".claude/")
 # BF-D60 (N5): infrastructure that changes what runs is not app-only either
-TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini")
+TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini", "CLAUDE.md")  # + .claude/: L6
 UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
@@ -73,6 +73,38 @@ def is_trading_path(path: str) -> bool:
     return f.startswith(TRADING_DIRS) or f in TRADING_FILES
 
 
+STRATEGY_FILES = (
+    "trader/lines/",
+    "trader/universe.py",
+    "trader/features.py",
+    "trader/panel.py",
+    "trader/data/forward_store.py",
+    "trader/random_twins.py",
+    "config/lic_list.csv",
+    "config/band_trend_steps.csv",
+    "uv.lock",
+)
+
+
+def strategy_hash(root: Path, config_path: Path | None = None) -> str:
+    """BF-D72 (strategy review M4): the hash of what decides (the strategy source files,
+    the lists and steps, the locked dependencies and the strategy part of the config
+    with its LIC / ETP pins). The changelog's newest entry records it (``fingerprint``),
+    so a change of the strategy needs a new top changelog entry (a test checks)."""
+    h = hashlib.sha256()
+    files: list[Path] = []
+    for name in STRATEGY_FILES:
+        p = root / name
+        files += sorted(p.rglob("*.py")) if name.endswith("/") else [p]
+    for fp in files:
+        if fp.is_file() and "__pycache__" not in fp.parts:
+            h.update(fp.relative_to(root).as_posix().encode() + b"\0" + fp.read_bytes() + b"\0")
+    cp = config_path or root / "config/bfast.yaml"
+    if cp.is_file():
+        h.update(config_hash(load_yaml(cp.read_text(encoding="utf-8")) or {}).encode())
+    return h.hexdigest()[:12]
+
+
 def config_hash(raw: Mapping[str, Any]) -> str:
     blob = json.dumps(strategy_config(raw), sort_keys=True, default=str).encode()
     return _h(blob)[:12]
@@ -82,7 +114,12 @@ def code_hash(root: Path) -> str:
     """Hash of the trading source under ``root`` (the repository or /app): every file of
     trader/ except the UI-only ones, plus config/lic_list.csv (BF-D53, default-deny)."""
     h = hashlib.sha256()
-    files = [*sorted((root / "trader").rglob("*.py")), root / "config/lic_list.csv"]
+    files = [
+        *sorted((root / "trader").rglob("*.py")),
+        root / "config/lic_list.csv",
+        root / "uv.lock",
+        root / "config/band_trend_steps.csv",
+    ]  # BF-D72: deps, steps
     for f in files:
         if not f.is_file() or "__pycache__" in f.parts:
             continue

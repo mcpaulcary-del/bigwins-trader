@@ -3,7 +3,8 @@
 # Install once:  ln -sf /srv/asx-trader/deploy/bigwins.sh /usr/local/bin/bigwins
 # Then type:     bigwins          (menu)   or   bigwins status | logs | update | restart |
 #                secret <name> | check | claude | remote | app | demo | login | vapid |
-#                install-worker | worker | backup | restore-test | onedrive | restore
+#                install-worker | worker | backup | restore-test | onedrive | restore |
+#                start-trader <date> | ibkr | seed-data
 # Server-only settings (your Tailscale log-in, tax rate, paper account id...) go in
 # config/bfast.local.yaml: not in git, laid over config/bfast.yaml (BF-D39).
 set -uo pipefail
@@ -13,6 +14,7 @@ DEPLOY=$REPO/deploy
 SECRETS=$DEPLOY/secrets
 CONFIG=$REPO/config/bfast.yaml
 LOCAL=$REPO/config/bfast.local.yaml
+# 8 typed + 3 made here = the 11 secret files (review F16; telegram_bot_token only with Telegram)
 BASE_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id db_dashboard_password"
 APP_SECRETS="vapid_private_key app_proxy_key worker_job_key"  # BF-D40, BF-D46, BF-D48: made here
 BACKUP_DIR=/var/backups/bigwins              # BF-D64: local backups (root only)
@@ -46,8 +48,9 @@ ALL_SECRETS=$(all_secrets)
 dc() {  # docker compose, with the Telegram file when Telegram is on (BF-D40)
   local f="-f docker-compose.yml"
   case "$(channel)" in telegram|both) f="$f -f docker-compose.telegram.yml";; esac
+  # review F22: the image records the commit it was built from
   # shellcheck disable=SC2086
-  (cd $DEPLOY && docker compose $f "$@")
+  (cd $DEPLOY && BUILD_SHA=$(git -C $REPO rev-parse HEAD 2>/dev/null) docker compose $f "$@")
 }
 
 market_open() {  # Mon-Fri 10:00-16:15 Sydney (the server clock is Sydney time)
@@ -86,9 +89,13 @@ cmd_status() {
   echo "== Trader"
   if [ -f "$DEPLOY/.env" ] && dc ps --format '{{.Service}}' 2>/dev/null | grep -q .; then
     dc ps --format '  {{.Service}}: {{.Status}}'
+    grep -q '^TRADER_CMD=trader-bf run' "$DEPLOY/.env" 2>/dev/null \
+      || y "  trader: idle (sleep) until: bigwins start-trader <date>"
   else
     y "  Not started yet (it starts after the IBKR details are in: GO_LIVE_GUIDE B8)."
   fi
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx bigwins-demo \
+    && y "  DEMO app container running (made-up data): it stops when the real app starts"
   echo
   echo "== Phone app"
   if curl -fsS -m 3 http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
@@ -166,8 +173,18 @@ after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
   make_keys || { r "Update stopped before the restart: fix the message above, then: bigwins update"; return 1; }
   if [ -f "$DEPLOY/.env" ] && secrets_ready; then
-    docker rm -f bigwins-demo >/dev/null 2>&1
-    dc build && dc up -d && g "Updated and restarted."
+    docker rm -f bigwins-demo >/dev/null 2>&1  # F4: the demo never runs beside the real app
+    dc build || { r "Build failed: nothing restarted."; return 1; }
+    if ! golden_checks; then  # batch 3 M2: refuse to restart the trader on a failed check
+      r "The record-data checks failed: the trader was NOT restarted (it runs the old code)."
+      printf '%s' '{"ok":false,"kind":"golden","error":"record-data checks failed after the update; trader not restarted"}' \
+        | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
+      return 1
+    fi
+    dc up -d && g "Updated and restarted."
+    # F3: the output volume belongs to the trader's user (once; a no-op afterwards)
+    dc exec -T -u 0 trader chown -R 10001:10001 /app/out >/dev/null 2>&1
+    docker image prune -f >/dev/null 2>&1  # F11
   else
     g "Code updated. (The trader is not started yet, so nothing to restart.)"
   fi
@@ -177,7 +194,13 @@ make_keys() {  # BF-D40/D46/D48/D52: generated secrets, made here once, never sh
   command -v openssl >/dev/null || { r "openssl is missing (apt install openssl): no keys made."; return 1; }
   [ -s "$SECRETS/vapid_private_key" ] || make_vapid || return 1
   if command -v age-keygen >/dev/null && [ ! -s "$BKEY" ]; then  # BF-D64: the backup key
-    python3 "$DEPLOY/backup.py" keygen "$BKEY" >/dev/null && g "Made the backup recovery key (root only)."
+    if ls "$BACKUP_DIR"/bigwins-*.tar.age >/dev/null 2>&1; then  # security review M3
+      r "Backups exist but the recovery key file is missing: NO new key made (the old backups"
+      r "need the old key). Restore it with: bigwins restore (paste the key), or rotate"
+      r "deliberately: bigwins new-backup-key."
+    else
+      python3 "$DEPLOY/backup.py" keygen "$BKEY" >/dev/null && g "Made the backup recovery key (root only)."
+    fi
   fi
   local n tmp
   for n in app_proxy_key worker_job_key db_dashboard_password; do
@@ -225,7 +248,16 @@ cmd_update() {
 
 cmd_restart() {
   guard_market || return 1
+  docker rm -f bigwins-demo >/dev/null 2>&1  # F4: the demo frees 127.0.0.1:8080
   dc up -d && dc restart trader dashboard && g "Trader and app restarted."
+}
+
+cmd_new_backup_key() {  # security review M3: a key rotation is an explicit action
+  y "A new recovery key: backups made from now on need the NEW key; old backups still need"
+  y "the OLD one (keep both). The app shows the new key's fingerprint until you have saved it."
+  confirm "Make a new backup recovery key?" || return 0
+  [ -s "$BKEY" ] && mv "$BKEY" "$BKEY.$(date +%Y%m%d%H%M%S).old"
+  python3 "$DEPLOY/backup.py" keygen "$BKEY" >/dev/null && g "New key made (fingerprint $(key_fp)). Show it once in the app and save it."
 }
 
 cmd_secret() {
@@ -235,6 +267,11 @@ cmd_secret() {
   fi
   if [ "$name" = vapid_private_key ]; then cmd_vapid; return; fi
   case " $TYPED_SECRETS " in *" $name "*) ;; *) r "Unknown secret: $name"; return 1;; esac
+  if [ "$name" = db_password ] && [ -s "$SECRETS/db_password" ] && docker volume ls -q 2>/dev/null | grep -q pgdata; then
+    r "db_password is already set and the database exists: Postgres keeps the original"
+    r "password, so a new one would lock the trader out. Not changed (review F17)."
+    return 1
+  fi
   mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
   echo "Paste the value for $name and press Enter (nothing will show on screen):"
   local v; read -rs v; echo
@@ -310,9 +347,14 @@ update_check() {  # BF-D45: every 10 minutes, is the branch ahead, and what woul
   UPD_LOG=$(git -C $REPO show "origin/$BRANCH:config/strategy_changelog.yaml" 2>/dev/null)
   UPD_SUBJECT=$(git -C $REPO log -1 --format=%s "origin/$BRANCH" 2>/dev/null)
   UPD_PREV=$(python3 "$DEPLOY/gitops.py" target "$STATE" "$UPD_HEAD" 2>/dev/null)
+  UPD_CI=unknown  # review F13: the CI result of the target commit (tags CI pushes; read-only key)
+  if [ -n "$UPD_REMOTE" ] && [ "$UPD_REMOTE" != "$UPD_HEAD" ]; then
+    if git -C $REPO ls-remote -q origin "refs/tags/ci-ok/$UPD_REMOTE" 2>/dev/null | grep -q .; then UPD_CI=green
+    elif git -C $REPO ls-remote -q origin "refs/tags/ci-fail/$UPD_REMOTE" 2>/dev/null | grep -q .; then UPD_CI=red; fi
+  fi
   UPD_PREV_MIG=""
   [ -n "$UPD_PREV" ] && UPD_PREV_MIG=$(git -C $REPO diff --name-only "$UPD_PREV" "$UPD_HEAD" -- migrations/ 2>/dev/null)
-  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG
+  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG UPD_CI
 }
 
 host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no secrets)
@@ -324,11 +366,12 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
   ps=$(dc ps --format '{{.Service}}|{{.Status}}' 2>/dev/null)
   logs=$(dc logs --tail 30 --no-color trader 2>/dev/null | tail -30)
   local n present="" missing=""  # BF-D63: secret names only (the files are never read)
-  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password; do
+  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password healthchecks_backup_url; do
     if [ -s "$SECRETS/$n" ]; then present="$present $n"; else missing="$missing $n"; fi
   done
   TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" SECRETS_PRESENT="$present" \
     SECRETS_MISSING="$missing" ONEDRIVE="$(onedrive_ok && echo 1 || echo 0)" \
+    BACKUP_AGE_H="$(backup_age_h)" KEY_FP="$(key_fp)" \
     python3 "$DEPLOY/host_status.py"
 }
 
@@ -346,19 +389,27 @@ print(json.dumps(c))' "$DEPLOY" "$f"
 }
 
 do_backup() {  # BF-D64: one encrypted backup, local + OneDrive, and the readable report
-  command -v age >/dev/null || { echo '{"ok":false,"kind":"backup","error":"age is not installed (apt install age)"}'; return 1; }
+  local e
+  if ! command -v age >/dev/null; then
+    e='{"ok":false,"kind":"backup","error":"age is not installed (apt install age)"}'; record_backup "$e"; echo "$e"; return 1
+  fi
   make_keys >/dev/null || true
-  [ -s "$BKEY" ] || { echo '{"ok":false,"kind":"backup","error":"no backup key"}'; return 1; }
+  if [ ! -s "$BKEY" ]; then
+    e='{"ok":false,"kind":"backup","error":"no backup key"}'; record_backup "$e"; echo "$e"; return 1
+  fi
   local jdb stage res rc day remote=""
   jdb=$(envval JOURNAL_DB); jdb=${jdb:-ledger_bf_paper}
   mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
   stage=$(mktemp -d /var/tmp/bigwins-stage.XXXXXX) || return 1
+  chmod 700 "$stage"
+  mkdir -p "$stage/worker_state" && cp -a "$STATE/." "$stage/worker_state/" 2>/dev/null  # F20: first
   dc exec -T trader sh -c 'tar -C /app/out -cf - .' > "$stage/trader_out.tar" 2>/dev/null
   dc exec -T db psql -U trader -d "$jdb" -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" > "$stage/counts.txt" 2>/dev/null
   onedrive_ok && remote="$OD_PATH/archives"
   COMPOSE="$(compose_json)" JDB="$jdb" STAGE="$stage" OUT="$BACKUP_DIR" KEY="$BKEY" REMOTE="$remote" \
-  REPO="$REPO" DEPLOY="$DEPLOY" SECRETS="$SECRETS" STATE="$STATE" RECORD="$(envval RECORD_DIR)" \
-  FSTORE="$(envval FORWARD_STORE)" python3 - <<'PY'
+  REPO="$REPO" DEPLOY="$DEPLOY" SECRETS="$SECRETS" STATE="$stage/worker_state" RECORD="$(envval RECORD_DIR)" \
+  FSTORE="$(envval FORWARD_STORE)" REFDIR="$(envval REF_DIR)" FLEX="$(envval FLEX_INBOX)" \
+  COMMIT="$(git -C $REPO rev-parse HEAD 2>/dev/null)" python3 - <<'PY'
 import json, os
 e = os.environ
 counts = {}
@@ -375,7 +426,12 @@ if e.get("RECORD"):
     src.append(["record", e["RECORD"]])
 if e.get("FSTORE"):
     src.append(["forward_store", e["FSTORE"]])
+if e.get("REFDIR"):  # security review M2
+    src.append(["ref", e["REFDIR"]])
+if e.get("FLEX"):
+    src.append(["flex_inbox", e["FLEX"]])
 plan = {"out_dir": e["OUT"], "key_file": e["KEY"], "remote": e.get("REMOTE") or None,
+        "commit": e.get("COMMIT", ""), "local_keep": [7, 0],
         "pg_dump": json.loads(e["COMPOSE"]) + ["exec", "-T", "db", "pg_dump", "-U", "trader", "-d", e["JDB"]],
         "row_counts": counts, "sources": src, "work_dir": "/var/tmp"}
 open(e["STAGE"] + "/plan.json", "w").write(json.dumps(plan))
@@ -388,37 +444,39 @@ PY
   fi
   res=$(printf '%s' "$res" | python3 -c 'import json,sys
 r=json.loads(sys.stdin.read() or "{}"); r["kind"]="backup"; r["onedrive"]=sys.argv[1]=="1"; print(json.dumps(r))' "$(onedrive_ok && echo 1 || echo 0)")
-  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
+  record_backup "$res"
+  [ "$rc" = 0 ] && hc_backup_ping
   rm -rf "$stage"
   echo "$res"
   return $rc
 }
 
-do_restore_test() {  # BF-D64: unpack the latest backup in a throwaway place, check it, delete it
-  local arch tmp res cid pgok counts
-  arch=$(ls -1 "$BACKUP_DIR"/bigwins-*.tar.age 2>/dev/null | sort | tail -1)
-  [ -n "$arch" ] || { echo '{"ok":false,"kind":"restore_test","error":"no backup yet"}'; return 1; }
-  res=$(python3 "$DEPLOY/backup.py" verify "$arch" "$BKEY" /var/tmp)
-  tmp=$(mktemp -d /var/tmp/bigwins-rt.XXXXXX)
-  python3 "$DEPLOY/backup.py" restore "$arch" "$tmp" "$BKEY" && \
-  cid=$(docker run -d --rm -e POSTGRES_PASSWORD=restoretest -e POSTGRES_USER=trader -e POSTGRES_DB=rt postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74) && {
-    for i in $(seq 1 30); do docker exec "$cid" pg_isready -U trader -d rt >/dev/null 2>&1 && break; sleep 2; done
-    docker exec -i "$cid" psql -q -U trader -d rt < "$tmp/journal/journal.sql" >/dev/null 2>&1
-    counts=$(docker exec "$cid" psql -U trader -d rt -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" 2>/dev/null)
-    docker stop "$cid" >/dev/null 2>&1
-  }
-  rm -rf "$tmp"
+do_restore_test() {  # BF-D64 / review L3: unpack the latest backup once, check it, delete it
+  local arch res cid="" tmp="" counts="" pw
+  arch=$(python3 "$DEPLOY/backup.py" latest "$BACKUP_DIR") || {
+    res='{"ok":false,"kind":"restore_test","error":"no backup yet"}'; record_backup "$res"; echo "$res"; return 1; }
+  trap '[ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1; [ -n "$tmp" ] && rm -rf "$tmp"' RETURN
+  res=$(python3 "$DEPLOY/backup.py" verify "$arch" "$BKEY" /var/tmp --keep)
+  tmp=$(printf '%s' "$res" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read() or "{}").get("restore_dir",""))')
+  pw=$(openssl rand -hex 16)
+  if [ -n "$tmp" ] && [ -s "$tmp/journal/journal.sql" ] && \
+     cid=$(docker run -d --network none -e POSTGRES_PASSWORD="$pw" -e POSTGRES_USER=trader -e POSTGRES_DB=rt postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74); then
+    for i in $(seq 1 30); do docker exec "$cid" pg_isready -h 127.0.0.1 -U trader -d rt >/dev/null 2>&1 && break; sleep 2; done
+    docker exec -i "$cid" psql -q -h 127.0.0.1 -U trader -d rt -v ON_ERROR_STOP=1 --single-transaction < "$tmp/journal/journal.sql" >/dev/null 2>&1
+    counts=$(docker exec "$cid" psql -h 127.0.0.1 -U trader -d rt -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" 2>/dev/null)
+  fi
   res=$(printf '%s' "$res" | COUNTS="$counts" python3 -c 'import json,os,sys
-r=json.loads(sys.stdin.read() or "{}"); got={}
+r=json.loads(sys.stdin.read() or "{}"); r.pop("restore_dir", None); got={}
 for l in os.environ.get("COUNTS","").splitlines():
     t,_,n=l.partition("|")
     if n.strip().isdigit(): got[t]=int(n)
 want=r.get("row_counts") or {}
-r["kind"]="restore_test"; r["db_rows_match"]=bool(got) and all(got.get(k)==v for k,v in want.items())
+r["kind"]="restore_test"
+r["db_rows_match"]=bool(want) and bool(got) and all(got.get(k)==v for k,v in want.items())
 r["ok"]=bool(r.get("ok")) and r["db_rows_match"]
-if not r["db_rows_match"]: r["error"]="journal rows in the restored database differ from the backup"
+if not r["db_rows_match"]: r["error"]=r.get("error") or "journal rows in the restored database differ from the backup (or none were counted)"
 print(json.dumps(r))')
-  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
+  record_backup "$res"
   echo "$res"
 }
 
@@ -437,37 +495,73 @@ cmd_onedrive() {  # BF-D64: connect OneDrive once (the token stays root-only on 
   if rclone mkdir "$OD_PATH" >/dev/null 2>&1; then g "OneDrive connected: backups go to 'Big Wins server backups'."; else r "OneDrive is not working yet: run bigwins onedrive again."; fi
 }
 
-cmd_restore() {  # BF-D64: disaster recovery on a fresh server (bootstrap done, code cloned)
-  y "This restores the Big Wins server from a backup: journal, config, record, price store,"
-  y "the .env file and the secret files. It replaces what is on this server."
+cmd_restore() {  # BF-D64 / review F6 + security M1: disaster recovery that fails closed
+  y "This restores the Big Wins server from a backup: journal, local config, record, price"
+  y "store, ref, Flex inbox, the .env file and the secret files. It replaces what is here."
   confirm "Continue?" || return 0
   command -v age >/dev/null || { r "Install age first: apt install age"; return 1; }
-  if [ ! -s "$BKEY" ]; then
-    mkdir -p "$(dirname "$BKEY")" && chmod 700 "$(dirname "$BKEY")"
+  mkdir -p "$(dirname "$BKEY")" && chmod 700 "$(dirname "$BKEY")"
+  if [ ! -s "$BKEY" ] || confirm "Paste a recovery key now (instead of the one on this server)?"; then
     echo "Paste the recovery key (AGE-SECRET-KEY-...) and press Enter:"
     local k; read -rs k; echo
-    printf '%s\n' "$k" > "$BKEY"; unset k; chmod 600 "$BKEY"
+    printf '%s\n' "$k" > "$BKEY.new"; unset k; chmod 600 "$BKEY.new"
+    if ! age-keygen -y "$BKEY.new" >/dev/null 2>&1; then  # F6: a real age key, else nothing kept
+      rm -f "$BKEY.new"; r "That is not a valid recovery key; nothing changed."; return 1
+    fi
+    mv -f "$BKEY.new" "$BKEY"
   fi
   mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
   if onedrive_ok; then rclone copy "$OD_PATH/archives" "$BACKUP_DIR" --include 'bigwins-*' >/dev/null 2>&1; fi
-  local arch tmp
-  arch=$(ls -1 "$BACKUP_DIR"/bigwins-*.tar.age 2>/dev/null | sort | tail -1)
-  [ -n "$arch" ] || { r "No backup found (connect OneDrive with: bigwins onedrive)."; return 1; }
-  echo "Restoring $(basename "$arch") ..."
-  tmp=$(mktemp -d /var/tmp/bigwins-restore.XXXXXX)
-  python3 "$DEPLOY/backup.py" restore "$arch" "$tmp" "$BKEY" || { r "Could not decrypt: wrong key?"; return 1; }
-  cp -a "$tmp/config/." "$REPO/config/"
-  mkdir -p "$SECRETS" && cp -a "$tmp/secrets/." "$SECRETS/" && chmod 700 "$SECRETS" && chmod 444 "$SECRETS"/*
+  local arch tmp jdb man commit
+  arch=$(python3 "$DEPLOY/backup.py" latest "$BACKUP_DIR") || { r "No backup found (connect OneDrive with: bigwins onedrive)."; return 1; }
+  echo "Newest backup: $(basename "$arch") (made $(date -r "$arch" '+%a %d %b %Y %H:%M'))"
+  confirm "Restore this one?" || return 0
+  tmp=$(mktemp -d /var/tmp/bigwins-restore.XXXXXX); chmod 700 "$tmp"
+  trap 'rm -rf "$tmp"' RETURN
+  python3 "$DEPLOY/backup.py" restore "$arch" "$tmp" "$BKEY" || { r "Restore refused (see the message above); nothing changed."; return 1; }
+  man=$(python3 "$DEPLOY/backup.py" check-manifest "$tmp" "$BKEY") || { r "The archive's signed manifest does not match: refused."; return 1; }
+  jdb=$( (sed -n 's/^JOURNAL_DB=//p' "$tmp/deploy_env" 2>/dev/null | head -1) ); jdb=${jdb:-ledger_bf_paper}
+  # the database first: fail closed before anything else is replaced
   cp "$tmp/deploy_env" "$DEPLOY/.env" && chmod 600 "$DEPLOY/.env"
+  mkdir -p "$SECRETS" && cp -a "$tmp/secrets/." "$SECRETS/" && chmod 700 "$SECRETS" && chmod 444 "$SECRETS"/*
+  dc up -d --wait db || { r "The database did not start: stopped before loading anything."; return 1; }
+  dc exec -T db sh -c "pg_isready -h 127.0.0.1 -U trader" >/dev/null || { r "Database not ready: stopped."; return 1; }
+  dc exec -T db psql -U trader -d postgres -Atc "select 1 from pg_database where datname='$jdb'" | grep -q 1 \
+    || dc exec -T db createdb -U trader "$jdb" || { r "Could not create $jdb: stopped."; return 1; }
+  if [ -n "$(dc exec -T db psql -U trader -d "$jdb" -Atc "select 1 from information_schema.tables where table_name like 'bf\_%' limit 1")" ]; then
+    r "The database $jdb already has journal tables: refused (restore only into an empty server)."; return 1
+  fi
+  dc exec -T db psql -U trader -d "$jdb" -v ON_ERROR_STOP=1 --single-transaction -q < "$tmp/journal/journal.sql" \
+    || { r "Loading the journal failed (errors above): nothing else was changed after the database."; return 1; }
+  if ! printf '%s' "$man" | JDB="$jdb" python3 -c 'import json,os,subprocess,sys
+m=json.loads(sys.stdin.read()); want=m.get("row_counts") or {}
+bad=[]
+for t,n in want.items():
+    got=subprocess.run(sys.argv[1:]+["psql","-U","trader","-d",os.environ["JDB"],"-Atc",f"select count(*) from {t}"],capture_output=True,text=True).stdout.strip()
+    if got!=str(n): bad.append(f"{t}: {got} vs {n}")
+print("; ".join(bad)); sys.exit(1 if bad or not want else 0)' $(compose_json | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))') exec -T db; then
+    r "Row counts differ from the backup's manifest: stopped before starting the stack."; return 1
+  fi
+  g "Journal restored and checked."
+  commit=$(printf '%s' "$man" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))')
+  if [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then git -C $REPO fetch -q origin "$BRANCH" 2>/dev/null; git -C $REPO checkout -q "$commit" && g "Code at the backup's commit ${commit:0:12}."; fi
+  # config: only the server's own files (never the tracked bfast.yaml)
+  local f
+  for f in "$tmp"/config/*; do
+    [ -e "$f" ] || continue
+    if git -C $REPO ls-files --error-unmatch "config/$(basename "$f")" >/dev/null 2>&1; then continue; fi
+    cp -a "$f" "$REPO/config/"
+  done
   [ -d "$tmp/worker_state" ] && mkdir -p "$STATE" && cp -a "$tmp/worker_state/." "$STATE/"
-  local rec fs; rec=$(envval RECORD_DIR); fs=$(envval FORWARD_STORE)
+  local rec fs ref fx; rec=$(envval RECORD_DIR); fs=$(envval FORWARD_STORE); ref=$(envval REF_DIR); fx=$(envval FLEX_INBOX)
   [ -n "$rec" ] && [ -d "$tmp/record" ] && mkdir -p "$rec" && cp -a "$tmp/record/." "$rec/"
   [ -n "$fs" ] && [ -d "$tmp/forward_store" ] && mkdir -p "$fs" && cp -a "$tmp/forward_store/." "$fs/"
-  dc up -d db && sleep 10
-  dc exec -T db psql -q -U trader -d "$(envval JOURNAL_DB || echo ledger_bf_paper)" < "$tmp/journal/journal.sql" >/dev/null && g "Journal restored."
+  [ -n "$ref" ] && [ -d "$tmp/ref" ] && mkdir -p "$ref" && cp -a "$tmp/ref/." "$ref/"
+  [ -n "$fx" ] && [ -d "$tmp/flex_inbox" ] && mkdir -p "$fx" && cp -a "$tmp/flex_inbox/." "$fx/"
+  [ -n "$fs" ] && chown -R 10001:10001 "$fs"; [ -n "$fx" ] && chown -R 10001:10001 "$fx"  # M2
   dc up -d && dc exec -T trader sh -c 'tar -C /app/out -xf -' < "$tmp/trader_out.tar" 2>/dev/null
-  rm -rf "$tmp"
-  g "Restored. Check the app, then: bigwins 11 (allow my phone), sudo bigwins install-worker."
+  g "Restored. Then: bigwins 9 (phone app on Tailscale; the server's Tailscale name may be new),"
+  g "bigwins 11 (allow my phone), sudo bigwins install-worker, and in the app: Turn on alerts again."
 }
 
 finish_job() {  # id status text: record a server job's result (retried while the trader restarts)
@@ -482,6 +576,9 @@ finish_job() {  # id status text: record a server job's result (retried while th
 cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s, as root)
   mkdir -p "$STATE" && chmod 700 "$STATE"  # the worker's own notes: root only
   host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status >/dev/null 2>&1
+  if [ -s "$STATE/last_backup.json" ]; then  # a result recorded while the trader was down
+    dc exec -T trader trader-bf server-jobs backup < "$STATE/last_backup.json" >/dev/null 2>&1 && rm -f "$STATE/last_backup.json"
+  fi
   local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
   id=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
@@ -521,7 +618,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     claude_stop) out=$(tmux kill-session -t remote 2>&1 && echo "Claude remote control stopped."); rc=$?;;
     backup_now) out=$(do_backup 2>&1); rc=$?;;
     restore_test) out=$(do_restore_test 2>&1); rc=$?;;
-    backup_key) out=$(python3 "$DEPLOY/gitops.py" seal "$SECRETS/worker_job_key" "$BKEY" | dc exec -T trader trader-bf server-jobs reveal 2>&1); rc=$?;;
+    backup_key) out=$(python3 "$DEPLOY/gitops.py" seal "$SECRETS/worker_job_key" "$BKEY" | dc exec -T trader trader-bf server-jobs reveal --fp "$(key_fp)" 2>&1); rc=$?;;
     fetch) rm -f "$STATE/last_fetch"; out=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>&1); rc=$?;;
     hc_ping) out=$(u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null); case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" && echo "ping ok";; *) echo "heartbeat is off (healthchecks_url is none)";; esac 2>&1); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
@@ -578,13 +675,110 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  systemctl enable --now bigwins-backup.timer >/dev/null 2>&1 || y "Nightly backup timer not started."
-  if systemctl daemon-reload && systemctl enable --now bigwins-worker.timer; then
+  cat > /etc/systemd/system/bigwins-weekly.service <<EOF
+[Unit]
+Description=Big Wins weekly restore test and Docker builder prune (review L4, F11)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=$DEPLOY/bigwins.sh weekly
+TimeoutStartSec=7200
+EOF
+  cat > /etc/systemd/system/bigwins-weekly.timer <<'EOF'
+[Unit]
+Description=Big Wins weekly checks (Sunday 03:17 Sydney)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:17:00 Australia/Sydney
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload  # review F19: before enabling the new units
+  systemctl enable --now bigwins-backup.timer bigwins-weekly.timer >/dev/null 2>&1 || y "Backup timers not started."
+  if systemctl enable --now bigwins-worker.timer; then
     g "Server worker installed. The app's Server tab fills in within a minute."
   else
     r "Could not start the worker."
   fi
 }
+
+# ---------------------------------------------------------------- full review (BF-D70)
+record_backup() {  # json: every backup result reaches the app, even an early failure (F9)
+  printf '%s' "$1" | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1 \
+    || printf '%s\n' "$1" > "$STATE/last_backup.json"  # the trader is down: kept for later
+}
+
+hc_backup_ping() {  # F9: an optional second healthchecks check for good backups
+  local u; u=$(cat "$SECRETS/healthchecks_backup_url" 2>/dev/null)
+  case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" || true;; esac
+}
+
+backup_age_h() {  # hours since the newest good local backup (for the 26-hour page)
+  local a; a=$(python3 "$DEPLOY/backup.py" latest "$BACKUP_DIR" 2>/dev/null) || { echo 9999; return; }
+  echo $(( ( $(date +%s) - $(stat -c %Y "$a") ) / 3600 ))
+}
+
+key_fp() { [ -s "$BKEY" ] && python3 "$DEPLOY/backup.py" fingerprint "$BKEY" 2>/dev/null; }
+
+cmd_start_trader() {  # F5: set TRADER_CMD (deploy/.env) after a confirmation, then start it
+  local d=${1:-}
+  [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { r "Usage: bigwins start-trader YYYY-MM-DD (the L6 start decision date)"; return 1; }
+  [ -f "$DEPLOY/.env" ] || { r "deploy/.env is missing (bigwins ibkr first)."; return 1; }
+  secrets_ready || { r "Secrets are missing (bigwins status)."; return 1; }
+  y "This starts the PAPER trader: scheduler, gateway and app actions; the start decision is $d."
+  confirm "Start the paper trader?" || { echo "Nothing changed."; return 0; }
+  python3 - "$DEPLOY/.env" "trader-bf run --start $d" <<'PY'
+import sys
+p, cmd = sys.argv[1], sys.argv[2]
+lines = [x for x in open(p).read().splitlines() if not x.startswith("TRADER_CMD=")]
+lines.append("TRADER_CMD=" + cmd)
+open(p, "w").write("\n".join(lines) + "\n")
+PY
+  dc up -d trader && g "Paper trader started (start decision $d). Watch: bigwins logs"
+}
+
+cmd_ibkr() {  # F24: the paper user name (.env) and the DU account id (local config), safely
+  local u du
+  read -rp "IBKR PAPER user name (the paper login, not your live one): " u
+  [[ "$u" =~ ^[A-Za-z0-9._-]{3,64}$ ]] || { r "That does not look like a user name; nothing changed."; return 1; }
+  read -rp "Paper account id (DU followed by digits): " du
+  [[ "$du" =~ ^DU[0-9]{5,10}$ ]] || { r "A paper account id starts with DU; nothing changed."; return 1; }
+  touch "$DEPLOY/.env" && chmod 600 "$DEPLOY/.env"
+  python3 - "$DEPLOY/.env" "$u" <<'PY'
+import sys
+p, u = sys.argv[1], sys.argv[2]
+lines = [x for x in open(p).read().splitlines() if not x.startswith("IBKR_PAPER_USERID=")]
+lines.append("IBKR_PAPER_USERID=" + u)
+open(p, "w").write("\n".join(lines) + "\n")
+PY
+  python3 "$DEPLOY/set_login.py" --account "$LOCAL" "$du" || { r "Could not write $LOCAL."; return 1; }
+  g "Saved: user name in deploy/.env, account id in config/bfast.local.yaml (this server only)."
+  y "Type the paper password with: bigwins secret tws_password"
+}
+
+cmd_seed_data() {  # F23: the price store, ref and record from OneDrive (the research copy)
+  onedrive_ok || { r "Connect OneDrive first: bigwins onedrive"; return 1; }
+  local fs ref rec
+  fs=$(envval FORWARD_STORE); ref=$(envval REF_DIR); rec=$(envval RECORD_DIR)
+  [ -n "$fs" ] && [ -n "$ref" ] && [ -n "$rec" ] || { r "FORWARD_STORE, REF_DIR and RECORD_DIR must be set in deploy/.env"; return 1; }
+  y "Copies from OneDrive 'Big Wins seed data': eodhd/ -> $fs, ref/ -> $ref, record/ -> $rec"
+  confirm "Copy now (existing files are kept, newer ones replaced)?" || return 0
+  rclone copy "$OD_REMOTE:Big Wins seed data/eodhd" "$fs" --progress || { r "eodhd copy failed"; return 1; }
+  rclone copy "$OD_REMOTE:Big Wins seed data/ref" "$ref" --progress || { r "ref copy failed"; return 1; }
+  rclone copy "$OD_REMOTE:Big Wins seed data/record" "$rec" --progress || { r "record copy failed"; return 1; }
+  chown -R 10001:10001 "$fs" "$(envval FLEX_INBOX)" 2>/dev/null
+  g "Seed data in place (owned by the trader's user)."
+}
+
+golden_checks() {  # batch 3 M2: the record-data checks must pass before a trader restart
+  [ -n "$(envval RECORD_DIR)" ] && [ -d "$(envval RECORD_DIR)" ] || { echo "skipped (no record data)"; return 0; }
+  dc run --rm --no-deps trader trader-bf golden-check
+}
+
+cmd_weekly() { do_restore_test >/dev/null; docker builder prune -f --filter until=168h >/dev/null 2>&1; }
 
 cmd_check() { cd $DEPLOY && ./check_secrets.sh; }
 
@@ -641,6 +835,8 @@ case ${1:-} in
   install-worker) cmd_install_worker;; worker) cmd_worker;;
   after-pull) after_update;;
   backup) do_backup;; restore-test) do_restore_test;; onedrive) cmd_onedrive;; restore) cmd_restore;;  # BF-D61: run by update after the pull (the new script)
+  start-trader) cmd_start_trader "${2:-}";; ibkr) cmd_ibkr;; seed-data) cmd_seed_data;;
+  weekly) cmd_weekly;; new-backup-key) cmd_new_backup_key;;
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key]";;
 esac

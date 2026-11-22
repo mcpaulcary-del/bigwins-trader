@@ -12,9 +12,9 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterable
 
-TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/")
+TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/", ".claude/")
 # BF-D60 (N5): infrastructure that changes what runs is not app-only either
-TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini")
+TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini", "CLAUDE.md")  # + .claude/: L6
 UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",

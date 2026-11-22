@@ -115,7 +115,7 @@ def test_BF_D29_367_day_safety_margin_and_near_line_flag() -> None:
     a, b = r.cgt
     assert (a.days_held, a.long, a.near_line) == (366, False, True)
     assert (b.days_held, b.long, b.near_line) == (367, True, False)
-    assert any("near the 12-month line" in f for f in r.flags)
+    assert any("close to the discount line" in f for f in r.flags)
     md = render_summary(r)
     assert "367 days" in md and "safety" in md and NOT_ADVICE in md
 
@@ -149,9 +149,9 @@ def test_BF_D29_BW_TAX_02_dividends_franking_known_and_unknown() -> None:
     r = build_report(j, BOOK, "2026-27", FIFO)
     t = r.totals()
     assert (t["dividends"], t["franked"], t["unfranked"], t["franking_credits"]) == (
-        D(75), D(55), D(0), D("23.57"),
-    )  # fmt: skip
-    assert t["franking_not_known"] == D(20)
+        D(75), D(0), D(0), D(0),
+    )  # fmt: skip  # tax F7: franked, but no rate on the statement: enter it
+    assert t["franking_not_known"] == D(75)
     assert "small-shareholder exemption" in render_summary(r)
 
 
@@ -274,7 +274,7 @@ def test_BF_D29_reconciliation_against_flex_flags_every_difference() -> None:
     md = render_summary(r)
     assert "difference(s)" in md and "MISSING_IN_FLEX" in md
     (div,) = _by(r.income, code="AAA")
-    assert (div.franked_pct, div.franking_credit) == (D(100), D("12.86"))
+    assert (div.franked_pct, div.franking_credit) == (D(100), D(0))  # tax F7
 
 
 def test_BF_D29_reconciliation_without_statements_and_other_accounts() -> None:

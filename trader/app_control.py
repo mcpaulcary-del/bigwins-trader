@@ -188,6 +188,9 @@ class Control:
 
     def __post_init__(self) -> None:
         self.allowed_logins = frozenset(x.strip().lower() for x in self.allowed_logins if x.strip())
+        # security review L2: the session that asked for the recovery key, and one-time views
+        self._key_sessions: dict[str, str] = {}
+        self._key_views: dict[str, tuple[str, str, datetime]] = {}
         if not self.demo:
             st = get_state(self.journal, "app-lockout")
             if st and isinstance(st[0], dict) and st[0].get("until"):
@@ -200,6 +203,7 @@ class Control:
         self._wake.clear()
 
     def process(self) -> int:
+        self._expire_sealed()  # security review L2: an unclaimed sealed key does not linger
         n = 0
         while True:
             try:
@@ -434,14 +438,29 @@ class Control:
             return self._subscribe(login, body, hdrs)
         form = {k: v[-1] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
         if p == "/act/do":
+            if form.get("a") == "srv:backup_key":  # security review L2: this session only
+                self._key_sessions[login] = hashlib.sha256(sid.encode()).hexdigest()
             return self._do(form, login, hdrs)
         if p == "/act/alerts":
             return self._alerts_post(form, login, hdrs)
         if p == "/act/backup-key":  # BF-D64: one view of the sealed recovery key
             if self.demo:
                 return self._result(hdrs, "DEMO: there is no key to show.", True)
+            want = self._key_sessions.get(login)
+            if not want or not hmac.compare_digest(want, hashlib.sha256(sid.encode()).hexdigest()):
+                return self._result(hdrs, "Not shown: open the key on the phone (and in "
+                                    "the browser session) that asked the server for it.",
+                                    False)  # fmt: skip
             r = self._submit(_Req("reveal", login, self.clock(), {}))
-            return self._key_page(hdrs, r)
+            if not r:
+                return self._key_page(hdrs, r)
+            # security review L2: POST-redirect-GET to a one-time view (a refresh re-POSTs
+            # nothing and shows nothing again)
+            t = secrets.token_urlsafe(24)
+            self._key_views[t] = (r, login, self.clock())
+            self._key_sessions.pop(login, None)
+            hdrs["Location"] = f"/act/backup-key/view?t={t}"
+            return 303, hdrs, b""
         if p == "/act/push/off":
             r = self._submit(
                 _Req("unsubscribe", login, self.clock(), {"endpoint": form.get("endpoint", "")})
@@ -529,7 +548,22 @@ class Control:
             return self._html(200, hdrs, "Alerts", self._alerts_page(token), "server")
         if p == "/act/backup-key":
             return self._html(200, hdrs, "Recovery key", self._key_intro(token), "server")
+        if p == "/act/backup-key/view":
+            v = self._key_views.pop(qs.get("t", ""), None)  # one view only
+            if v is None or v[1] != login or (self.clock() - v[2]).total_seconds() > 120:
+                return self._key_page(hdrs, None)
+            return self._key_page(hdrs, v[0])
         return 404, hdrs, b"not found\n"
+
+    def _expire_sealed(self) -> None:
+        """Clear a sealed recovery key the owner did not claim within its time (L2)."""
+        from trader.app_store import get_state, set_state
+        from trader.backups import REVEAL_TTL_S
+
+        st = get_state(self.journal, "backup-key-sealed")
+        if (st and isinstance(st[0], dict) and st[0].get("sealed")
+                and (self.clock() - st[1]).total_seconds() > REVEAL_TTL_S):  # fmt: skip
+            set_state(self.journal, "backup-key-sealed", {}, self.clock())
 
     # ------------------------------------------------------------ BF-D64 recovery key
     def _key_intro(self, token: str) -> str:
@@ -557,7 +591,7 @@ class Control:
         if got is None or self.worker_key is None:
             return ""
         key = unseal(self.worker_key, str(got["sealed"]))
-        clear_sealed(self.journal, self.clock(), r.login)  # one view only
+        clear_sealed(self.journal, self.clock(), r.login, str(got.get("fp", "")))  # one view only
         add_inbox(self.journal, self.clock(), "action", "You (app): backup recovery key shown",
                   "The recovery key was shown once in the app (the key itself is never in "
                   "the inbox).", "/backups", f"app:{r.login}", "off")  # fmt: skip
@@ -843,7 +877,7 @@ class Control:
         rows = []
         if act == "update":
             kind = "Strategy update" if strat else "App-only update (the strategy does not change)"
-            rows.append(f"<p><b>{e(kind)}</b> · {int(u.get('ahead') or 0)} new commit(s)</p>")
+            rows.append(f"<p><b>{e(kind)}</b> · {_ahead(u)} new commit(s)</p>")
             notes = u.get("notes") or {}
             for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),
                            ("tested", "Tested"), ("takes_effect", "Takes effect")):  # fmt: skip
@@ -1141,3 +1175,9 @@ def serve_control(ctl: Control, host: str, port: int) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), make_handler(ctl))
     threading.Thread(target=httpd.serve_forever, name="app-control", daemon=True).start()
     return httpd
+
+
+def _ahead(u: Mapping[str, Any]) -> int:
+    """Security review L5: the number of new commits, or 0 (never a stored string)."""
+    v = str(u.get("ahead") or 0)
+    return int(v) if v.isdigit() else 0

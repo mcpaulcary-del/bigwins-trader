@@ -37,7 +37,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from trader.bfast_config import BfastConfig, LicListError, lic_codes, load_bfast_config
+from trader.bfast_config import (
+    BfastConfig,
+    LicListError,
+    lic_codes,
+    load_bfast_config,
+    pinned_lists,
+)
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
 from trader.journal import Journal
@@ -299,7 +305,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         panel,
         closes,
         marks,
-        lic_guard=lambda: lic_codes(cfg),  # BF-D21: checked before every decision and send
+        lic_guard=lambda: pinned_lists(cfg),  # BF-D21 / BF-D72: LIC + ETP lists, every time
         ca_source=ca_source_from(cfg, cfg.data.forward_store),  # BF-D23
         flex=flex_inbox(cfg.data.flex_inbox) if cfg.data.flex_inbox else None,
         flex_pull=flex_puller(cfg),  # BF-D27
@@ -462,6 +468,18 @@ def tell_backups(j: Journal, notifier: AppNotifier) -> int:
             n += 1
         seen = "|".join([*seen.split("|")[-5:], mark])
         set_state(j, "backup-told", seen, st[1])
+    # security review M3: until the current recovery key has been shown, once per key
+    from trader.backups import key_saved
+
+    host = get_state(j, "host-status")
+    fp = str(host[0].get("key_fp") or "") if host and isinstance(host[0], dict) else ""
+    warned = get_state(j, "backup-key-warned")
+    if fp and not key_saved(j, fp) and not (warned and warned[0] == fp):
+        notifier.notify("Save your backup recovery key: Backups > Show recovery key "
+                        f"(fingerprint {fp}). Without it the backups cannot be opened.",
+                        "info", "/backups")  # fmt: skip
+        set_state(j, "backup-key-warned", fp, host[1] if host else datetime.now(ASX_TZ))
+        n += 1
     return n
 
 
@@ -597,7 +615,8 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:
         sealed = sys.stdin.read().strip()
         if not re.fullmatch(r"[0-9a-f]{100,4000}", sealed):
             raise SystemExit("not a sealed key")
-        set_state(j, "backup-key-sealed", {"sealed": sealed}, now)
+        fp = args.fp if re.fullmatch(r"[0-9a-f]{12}", args.fp or "") else ""
+        set_state(j, "backup-key-sealed", {"sealed": sealed, "fp": fp}, now)
         print("sealed key stored (shown once in the app, cleared after 10 minutes)")
         return 0
     for r in server_job_rows(j, 10):
@@ -634,6 +653,7 @@ def update_info(u: dict[str, object], old_config: str | None) -> dict[str, objec
         "ahead": ahead, "head": h(u.get("head")), "remote": h(u.get("remote")),
         "previous": h(u.get("previous")), "strategy": cls["strategy"], "reasons": cls["reasons"],
         "previous_migrations": bool(u.get("previous_migrations")),
+        "ci": str(u.get("ci")) if u.get("ci") in ("green", "red", "unknown") else "unknown",
         "files": files[:40], "subject": clean_line(str(u.get("subject") or ""))[:200],
         "notes": {k: clean_line(str(v))[:600] for k, v in notes[0].items()} if notes else {},
     }  # fmt: skip
@@ -730,6 +750,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         serve,
         store_index,
         store_prices,
+        store_tr,
     )
     from trader.journal import read_only_engine
 
@@ -771,6 +792,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             marginal_rate=cfg.tax.marginal_rate, live=cfg.mode != "paper",
             prior_losses=cfg.tax.prior_losses_aud, amit_csv=cfg.tax.amit_csv,
             prices=store_prices(store) if (store / "manifest.tsv").is_file() else None,
+            tr_prices=store_tr(store) if (store / "manifest.tsv").is_file() else None,
             forecast_dir=args.config.parent,
         )  # fmt: skip
         if cfg.notify.app and not args.snapshot:
@@ -889,6 +911,24 @@ def cmd_journal(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_golden_check(args: argparse.Namespace) -> int:
+    """BF-D72 (strategy review M2): the live list and band-trend on 13 recorded month-ends
+    v the research record; run by ``bigwins`` after a build, before the trader restarts
+    (exit 1 = do not restart). Skipped (exit 0) when the record's store is not here."""
+    from trader.golden import run
+
+    cfg = load_bfast_config(args.config)
+    store = args.store or cfg.data.forward_store
+    if not (store / "manifest.tsv").is_file() or not args.golden.is_file():
+        print("golden-check: skipped (the record's price store or the golden file is not here)")
+        return 0
+    bad = run(cfg, store, args.golden, _sessions(datetime.now(ASX_TZ).date()))
+    for b in bad:
+        print("GOLDEN MISMATCH " + b)
+    print("golden-check: " + ("FAILED" if bad else "passed (13 month-ends)"))
+    return 1 if bad else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parser per command
     ap = argparse.ArgumentParser(prog="trader-bf", description="B-fast EMG2-20 (paper only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -917,6 +957,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p = sub.add_parser("run", help="scheduler + app/Telegram + IBKR paper gateway (paper only)")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--start", type=date.fromisoformat, help="L6 start decision date (canary)")
+    p = sub.add_parser("golden-check", help="live code v the research record (BF-D72)")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("--store", type=Path, default=None)
+    p.add_argument("--golden", type=Path, default=Path("config/golden/emg2_live_golden.json"))
     p = sub.add_parser("check-secrets", help="the Docker secret files are readable (BF-D33)")
     p.add_argument("--all", action="store_true", help="every file of the stack (secrets-check)")
     p.add_argument("--dir", type=Path, default=Path("/run/secrets"))
@@ -929,6 +973,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
     p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
     p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal"])
+    p.add_argument("--fp", default="", help="reveal: the recovery key's fingerprint (M3)")
     p.add_argument("--id", type=int)
     p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])
     _journal_args(p)
@@ -960,6 +1005,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
         "vapid-public": cmd_vapid_public,
         "daily-summary": cmd_daily_summary,
         "server-jobs": cmd_server_jobs,
+        "golden-check": cmd_golden_check,
     }
     if a.cmd in commands:
         return commands[a.cmd](a)

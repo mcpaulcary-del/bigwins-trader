@@ -27,6 +27,7 @@ import csv
 import gzip
 import json
 import math
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -106,11 +107,41 @@ def reconcile_splits(
     return split
 
 
+def merge_events(
+    primary: Iterable[tuple[date, float]], extra: Iterable[tuple[date, float]], *,
+    by_value: bool,
+) -> list[tuple[date, float]]:  # fmt: skip
+    """Review (strategy) H1: one event per ex-date. ``primary`` (the per-symbol file) wins;
+    an ``extra`` (bulk feed) event on a date the primary has is dropped. Inside one source
+    a repeat is dropped too: splits by date, dividends by date and amount (``by_value``:
+    a special and an ordinary dividend on one date stay)."""
+    out: list[tuple[date, float]] = []
+    seen: set[tuple[date, float] | date] = set()
+    pdates: set[date] = set()
+    for d, v in primary:
+        k: tuple[date, float] | date = (d, round(v, 8)) if by_value else d
+        if k in seen:
+            continue
+        seen.add(k)
+        pdates.add(d)
+        out.append((d, v))
+    for d, v in extra:
+        k2: tuple[date, float] | date = (d, round(v, 8)) if by_value else d
+        if d in pdates or k2 in seen:
+            continue
+        seen.add(k2)
+        out.append((d, v))
+    return sorted(out, key=lambda x: x[0])
+
+
 def symbol_returns(
     rows: Sequence[dict[str, Any]], splits: Iterable[tuple[date, float]],
     divs: Iterable[tuple[date, float]],
 ) -> tuple[list[date], list[float], list[float], list[float], list[float]]:  # fmt: skip
-    """Per symbol: (dates, close, volume, split factor applied, total return)."""
+    """Per symbol: (dates, close, volume, split factor applied, total return). A split
+    listed twice on one date, or a repeated dividend, counts once (review H1)."""
+    splits = merge_events(splits, (), by_value=False)
+    divs = merge_events(divs, (), by_value=True)
     days = [date.fromisoformat(str(r["date"])[:10]) for r in rows]
     close = [float(r.get("close") or 0.0) for r in rows]
     vol = [float(r.get("volume") or 0.0) for r in rows]
@@ -192,7 +223,7 @@ class ForwardStore:
                 out[date.fromisoformat(p.name[3:13])] = rows
         return out
 
-    def build_panel(
+    def build_panel(  # noqa: PLR0915 - one pass over the store
         self,
         as_of: date,
         sessions: Sequence[date],
@@ -217,6 +248,12 @@ class ForwardStore:
         bulk_split = self._bulk("bulk_splits")
         info = self.symbols()
         syms = sorted(s for (k, s) in self._latest if k == "eod" and s.endswith(".AU"))
+        # BF-D72 (strategy review M5): a code only in the bulk feed (a new listing, a new
+        # ticker) gets its own column from the bulk rows
+        have = {s[:-3] for s in syms}
+        new = {str(r.get("code")) for d, rs in bulk.items() if d <= as_of for r in rs
+               if r.get("code") and str(r.get("code")) not in have}  # fmt: skip
+        syms = sorted([*syms, *(f"{c}.AU" for c in new if re.fullmatch(r"[A-Z0-9]{1,6}", c))])
         t, n = len(sess), len(syms)
         close = np.full((t, n), np.nan)
         ret = np.full((t, n), np.nan)
@@ -224,9 +261,10 @@ class ForwardStore:
         cls: dict[str, str] = {}
         for j, sym in enumerate(syms):
             code = sym[:-3]
+            src = self._latest.get(("eod", sym))
             rows = [
                 r
-                for r in self._read(self._latest[("eod", sym)])
+                for r in (self._read(src) if src is not None else [])
                 if str(r["date"])[:10] <= str(as_of)
             ]
             last = str(rows[-1]["date"])[:10] if rows else ""
@@ -236,23 +274,20 @@ class ForwardStore:
             rows = [
                 r for r in rows if _day(r) in all_sess and _day(r) >= warmup
             ]  # A3: sessions only
-            spl = [
-                (date.fromisoformat(x["date"]), parse_split(x["split"]))
-                for x in self._events("splits", sym)
-            ]
-            spl += [
-                (d, parse_split(x["split"]))
-                for d, xs in bulk_split.items()
-                for x in xs
-                if x.get("code") == code
-            ]
-            dv = [(date.fromisoformat(x["date"]), _num(x)) for x in self._events("div", sym)]
-            dv += [
-                (d, _num(x))
-                for d, xs in bulk_div.items()
-                for x in xs
-                if x.get("code") == code and x.get("currency") in (None, "AUD")
-            ]
+            # review H1: the per-symbol file wins; a bulk event on the same ex-date is dropped
+            spl = merge_events(
+                [(date.fromisoformat(x["date"]), parse_split(x["split"]))
+                 for x in self._events("splits", sym)],
+                [(d, parse_split(x["split"])) for d, xs in bulk_split.items() for x in xs
+                 if x.get("code") == code],
+                by_value=False,
+            )  # fmt: skip
+            dv = merge_events(
+                [(date.fromisoformat(x["date"]), _num(x)) for x in self._events("div", sym)],
+                [(d, _num(x)) for d, xs in bulk_div.items() for x in xs
+                 if x.get("code") == code and x.get("currency") in (None, "AUD")],
+                by_value=True,
+            )  # fmt: skip
             days, c, v, split, r = symbol_returns(
                 rows, [s for s in spl if s[0] <= as_of], [x for x in dv if x[0] <= as_of]
             )
@@ -315,6 +350,8 @@ class ForwardStore:
                 if not (start <= ex <= end) or v in (None, ""):
                     continue
                 pay = x.get("paymentDate")
+                if (code, ex) in out:  # review H1: the per-symbol row (first) wins
+                    continue
                 out[(code, ex)] = (
                     code, ex, Decimal(str(v)), date.fromisoformat(str(pay)[:10]) if pay else None,
                 )  # fmt: skip
@@ -343,8 +380,8 @@ class ForwardStore:
                     continue
                 d = date.fromisoformat(str(ds)[:10])
                 r = split_ratio(str(x.get("split", "")))
-                if start <= d <= end and r is not None:
-                    out[(code, d)] = (code, d, r)
+                if start <= d <= end and r is not None and (code, d) not in out:
+                    out[(code, d)] = (code, d, r)  # review H1: the per-symbol row wins
         return [out[k] for k in sorted(out)]
 
     def _events(self, kind: str, sym: str) -> list[dict[str, Any]]:

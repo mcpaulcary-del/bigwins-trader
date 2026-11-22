@@ -124,7 +124,7 @@ def momentum(
 
 def bid_peg(
     panel: PricePanel, *, window: int = 10, span_max: float = 0.03, jump: float = 0.15,
-    lookback: int = 30,
+    lookback: int = 30, min_closes: int = 5,
 ) -> BoolArray:  # fmt: skip
     """BW-UNI-22 / EMG2 amendment §2: closes over the last ``window`` sessions span
     less than ``span_max`` (highest / lowest - 1) and a one-day total return of at
@@ -137,7 +137,8 @@ def bid_peg(
         span = hi / lo - 1.0
     r = panel.ret[-(window + lookback) :]
     jumped = (np.nan_to_num(r, nan=0.0) >= jump).any(axis=0)
-    out: BoolArray = (n_c >= 2) & (span < span_max) & jumped
+    # BF-D72 (strategy review M6): the registered rule needs 5 closes in the window
+    out: BoolArray = (n_c >= min_closes) & (span < span_max) & jumped
     return out
 
 

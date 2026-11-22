@@ -98,6 +98,24 @@ def test_BF_D64_retention_30_daily_12_monthly(tmp_path: Path) -> None:
     assert all((remote / (n + ".json")).exists() for n in left)
 
 
+def _reveal_page(ctl: Any, s: tuple[str, str]) -> str:
+    """POST, then the one-time GET it redirects to (security review L2: PRG)."""
+    from urllib.parse import urlencode
+
+    hdrs = {
+        "Tailscale-User-Login": OWNER,
+        "Cookie": f"bw_sid={s[0]}",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    st, h, _ = ctl.respond("POST", "/act/backup-key", hdrs, urlencode({"csrf": s[1]}).encode())
+    assert st == 303, st
+    st, _, body = ctl.respond("GET", h["Location"], hdrs)
+    page = str(body.decode())
+    again = ctl.respond("GET", h["Location"], hdrs)[2].decode()  # a refresh: nothing again
+    assert "AGE-SECRET" not in again and "No key to show" in again
+    return page
+
+
 def test_BF_D64_key_view_needs_code_job_and_is_shown_once(tmp_path: Path) -> None:
     j, _, ctl, _, _ = _setup()
     ctl.worker_key = KEY
@@ -110,12 +128,13 @@ def test_BF_D64_key_view_needs_code_job_and_is_shown_once(tmp_path: Path) -> Non
         "GET", "/act/confirm?a=srv:backup_now", {"Tailscale-User-Login": OWNER}
     )
     assert 'name="code"' not in body.decode() and "Yes, run it" in body.decode()
-    assert "enter your 6-digit code" in _post(ctl, {"a": "srv:backup_key"})[1]
-    assert "queued" in _post(ctl, {"a": "srv:backup_key", "code": totp(SEED, T_APPROVE)})[1]
+    s = _session(ctl)
+    assert "enter your 6-digit code" in _post(ctl, {"a": "srv:backup_key"}, session=s)[1]
+    assert "queued" in _post(ctl, {"a": "srv:backup_key", "code": totp(SEED, T_APPROVE)},
+                             session=s)[1]  # fmt: skip
     assert "queued" in _post(ctl, {"a": "srv:backup_now", "confirm": "yes"})[1]
     assert all(r["sig"] for r in server_job_rows(j))  # signed for the worker
     # nothing sealed yet: nothing to show
-    s = _session(ctl)
     assert "No key to show" in _post(ctl, {}, session=s, path="/act/backup-key")[1]
     # the worker seals the key with the shared key; the app shows it once
     kf, sf = tmp_path / "wk", tmp_path / "bk"
@@ -126,12 +145,16 @@ def test_BF_D64_key_view_needs_code_job_and_is_shown_once(tmp_path: Path) -> Non
     set_state(j, "backup-key-sealed", {"sealed": sealed}, T_APPROVE)
     st, _, body = ctl.respond("GET", "/act/backup-key", {"Tailscale-User-Login": OWNER})
     assert "Show the key now" in body.decode() and "AGE-SECRET" not in body.decode()
-    page = _post(ctl, {}, session=s, path="/act/backup-key")[1]
+    # security review L2: another browser session of the same log-in is refused
+    assert "Not shown" in _post(ctl, {}, session=_session(ctl), path="/act/backup-key")[1]
+    page = _reveal_page(ctl, s)
     assert "AGE-SECRET-KEY-1ABCDEFGHIJK" in page and "password manager" in page
     assert "AGE-SECRET" not in json.dumps([r["body"] + r["title"] for r in inbox_rows(j)])
-    assert "No key to show" in _post(ctl, {}, session=s, path="/act/backup-key")[1]  # once
+    assert "Not shown" in _post(ctl, {}, session=s, path="/act/backup-key")[1]  # once
     assert j.job_records("backup-key-shown:")
     # a stale seal (over 10 minutes) is not shown
+    _post(ctl, {"a": "srv:backup_key", "code": totp(SEED, T_APPROVE + timedelta(seconds=40))},
+          session=s)  # fmt: skip
     set_state(j, "backup-key-sealed", {"sealed": sealed}, T_APPROVE - timedelta(minutes=11))
     assert "No key to show" in _post(ctl, {}, session=s, path="/act/backup-key")[1]
     # tampered: refused

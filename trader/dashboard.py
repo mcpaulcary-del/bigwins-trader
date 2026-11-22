@@ -225,6 +225,7 @@ class Sources:
     prior_losses: Decimal = Decimal(0)  # BF-D51: tax.prior_losses_aud
     amit_csv: Path | None = None  # BF-D51: tax.amit_csv
     prices: Callable[[str], Sequence[tuple[date, float]]] | None = None  # BF-D66: closes
+    tr_prices: Callable[[str], Sequence[tuple[date, float]]] | None = None  # BF-D72: TR level
     forecast_dir: Path | None = None  # BF-D66: where config/forecast_bands*.csv live
 
 
@@ -517,6 +518,23 @@ def store_prices(root: Path) -> Callable[[str], list[tuple[date, float]]]:
     return prices
 
 
+def store_tr(root: Path) -> Callable[[str], list[tuple[date, float]]]:
+    """BF-D72 (strategy review L2): one share's total-return level (dividends added back,
+    splits neutral) from the price store, read-only."""
+    level = store_index  # the same total-return chain, per code
+
+    memo: dict[str, IndexProvider] = {}
+
+    def tr(code: str) -> list[tuple[date, float]]:
+        if code not in memo:
+            if len(memo) > 64:
+                memo.clear()
+            memo[code] = level(root, code)
+        return list(memo[code]())
+
+    return tr
+
+
 def store_index(root: Path, code: str) -> IndexProvider:
     """Total-return level of ``code`` (close plus dividends, splits neutral) from the
     price store, read-only; cached until a new bulk file arrives."""
@@ -778,7 +796,31 @@ class Dashboard:
             src.journal, src.book, v.now, src.sessions() if src.sessions else (),
             src.prices, src.index, src.index_label,  # type: ignore[arg-type]
             {k: forecast.load_bands(src.forecast_dir, k) for k in forecast.BENCH}, src.demo,
+            src.tr_prices,  # type: ignore[arg-type]
         )  # fmt: skip
+
+    HEAVY = ("/search.json", "/compare", "/shares")  # security review L6: cached 60 s
+    CACHE_S = 60.0
+
+    def _cached(self, path: str, qs: Mapping[str, str], viewer: str) -> tuple[str, bytes] | None:
+        """The heavy read-only screens are built at most once a minute per viewer and
+        address (a refresh storm cannot load the server); everything else is live."""
+        import time as _t
+
+        if not path.startswith(self.HEAVY):
+            return self._screen(path, qs, viewer)
+        cache: dict[tuple[str, str, str], tuple[float, tuple[str, bytes] | None]]
+        cache = self.__dict__.setdefault("_heavy", {})
+        key = (path, urllib.parse.urlencode(sorted(qs.items())), viewer)
+        hit = cache.get(key)
+        now = _t.monotonic()
+        if hit is not None and now - hit[0] < self.CACHE_S:
+            return hit[1]
+        res = self._screen(path, qs, viewer)
+        if len(cache) > 256:
+            cache.clear()
+        cache[key] = (now, res)
+        return res
 
     def _screen(  # noqa: PLR0911, PLR0912 - one return per screen
         self, path: str, qs: Mapping[str, str], viewer: str
@@ -955,7 +997,7 @@ class Dashboard:
             )
             if p == "/search.json":
                 hdrs["Cache-Control"] = "no-store"
-            res = self._screen(p, qs, who) if known else None
+            res = self._cached(p, qs, who) if known else None
             if res is None:
                 return 404, hdrs, b"not found\n"
             ctype, out = res

@@ -334,6 +334,18 @@ compare, month replay, customisable Home, global search, first-run tour. All rea
 GET screens; preferences stay on the phone. Nothing for the owner to do on the server
 beyond the usual update.
 
+## Timeline (owner decision, 22 Nov 2026)
+
+Paper trading continues until about the **end of February 2027**; real money (A$10,000)
+starts around **March 2027** (it replaces "mid-December" and "realistically January").
+
+## Full review fixes (22 Nov 2026; BF-D69..BF-D72)
+
+Trading core (BF-D69), operations and backups (BF-D70), tax (BF-D71) and strategy
+correctness (BF-D72): see docs/DECISIONS.md. Owner one-time steps after the update are in
+GO_LIVE_GUIDE C7 (bigwins update; `sudo bigwins install-worker` again for the weekly
+timer; disable the Tailscale key expiry, C5b).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

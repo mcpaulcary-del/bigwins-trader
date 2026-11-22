@@ -61,6 +61,7 @@ data:
   random_prefix: EMG2_18_RND
   random_seed_base: 8550000                 # seed = base + i (AMENDMENT_live_EMG2_20)
   etp_list: /data/ref/etp_list.txt
+  etp_list_sha256: 58f006941ec74d5ee6b11dbde8f9abb8a8fb0f1f736736513d8ce67fbcff08cc  # BF-D72: pinned (fail closed)
   lic_list: config/lic_list.csv             # verbatim copy of the record's LIC_list_frozen_v2.csv
                                             # (BF-D20; ledger seq 62; 69 codes); the class rule
                                             # excludes LICs/funds by this list only (no name words);
@@ -124,6 +125,8 @@ strategy:                       # BF-D45: strategy updates from the app (Server 
   update_mode: immediate        # immediate (paper, early stage): applied once the ASX is closed and no
                                 #   order is working, then an out-of-cycle decision for your approval |
                                 #   next_decision: from the next month-end decision (24 h block before it)
+costs:                          # BF-D72: fixed costs (server, price data) in the L14 cost statement
+  fixed_aud_per_year: 600       #   and against "the same money in A200" (owner: H2/H4 decisions open)
 heartbeat:                      # BF-D41: dead-man ping to the healthchecks_url secret ("none" = off)
   every_seconds: 300
 dashboard:                      # BF-D37: read-only phone page (`trader-bf dashboard`), Tailscale only

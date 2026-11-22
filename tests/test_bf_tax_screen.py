@@ -123,11 +123,14 @@ def test_BF_D44_csv_columns_and_rows() -> None:
     out = list(csv.reader(io.StringIO(csv_export(_Src(j), {"fy": "2026-27"}))))
     assert tuple(out[0]) == CSV_COLUMNS == (
         "section", "code", "qty", "acquired", "disposed", "cost_base", "proceeds", "gain",
-        "discount_eligible", "discount_applied", "method", "note")  # fmt: skip
+        "discount_eligible", "discount_applied", "method", "note", "parcel", "ref",
+        "asset_type")  # fmt: skip  # tax F11
     disp = [r for r in out if r[0] == "disposal"]
     assert disp == [["disposal", "AAA", "10", "2025-07-02", "2026-08-03", "106.00", "194.00",
-                     "88.00", "yes", "44.00", "FIFO", "SALE"]]  # fmt: skip
-    assert out[-1][-1] == LABEL and "not tax advice" in LABEL
+                     "88.00", "yes", "44.00", "FIFO", "SALE", "P0001", "S1",
+                     "listed shares"]]  # fmt: skip
+    assert [r for r in out if r and r[0] == "note"][-1][-1] == LABEL and "not tax advice" in LABEL
+    assert sum(1 for r in out if r and r[0] == "checklist") == 12  # header + 11 items
 
 
 def test_BF_D44_screen_unrealised_rebuy_flag_and_estimate() -> None:

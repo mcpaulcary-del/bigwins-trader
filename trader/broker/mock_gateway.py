@@ -51,6 +51,8 @@ class MockGateway:
     async_events: bool = False
     pending: list[Any] = field(default_factory=list)
     quote_time: datetime | None = None  # review M3: None = a fresh quote
+    # review M1: the commission it charges (A$ of a trade value); None = IBKR fixed
+    commission_fn: Any = None
     login_ok: bool = True  # review H1: False = the gateway is up but not logged in
     connects: int = 0
 
@@ -176,7 +178,10 @@ class MockGateway:
                 t.orderStatus.status = "Cancelled"
                 continue
             q = t.order.totalQuantity - t.orderStatus.filled
-            comm = max(660, -(-round(0.088 * c * q * 100) // 100)) / 100
+            comm = (
+                float(self.commission_fn(c * q)) if self.commission_fn is not None
+                else max(660, -(-round(0.088 * c * q * 100) // 100)) / 100
+            )  # fmt: skip
             self.fill(t.order.orderRef, c, commission=comm)
             n += 1
         self.marks.update(closes)

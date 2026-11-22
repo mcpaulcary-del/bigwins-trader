@@ -172,11 +172,11 @@ When the token expires or is refused, the trader pages you ("PAGE IBKR Flex stat
 
 ---
 
-## B. The server (BinaryLane, Sydney)
+## B. The server (BinaryLane, Singapore region, Sydney time)
 
 ### B1. Order the server
 
-BinaryLane > new server: **Sydney**, **2 vCPU / 4 GB RAM**, at least **40 GB** disk,
+BinaryLane > new server: **Singapore region** (the server's clock is set to Sydney time by the bootstrap), **2 vCPU / 4 GB RAM**, at least **40 GB** disk,
 **Ubuntu 24.04 LTS**, with an SSH key (from your laptop) rather than a password. Note
 its public IP.
 
@@ -274,7 +274,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **eight** files in `deploy/secrets/` (nine with Telegram on), with exactly these names
+Compose needs **eleven** files in `deploy/secrets/` (review F16: the eight you type below plus three that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key`; twelve with Telegram on). Optional: `healthchecks_backup_url` (C5), with exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -295,7 +295,7 @@ openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt 
 for n in app_proxy_key worker_job_key db_dashboard_password; do openssl rand -hex 32 > secrets/$n; done  # app keys (bigwins update makes them too)
 python3 -c 'import base64,os;print(base64.b32encode(os.urandom(20)).decode())' > secrets/totp_seed
 chmod 444 secrets/*        # see the note below
-ls -l secrets              # eight files, none empty, all -r--r--r--
+ls -l secrets              # eleven files, none empty, all -r--r--r--
 ./check_secrets.sh         # BF-D33: "ok: deploy/secrets is 700 and its 8 files are 444, none empty"
 ```
 
@@ -308,7 +308,7 @@ not see the folder, only their own files). `chmod 600` files (the old advice) ar
 unreadable inside the containers.
 
 The stack checks this at every start (BF-D33): a one-shot service `secrets-check` runs
-first as uid 10001 with no network, checks all eight files (present, non-empty, `444`,
+first as uid 10001 with no network, checks all eleven files (present, non-empty, `444`,
 readable) **without reading them**, and the gateway, database and trader start only if
 it passes. If one is wrong, `docker compose up -d` stops with an error and
 `docker compose logs secrets-check` says exactly which file and how to fix it, e.g.
@@ -361,25 +361,22 @@ Your Tailscale log-in (who may approve in the app) is added there by `bigwins` o
 ### B8. First start (paper)
 
 ```bash
-cd /srv/asx-trader/deploy
-docker compose build && docker compose up -d
-docker compose logs -f gw-paper        # wait for the login; Ctrl-C to stop watching
-docker compose logs trader
+bigwins ibkr          # the PAPER user name and the DU... account id (written safely)
+bigwins secret tws_password
+bigwins update        # builds and starts the stack; the trader only checks and waits
+bigwins status        # every service "Up"; the trader "idle (sleep)"
+bigwins logs          # ends with: ok: book EMG2_18_PAPER, mode paper, cap A$10000
 ```
 
-The trader log should end with:
+If IBKR asks for a second factor at the paper log-in, approve it on IBKR Mobile. **Do not
+log in to TWS or the Client Portal trading screen with the paper user name while the
+gateway runs** (review F12): IBKR allows one session per user name, and your log-in
+throws the gateway out (it logs back in at the next restart, possibly after the 15:45 send).
 
-```
-ok: book EMG2_18_PAPER, mode paper, cap A$10000
-LIC list: frozen record list config/lic_list.csv (69 codes, sha256 af441f284b2d...)
-```
-
-If IBKR asks for a second factor at the paper log-in, approve it on IBKR Mobile.
-
-At this point the trader **only checks its config and waits** (compose command
-`trader-bf validate-config && exec sleep infinity`). It does not trade or message you
-yet. I switch it to `trader-bf run --start <date>` after the reality spike (part E);
-that is when the messages in part D begin.
+At this point the trader **only checks its config and waits**. After the reality spike
+(part E) the trader is started with `bigwins start-trader <date>` (it asks for a yes;
+it sets `TRADER_CMD` in `deploy/.env`, nothing in the compose file is edited); that is
+when the messages in part D begin.
 
 ---
 
@@ -443,7 +440,7 @@ The app now shows "bigwins-trader" with a 6-digit code. Keep a **paper backup** 
 seed (print the QR or write the letters down) somewhere safe: if you lose your phone,
 nobody can re-arm the system or approve an order without it.
 
-### C5. Optional: healthchecks.io (tells you if the server goes quiet)
+### C5. Strongly recommended: healthchecks.io (tells you if the server goes quiet)
 
 The app cannot tell you that the server is down, so the trader "checks in" with
 healthchecks.io every 5 minutes; if the check-ins stop, healthchecks.io emails you (or
@@ -454,7 +451,21 @@ pushes to its own app).
 3. On the server: `bigwins` > 5) Add/replace a secret > `healthchecks_url`, paste it.
    Restart the trader. The Server tab shows "Heartbeat OK".
 
-Type `none` instead to keep it off.
+Type `none` instead to keep it off (not recommended: without it nothing tells you that
+the whole server is down).
+
+**Second check for backups (optional, review F9)**: add a second check (period 1 day,
+grace 2 hours) and store its ping URL as the secret `healthchecks_backup_url`; the
+worker pings it after every good backup, so a week without backups emails you even if
+the app is down. The app itself pages when the last good backup is over 26 hours old,
+when the server worker has been silent for 5 minutes, when the disk is over 80% full
+and when less than 10% of memory is free.
+
+### C5b. Tailscale: disable key expiry for the server (review F8)
+
+Tailscale admin console > **Machines** > the server > **...** > **Disable key expiry**.
+Without it the server's key expires after 180 days: it drops off your tailnet and the
+phone app stops working until you log the server in again.
 
 ### C6. Server worker and Claude on the server
 
@@ -489,6 +500,12 @@ outside ASX hours (10:00-16:15 Sydney):
 4. `bigwins` > **4) Restart the trader** (restarts the app too).
 5. On the phone, open the app > Server > Trader controls and test Pause (one tap: "PAUSED"),
    then Resume with your code; Turn on alerts needs your code too.
+6. **After the full-review update (22 Nov 2026, BF-D69..BF-D72)**: run `sudo bigwins
+   install-worker` once more (it adds the weekly restore test and builder prune), disable
+   the Tailscale key expiry (C5b), and in the app check Backups > the recovery key's
+   fingerprint (show and save the key if the screen asks). The update refuses to restart
+   the trader if the record checks fail (`trader-bf golden-check`, when the record's
+   price store is on the server) and pages instead.
 
 ### C8. Backups (server + OneDrive) and the recovery key
 
@@ -508,6 +525,17 @@ outside ASX hours (10:00-16:15 Sydney):
 Every night the server keeps an encrypted copy in `/var/backups/bigwins` and in OneDrive
 folder "Big Wins server backups" (30 daily, 12 monthly), plus a readable page of the day in
 "…/reports/YYYY/". A failed backup or restore test sends a PAGE.
+
+**OneDrive access (security review M4)**: `bigwins onedrive` gives the server a token for
+your **whole** OneDrive. If you prefer, make a free Microsoft account used only for the
+backups (and keep its password in your password manager), or keep using your own and
+accept that the server could read the rest of your OneDrive. Your choice; the default
+is your own account. Backups are always encrypted before they leave the server.
+
+The backups screen shows the recovery key's **fingerprint**; until the key with that
+fingerprint has been shown (and saved) the screen and the inbox remind you. A new key is
+never made silently while backups exist; a rotation is `bigwins new-backup-key`
+(old backups then still need the old key). A restore test runs by itself every Sunday.
 
 ### C9. If the server dies
 
@@ -625,6 +653,9 @@ actions locked.
 
 ## E. What is left before go-live
 
+**Timeline (owner decision, 22 Nov 2026):** paper trading runs until about the **end of
+February 2027**; real money (A$10,000) starts around **March 2027**, not in December.
+
 ### E1. What I (Claude) do next, and what you see
 
 1. **Reality spike on the paper gateway** (go-live item 1). Needs the server, the
@@ -645,7 +676,8 @@ actions locked.
    the same with `--book EMG2_18_SIM`; the command prints `journal: postgresql+psycopg://trader@db...`
    and the new cash, BF-D30), switch
    the compose command to `trader-bf run --start <start date>`. **You see**: the
-   messages of part D from that evening.
+   messages of part D from that evening (the trader is started with
+   `bigwins start-trader <date>`).
 3. **Five reconciled paper dry runs** (go-live item 2): five sessions with orders where
    the journal equals IBKR to the unit and the cent each day. Because the book will
    probably sit in A200 (one order, then none until the state changes), the dry run
@@ -655,10 +687,11 @@ actions locked.
    days; every decision message of a forced day says `state: EMG2 FORCED (paper dry
    run, BF-D32; the L15 rule says FUND ...)`.
 4. **Kill drill from your phone** (go-live item 4): on a drill day, after the 15:45 send
-   and before the auction (about 16:10), I ask you to send `/kill`. Expected within 60
-   seconds: `KILLED: no new orders; 1 open order(s) cancelled. ...`, and the order shows
-   as cancelled in the IBKR app. Then `/resume <code>` -> `re-armed: NORMAL`. We also try
-   `/pause`, `/stop`, `/continue <code>` and a wrong code once each.
+   and before the auction (about 16:10), I ask you to tap **Controls > Kill > Yes** in the
+   app. Expected within 60 seconds: "KILLED: no new orders; 1 open order(s) cancelled",
+   and the order shows as cancelled in the IBKR Mobile app. Then **Controls > Resume** with
+   your 6-digit code -> NORMAL. We also try **Pause**, **Stop**, **Continue** (only offered
+   in an L11 stage-3 episode) and a wrong code once each.
 5. **Heartbeat and backups** (items 9-10): the dead-man check-in is built (BF-D41;
    C5), five days without a miss; nightly encrypted off-site copy of the database and
    one restore drill; an outside port scan showing nothing open. **You see**: an email
@@ -668,6 +701,14 @@ actions locked.
 
 | # | Item | When |
 | --- | --- | --- |
+| - | **2-step verification** on every account: Google, Microsoft (OneDrive), GitHub, BinaryLane, Tailscale, IBKR, Claude, EODHD, healthchecks.io | now |
+| - | **IBKR Mobile as the fallback**: install it, log in with the live user name, and practise once on paper: cancel an open order and sell one holding from the app (if the server is down on an order day, this is how you act) | before real money |
+| - | **Rotate every secret seen during set-up** (chat screenshots, pasted values): EODHD token, Flex token, healthchecks URLs, the paper password; then `bigwins secret <name>` and restart | before real money |
+| - | **Calendar reminders**: the Flex token's expiry date (IBKR shows it), card expiries for BinaryLane / EODHD / Claude, the Tailscale key expiry if you did not disable it (C5b) | now |
+| - | **Recovery key saved** (Backups > Show recovery key, fingerprint matches) and a **restore drill on a second server** (`bigwins restore`, C9) | before real money |
+| - | **Retail / wholesale resolved** with IBKR (retail), and your **TFN** given to IBKR | before funding |
+| - | **Early-close days**: 24 and 31 December are not order days (orders go the next full session); nothing to do | info |
+| - | **Live items** (a separate reviewed change, go-live item 6): a live Flex query and token; a separate live journal database; the dry-run book reset; `strategy.update_mode: next_decision` for live (immediate is refused for live); the order precautions also set for the live user in the gateway; the gateway image re-pinned; **a separate gateway user name for live** (IBKR: Settings > Users > add a user), whose 2FA IBKR asks you to re-approve about once a week on IBKR Mobile | before real money |
 | 7 | Order precautions set on paper **and later on the live username**, Total Value Limit above A$10,000; photographed (A4) | now (paper); before real money (live) |
 | - | If you keep Telegram on (appendix T): **fresh bot token** (BotFather `/revoke`, then a new `telegram_bot_token`; no screenshots): the set-up tokens of 21-22 Nov 2026 were seen in chat screenshots. With Telegram off, revoke the old token anyway | before real money |
 | 8 | **A$10,000 deposited and settled** in the live account | before real money |
