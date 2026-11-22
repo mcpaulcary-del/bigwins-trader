@@ -6,7 +6,7 @@
   The owner types secrets on the server; check them only with `deploy/check_secrets.sh`
   (it never reads the contents).
 - Never place, approve or cancel an order. Orders go only through the trader, approved by
-  the owner with `/ok` in Telegram.
+  the owner in the Big Wins app (or `/ok` in Telegram if that channel is switched on).
 - No automated access to asx.com.au. EODHD data is personal and private: do not share it.
 - Ask the owner before `docker compose down`, deleting volumes, or anything that stops the
   trader during ASX hours (10:00-16:12 Sydney).
