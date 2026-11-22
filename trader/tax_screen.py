@@ -154,7 +154,7 @@ def losses_used(s: Any) -> tuple[Decimal, Decimal]:
 def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     today = v.now.astimezone(ASX_TZ).date()
     seg = ('<div class="seg"><a href="/holdings" data-nav>Holdings</a>'
-           '<a class="on" href="/tax" data-nav>Tax</a></div>')  # fmt: skip
+           '<a href="/shares" data-nav>Shares</a><a class="on" href="/tax" data-nav>Tax</a></div>')  # fmt: skip
     ys = years(src, today)
     y = _fy(qs, ys)
     picker = "".join(

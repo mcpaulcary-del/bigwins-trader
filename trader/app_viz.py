@@ -24,8 +24,9 @@ def arrow(x: float | Decimal | None) -> str:
 
 
 def spark(values: Sequence[float], w: int = 96, h: int = 28, cls: str = "spk",
-          label: str = "trend") -> str:  # fmt: skip
-    """A tiny line with a soft area under it; the last point is a dot."""
+          label: str = "trend", stretch: bool = False) -> str:  # fmt: skip
+    """A tiny line with a soft area under it; the last point is a dot. ``stretch``: the
+    line fills the box's whole width at any size (the home hero on a wide screen)."""
     vs = [float(v) for v in values if math.isfinite(float(v))]
     if len(vs) < 2:
         return f'<svg class="{cls}" viewBox="0 0 {w} {h}" role="img" aria-label="{e(label)}"></svg>'
@@ -37,6 +38,12 @@ def spark(values: Sequence[float], w: int = 96, h: int = 28, cls: str = "spk",
     area = f"{line} L{pts[-1][0]:.1f},{h} L{pts[0][0]:.1f},{h} Z"
     tone = "up" if vs[-1] >= vs[0] else "down"
     lx, ly = pts[-1]
+    if stretch:  # no dot: it would turn into an ellipse; the stroke keeps its width (CSS)
+        return (
+            f'<svg class="{cls} {tone} wide" viewBox="0 0 {w} {h}" preserveAspectRatio="none" '
+            f'role="img" aria-label="{e(label)}"><path class="spa" d="{area}"/>'
+            f'<path class="spl" d="{line}"/></svg>'
+        )
     return (
         f'<svg class="{cls} {tone}" viewBox="0 0 {w} {h}" role="img" aria-label="{e(label)}">'
         f'<path class="spa" d="{area}"/><path class="spl" d="{line}"/>'

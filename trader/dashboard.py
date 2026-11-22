@@ -224,6 +224,8 @@ class Sources:
     marginal_rate: Decimal | None = None  # tax.marginal_rate (BF-D44), set on the server only
     prior_losses: Decimal = Decimal(0)  # BF-D51: tax.prior_losses_aud
     amit_csv: Path | None = None  # BF-D51: tax.amit_csv
+    prices: Callable[[str], Sequence[tuple[date, float]]] | None = None  # BF-D66: closes
+    forecast_dir: Path | None = None  # BF-D66: where config/forecast_bands*.csv live
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -476,6 +478,45 @@ def _next_decision(src: Sources, j: Journal) -> date | None:
 # ---------------------------------------------------------------- the A200 line
 
 
+def store_prices(root: Path) -> Callable[[str], list[tuple[date, float]]]:
+    """BF-D66: one share's closes from the price store (split-adjusted to the last row),
+    read-only; the share screens' price history and actual path."""
+    from trader.data.forward_store import (
+        ForwardStore,
+        adjusted_to_last,
+        parse_split,
+        symbol_returns,
+    )
+
+    memo: dict[tuple[str, str], list[tuple[date, float]]] = {}
+
+    def prices(code: str) -> list[tuple[date, float]]:
+        bulk = root / "raw" / "bulk_eod"
+        stamp = max((p.name for p in bulk.glob("AU_*.json.gz")), default="")
+        if (code, stamp) in memo:
+            return memo[(code, stamp)]
+        fs = ForwardStore(root)
+        sym = f"{code}.AU"
+        rows: list[dict[str, Any]] = list(fs._events("eod", sym))
+        last = str(rows[-1]["date"])[:10] if rows else ""
+        for p in sorted(bulk.glob("AU_*.json.gz")):
+            if p.name[3:13] > last:
+                with gzip.open(p, "rt", encoding="utf-8") as f:
+                    rows += [r for r in json.load(f) or [] if r.get("code") == code]
+        rows.sort(key=lambda r: str(r["date"])[:10])
+        spl = [(date.fromisoformat(x["date"][:10]), parse_split(x["split"]))
+               for x in fs._events("splits", sym)]  # fmt: skip
+        days, close, _, split, _ = symbol_returns(rows, spl, [])
+        adj = adjusted_to_last(close, split)
+        out = [(d, c) for d, c in zip(days, adj, strict=True) if math.isfinite(c) and c > 0]
+        if len(memo) > 64:
+            memo.clear()
+        memo[(code, stamp)] = out
+        return out
+
+    return prices
+
+
 def store_index(root: Path, code: str) -> IndexProvider:
     """Total-return level of ``code`` (close plus dividends, splits neutral) from the
     price store, read-only; cached until a new bulk file arrives."""
@@ -725,7 +766,19 @@ class Dashboard:
         return out
 
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
-               "/strategy", "/setup", "/backups", "/accounts")  # fmt: skip
+               "/strategy", "/setup", "/backups", "/accounts", "/shares",
+               "/forecast-method")  # fmt: skip
+
+    def share_ctx(self, v: View) -> Any:
+        """BF-D66: what the share screens read (read-only)."""
+        from trader import forecast, share_pages
+
+        src = self.sources
+        return share_pages.ShareCtx(
+            src.journal, src.book, v.now, src.sessions() if src.sessions else (),
+            src.prices, src.index, src.index_label,  # type: ignore[arg-type]
+            {k: forecast.load_bands(src.forecast_dir, k) for k in forecast.BENCH}, src.demo,
+        )  # fmt: skip
 
     def _screen(  # noqa: PLR0911, PLR0912 - one return per screen
         self, path: str, qs: Mapping[str, str], viewer: str
@@ -747,7 +800,30 @@ class Dashboard:
             return html_t, app_pages.holdings(v, x, j).encode()
         if path.startswith("/holdings/"):
             code = path.split("/", 2)[2].upper()
-            out = app_pages.holding_detail(v, x, j, code, sess) if _has_journal(j) else None
+            out = app_pages.holding_detail(v, x, j, code, sess, self.share_ctx(v)) \
+                if _has_journal(j) else None  # fmt: skip
+            return None if out is None else (html_t, out.encode())
+        if path in ("/shares", "/forecast-method") or path.startswith("/shares/"):
+            from trader import share_pages
+
+            seg = ('<div class="seg"><a href="/holdings" data-nav>Holdings</a><a class="on" '
+                   'href="/shares" data-nav>Shares</a><a href="/tax" data-nav>Tax</a>'
+                   "</div>")  # fmt: skip
+            if path == "/forecast-method":
+                body = share_pages.method_page(src.forecast_dir)
+                return html_t, app_pages.shell(v, x, "Forecast bands", body, "holdings").encode()
+            if not _has_journal(j):
+                return None
+            ctx = self.share_ctx(v)
+            if path == "/shares":
+                body = seg + share_pages.shares_list(ctx, [h.code for h in v.holdings])
+                return html_t, app_pages.shell(v, x, "Shares", body, "holdings").encode()
+            code = urllib.parse.unquote(path.split("/", 2)[2]).upper()
+            if any(h.code == code for h in v.holdings):
+                out = app_pages.holding_detail(v, x, j, code, sess, ctx)
+            else:
+                d = share_pages.share_detail(ctx, code)
+                out = None if d is None else app_pages.shell(v, x, code, d, "holdings")
             return None if out is None else (html_t, out.encode())
         if path == "/orders":
             body = app_pages.orders(v, x, j) if _has_journal(j) else app_pages.home(v, x)
@@ -811,7 +887,7 @@ class Dashboard:
             ctype, out = route()
         else:
             qs = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
-            known = p in self.SCREENS or p.startswith(("/holdings/", "/orders/"))
+            known = p in self.SCREENS or p.startswith(("/holdings/", "/orders/", "/shares/"))
             res = self._screen(p, qs, who) if known else None
             if res is None:
                 return 404, hdrs, b"not found\n"

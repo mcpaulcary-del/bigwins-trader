@@ -420,7 +420,8 @@ def shell(v: Any, x: Extras, title: str, body: str, active: str) -> str:
         notes.append(f"Code actions are locked until {x.lockout.astimezone(ASX_TZ):%H:%M} "
                      "(too many wrong codes).")  # fmt: skip
     return page(title, body, active, demo=v.demo, subtitle=sub, notes=notes,
-                latest_inbox=x.latest_inbox, live=getattr(v, "live", False))  # fmt: skip
+                latest_inbox=x.latest_inbox, live=getattr(v, "live", False),
+                inbox_ids=[int(r["id"]) for r in x.inbox[:99]])  # fmt: skip
 
 
 def actions_note(x: Extras, demo: bool) -> str:
@@ -501,7 +502,7 @@ def home(v: Any, x: Extras) -> str:
                             "Account value", chg, tone(ct),
                             f'<div class="pills">{pill}{since_pill}</div>'
                             + spark([float(x) for _, x in v.series[-60:]], 320, 46, "spk",
-                                    "Account value, last 60 trading days")), "herocard")  # fmt: skip
+                                    "Account value, last 60 trading days", stretch=True)), "herocard")  # fmt: skip
     body += waiting_card(x, v.demo, v.now)
     body += section("Performance", f'<div class="tiles">{tiles}</div>'
                     + perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
@@ -663,7 +664,7 @@ def _mark_history(j: Journal | None, last: int = 40) -> dict[str, list[float]]:
 
 def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     seg = ('<div class="seg"><a class="on" href="/holdings" data-nav>Holdings</a>'
-           '<a href="/tax" data-nav>Tax</a></div>')  # fmt: skip
+           '<a href="/shares" data-nav>Shares</a><a href="/tax" data-nav>Tax</a></div>')  # fmt: skip
     if not v.holdings:
         body = seg + section("Holdings", '<p class="muted">No shares held (all cash).</p>')
         return shell(v, x, "Holdings", body, "holdings")
@@ -744,7 +745,7 @@ def month_ends_between(sessions: Sequence[date], a: date, b: date) -> int:
 
 
 def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
-    v: Any, x: Extras, j: Journal, code: str, sessions: Sequence[date]
+    v: Any, x: Extras, j: Journal, code: str, sessions: Sequence[date], share: Any = None
 ) -> str | None:
     h = next((h for h in v.holdings if h.code == code), None)
     allf: list[FillRecord] = safe(lambda: j.fills(v.book), [])
@@ -861,6 +862,11 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
     parts.append(section("Sell rule (C6)", f'<div class="rings">{c6}{kz_badge}</div>' + rule))
     if cgt:
         parts.append(section("Capital gains discount", f'<div class="rings">{cgt}</div>'))
+    if share is not None:  # BF-D66: rank history, expected vs actual, price, what next
+        from trader import share_pages
+
+        info = share_pages.collect(share, [h.code for h in v.holdings]).get(code)
+        parts.append(safe(lambda: share_pages.detail_sections(share, code, info), ""))
     return shell(v, x, code, "".join(parts), "holdings")
 
 

@@ -71,6 +71,7 @@ class Demo:
     sessions: tuple[date, ...]
     last_day: date
     index: Callable[[], list[tuple[date, float]]]
+    prices: Callable[[str], list[tuple[date, float]]] | None = None  # BF-D66 (synthetic)
     now: datetime = datetime(2024, 1, 1, tzinfo=ASX_TZ)  # the demo's "now": the morning after
 
 
@@ -173,7 +174,17 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
     k0 = panel.dates.index(run[0])
     mean = np.nanmean(panel.close / panel.close[k0], axis=1)  # an equal-weight demo index
     lvl = [(d, float(x)) for d, x in zip(panel.dates, mean, strict=True)]
-    return Demo(path, panel.dates, run[-1], lambda: lvl, now)
+    col = {c: k for k, c in enumerate(panel.entities)}
+
+    def prices(code: str) -> list[tuple[date, float]]:
+        k = col.get(code)
+        if k is None:
+            return []
+        return [(d, float(c)) for d, c in zip(panel.dates[: panel.dates.index(nxt) + 1],
+                                               panel.close[:, k], strict=False)
+                if np.isfinite(c) and c > 0]  # fmt: skip
+
+    return Demo(path, panel.dates, run[-1], lambda: lvl, prices, now)
 
 
 def demo_control(j: Journal, demo: Demo) -> Control:

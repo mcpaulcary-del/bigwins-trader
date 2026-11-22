@@ -711,6 +711,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         render,
         serve,
         store_index,
+        store_prices,
     )
     from trader.journal import read_only_engine
 
@@ -726,7 +727,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index (demo)",
             sessions=lambda: demo.sessions, today=lambda: demo.last_day, clock=lambda: demo.now,
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
-            tax_params=tax,
+            tax_params=tax, prices=demo.prices, forecast_dir=args.config.parent,
         )  # fmt: skip
         import secrets as _secrets
 
@@ -751,6 +752,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             approval_deadline=cfg.execution.approval_deadline, tax_params=tax,
             marginal_rate=cfg.tax.marginal_rate, live=cfg.mode != "paper",
             prior_losses=cfg.tax.prior_losses_aud, amit_csv=cfg.tax.amit_csv,
+            prices=store_prices(store) if (store / "manifest.tsv").is_file() else None,
+            forecast_dir=args.config.parent,
         )  # fmt: skip
         if cfg.notify.app and not args.snapshot:
             from trader.secrets import read_secret
