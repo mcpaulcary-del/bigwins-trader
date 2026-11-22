@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from typing import Any
+
+from trader.constants import ASX_TZ
 
 LOG_LINES = 40
 _SECRETISH = (
@@ -42,11 +45,11 @@ def _num(x: Any) -> float | None:
 def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k in ("load1", "load5", "cpus", "mem_used_pct", "disk_used_pct", "uptime_s",
-              "disk_free_gb"):  # fmt: skip
+              "disk_free_gb", "backup_age_h"):  # fmt: skip
         v = _num(raw.get(k))
         if v is not None:
             out[k] = v
-    for k in ("tailscale", "code_version", "asx", "worker_at", "serve"):
+    for k in ("tailscale", "code_version", "asx", "worker_at", "serve", "key_fp"):
         if k in raw:
             out[k] = clean_line(str(raw[k]))[:120]
     cont = raw.get("containers")
@@ -67,3 +70,56 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(log, list):
         out["log"] = [clean_line(str(x)) for x in log[-LOG_LINES:]]
     return out
+
+
+HOST_PAGE_EVERY = 3600  # seconds between repeats of the same host page
+
+
+def host_alerts(status: Mapping[str, Any] | None, at: datetime | None, now: datetime,
+                worker_installed: bool = True) -> list[str]:  # fmt: skip
+    """Review F9 / security M3: what about the server should page the owner. The worker
+    writes its snapshot every 30 s; older than 5 minutes means the worker (or the host)
+    is not running. Disk over 80%, available memory under 10%, no good backup for 26
+    hours."""
+    out: list[str] = []
+    if status is None or at is None:
+        return out
+    if worker_installed and now - at > timedelta(minutes=5):
+        out.append(f"server worker silent since {at.astimezone(ASX_TZ):%a %H:%M}: the host "
+                   "status, server jobs and backups are not running "
+                   "(sudo bigwins install-worker)")  # fmt: skip
+    disk = status.get("disk_used_pct")
+    if isinstance(disk, int | float) and disk > 80:
+        out.append(f"server disk {disk:.0f}% used (over 80%): free space (bigwins status)")
+    mem = status.get("mem_used_pct")
+    if isinstance(mem, int | float) and mem > 90:
+        out.append(f"server memory {100 - mem:.0f}% available (under 10%)")
+    age = status.get("backup_age_h")
+    if isinstance(age, int | float) and age > 26:
+        when = "ever" if age >= 9999 else f"{age:.0f} hours"
+        out.append(f"no good backup for {when} (over 26): check Backups")
+    return out
+
+
+def page_host(j: Any, say: Any, now: datetime) -> list[str]:
+    """The trader's loop hook: page each host alert at most once an hour."""
+    from trader.app_store import get_state, set_state
+
+    got = get_state(j, "host-status")
+    if got is None:
+        return []
+    alerts = host_alerts(got[0], got[1], now)
+    seen = get_state(j, "host-paged")
+    last: dict[str, str] = dict(seen[0]) if seen and isinstance(seen[0], Mapping) else {}
+    sent = []
+    for a in alerts:
+        key = a.split(":")[0][:40]
+        prev = last.get(key)
+        if prev and (now - datetime.fromisoformat(prev)).total_seconds() < HOST_PAGE_EVERY:
+            continue
+        say("PAGE " + a)
+        last[key] = now.isoformat()
+        sent.append(a)
+    if sent:
+        set_state(j, "host-paged", last, now)
+    return sent

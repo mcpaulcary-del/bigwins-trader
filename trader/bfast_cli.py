@@ -31,6 +31,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -57,6 +58,18 @@ def _sessions(until: date) -> list[date]:
 
     cal = xc.get_calendar("XASX", start="2020-01-01", end=str(until.year + 1) + "-12-31")
     return [d.date() for d in cal.sessions]
+
+
+def _early_closes(until: date) -> dict[date, str]:
+    """Review H4: the exchange's early closes (24 / 31 Dec), local close time HH:MM."""
+    import exchange_calendars as xc
+
+    cal = xc.get_calendar("XASX", start="2020-01-01", end=str(until.year + 1) + "-12-31")
+    out: dict[date, str] = {}
+    for d in cal.early_closes:
+        close = cal.schedule.loc[d, "close"].tz_convert("Australia/Sydney")
+        out[d.date()] = f"{close:%H:%M}"
+    return out
 
 
 def _journal(url: str) -> Journal:
@@ -273,7 +286,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(note, file=sys.stderr)
     transport, notifier, chats = _channels(cfg, j)
     app = BfApp(
-        settings_from(cfg, chats, args.start, note),
+        replace(
+            settings_from(cfg, chats, args.start, note),
+            early_closes=_early_closes(datetime.now(ASX_TZ).date()),  # review H4
+        ),
         j,
         broker,
         sim,
@@ -329,6 +345,7 @@ def _app_wiring(
     from trader.constants import BUILD_SHA_FILE
     from trader.heartbeat import Heartbeat, ping_url
     from trader.secrets import read_secret
+    from trader.server_status import page_host
     from trader.strategy_runtime import StrategyRuntime
     from trader.strategy_version import fingerprint
 
@@ -353,6 +370,7 @@ def _app_wiring(
         hooks.append(lambda now: ctl.process())
         hooks.append(lambda now: tell_server_jobs(j, notifier))
         hooks.append(lambda now: tell_backups(j, notifier))  # BF-D64
+        hooks.append(lambda now: page_host(j, app.say, now))  # review F9
         sleep = ctl.wait
     hb = Heartbeat(ping_url(read_secret("healthchecks_url")), j, app.say,
                    every_s=cfg.heartbeat.every_seconds)  # fmt: skip

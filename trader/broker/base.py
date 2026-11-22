@@ -55,6 +55,18 @@ class BrokerRejectedError(RuntimeError):
     pass
 
 
+def exec_base(exec_id: str) -> str:
+    """IBKR execution ids end in ``.NN``; a correction keeps the base and raises the
+    suffix (review L6), so fills are de-duplicated on the base."""
+    head, _, tail = str(exec_id).rpartition(".")
+    return head if head and tail.isdigit() and len(tail) <= 2 else str(exec_id)
+
+
+class BrokerDisconnectedError(RuntimeError):
+    """Review H1: the gateway is down or not logged in and a bounded reconnect failed.
+    The scheduler pages and exits non-zero so Docker restarts the trader."""
+
+
 @dataclass(frozen=True)
 class OrderRequest:
     client_order_id: str  # sent as orderRef

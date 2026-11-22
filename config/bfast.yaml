@@ -11,6 +11,8 @@ broker:
   client_id: 21
   account_id: null              # the IBKR paper account (DU...), set at BF0; never a live id
   allow_live: false             # schema: must be false. Live enablement is a later owner step
+  pricing: tiered               # review M1: the owner's IBKR plan (tiered | fixed); numbers in
+                                #   broker.commission (defaults: 0.08%, min A$5, + GST; ASX fees unverified)
 execution:
   order_type: LOC               # LOC | LMT  -- [unverified O-1] reality spike decides
   limit_band: 0.03              # L7 band (buy ref x 1.03, sell ref x 0.97)
@@ -20,6 +22,9 @@ execution:
   approval_mode: per_order      # L8 to the April 2027 decision; also used on paper dry runs
   approval_deadline: "15:20"
   buy_funds_wait_sessions: 4    # L7 / O-2
+  latest_send: "15:55"          # review H3: nothing is sent after this (early close: close - 10 min)
+  no_order_days: []             # review H4: ad-hoc market closures (YYYY-MM-DD); orders go the next
+                                #   full session. 24 and 31 Dec (early closes) are never order days
 live_emg2_20:
   capital_cap_aud: 10000
   slots: 18                     # name count (BF-D1, EMG2-18); 10,000/18 = A$555 parcels
@@ -32,8 +37,10 @@ live_emg2_20:
                                 #   payouts, the L15 switch unchanged); L4 = the old rule (paper comparison)
 risk:
   order_value_max_aud: 800
-  orders_per_day: {start: 24, normal: 16, hard: 80}
-  buys_per_day_aud: {start: 10500, normal: 4500}
+  orders_per_day: {start: 24, normal: 20, hard: 80}   # review H6: buys only (sells never count);
+                                                     #   hard (BW-RSK-09) counts every order
+  buys_per_day_aud: {start: 10500, normal: 10500}    # review H6: a whole book of 18 buys fits
+                                                     #   (>= capital cap x 1.03, checked)
   price_band: 0.03
   gap_hold: 0.15
   absurd_move: 0.60

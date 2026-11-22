@@ -88,6 +88,8 @@ def settings_from(
         ),
         dry_run_until=cfg.paper_dry_run.until if cfg.paper_dry_run else None,
         app_logins=frozenset(x.strip().lower() for x in cfg.app.allowed_logins if x.strip()),
+        latest_send=cfg.execution.latest_send,  # review H3
+        no_order_days=frozenset(cfg.execution.no_order_days),  # review H4
     )
 
 

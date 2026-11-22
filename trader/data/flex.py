@@ -158,6 +158,7 @@ class FlexTrade:
     date_time: str | None
     settle_date: date | None
     order_reference: str | None  # absent without Audit Trail fields, and on paper (R37)
+    taxes: Decimal = Decimal(0)  # review M1 / tax F12: GST on brokerage, as reported
 
 
 @dataclass(frozen=True)
@@ -291,6 +292,7 @@ def parse_statements(body: bytes) -> list[FlexStatement]:
                     date_time=_dt(t.get("dateTime")),
                     settle_date=_d(t.get("settleDateTarget")),
                     order_reference=t.get("orderReference") or None,
+                    taxes=_num(t.get("taxes")) or Decimal(0),
                 )
             )
         out.append(

@@ -22,6 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from trader.orders import CommissionModel, Side
 
@@ -75,12 +76,13 @@ def integrity_breaks(
     explained: Iterable[str],
     fills: Iterable[ModelledFill],
     commission: CommissionModel | None = None,
-    tolerance: Decimal = Decimal("0.01"),
+    tolerance: Decimal = Decimal("0.50"),
+    tolerance_pct: Decimal = Decimal("0.15"),
 ) -> tuple[str, ...]:
     """Stage-1 integrity check. Holdings: a name held by one book only, not explained
     by an order that did not fill or a recorded decision difference (L13). Fills: a
     buy above its limit, a sell below it, or a commission that differs from the IBKR
-    model by a cent or more."""
+    model by more than the tolerance band (A$0.50 or 15%)."""
     cm = commission or CommissionModel()
     ok = set(explained)
     held_sim = {e for e, q in sim_positions.items() if q}
@@ -100,7 +102,9 @@ def integrity_breaks(
     for ref, fs in orders.items():
         paid = sum((f.commission for f in fs), Decimal(0))
         model = cm(sum((f.price * f.qty for f in fs), Decimal(0)))
-        if (paid - model).copy_abs() >= tolerance:
+        # review M1: a band, not the cent: the tiered plan's pass-through fees and GST
+        # are estimates until the reality spike (A$0.50 or 15% of the model)
+        if (paid - model).copy_abs() > max(tolerance, model * tolerance_pct):
             out.append(f"COST {fs[0].entity} ({ref}): commission {paid} vs model {model}")
     return tuple(out)
 
@@ -146,6 +150,31 @@ def at_decision(stage: int, test: StagedTest, confirmed: bool) -> tuple[Outcome,
     if stage >= 3 and not confirmed:
         return Outcome.WIND_DOWN, (*fails, "stage 3: no written confirmation (/continue)")
     return (Outcome.STAY_PAUSED, fails) if fails else (Outcome.RESUME, ())
+
+
+def l11_episode(records: Iterable[tuple[str, Mapping[str, Any]]]) -> dict[str, Any] | None:
+    """The open stage-2/3 episode from the ``l11:`` job records (oldest first): since
+    when, deepest stage, written confirmation, owner stop, wind-down step done. Review
+    L7: a ``/continue`` counts only when the episode had reached stage 3 before it."""
+    ep: dict[str, Any] | None = None
+    for key, rec in records:
+        kind = key.split(":")[1]
+        if kind == "breach":
+            if ep is None:
+                ep = {"since": key.rsplit(":", 1)[1], "stage": 0, "confirmed": False,
+                      "stop": False, "wind": 0}  # fmt: skip
+            ep["stage"] = max(ep["stage"], int(rec["stage"]))
+        elif ep is None:
+            continue
+        elif kind == "end":
+            ep = None
+        elif kind == "confirm":
+            ep["confirmed"] = ep["confirmed"] or ep["stage"] >= 3
+        elif kind == "stop":
+            ep["stop"] = True
+        elif kind == "wind":
+            ep["wind"] = int(rec["step"])
+    return ep
 
 
 def wind_down_qty(held: int, step: int) -> int:

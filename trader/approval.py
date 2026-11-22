@@ -669,6 +669,11 @@ class ApprovalBot:
             self.journal.mark_job(f"l11:stop:{m.at.isoformat()}", {"actor": actor}, m.at)
             return "STOP recorded (L11 d): buys stay paused, sells go on. /resume <code> re-arms."
         if cmd == "/continue":  # L11 stage 3: the owner's written confirmation to continue
+            from trader.loss_rule import l11_episode
+
+            ep = l11_episode(self.journal.job_records("l11:"))
+            if ep is None or int(ep["stage"]) < 3:  # review L7: only stage 3, this episode
+                return "refused: /continue applies only to an open L11 stage-3 episode"
             if len(args) != 1 or not self.verifier.verify(args[0], m.at):
                 return "refused: /continue needs a valid one-time code"
             self.journal.mark_job(f"l11:confirm:{m.at.isoformat()}", {"actor": actor}, m.at)

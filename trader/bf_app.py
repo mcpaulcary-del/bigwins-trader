@@ -139,9 +139,12 @@ DAY_JOBS: tuple[tuple[str, str], ...] = tuple(
             ("10:30", "tick"),
             ("12:30", "tick"),
             ("14:30", "remind"),
+            ("10:30", "gw_check"),  # review H1: the gateway is logged in before 15:20
+            ("15:15", "gw_check"),
             ("15:20", "tick"),
             ("15:45", "submit"),
             ("16:20", "collect"),
+            ("22:16", "carry"),  # review M2: L7 carries at the day's closes (after 22:15)
             ("16:30", "reconcile"),
             ("22:15", "sim"),
             ("22:20", "decide"),
@@ -192,6 +195,12 @@ class AppSettings:
     dry_run_until: date | None = None
     # BF-D39: Tailscale log-ins allowed to act from the phone app (app.allowed_logins)
     app_logins: frozenset[str] = frozenset()
+    # review H3 / H4: the latest send time, the exchange's early closes (date -> "HH:MM",
+    # from the calendar) and ad-hoc closures (config ``execution.no_order_days``)
+    latest_send: str = "15:55"
+    early_closes: Mapping[date, str] = field(default_factory=dict)
+    no_order_days: frozenset[date] = frozenset()
+    stale_mark_sessions: int = 5  # review L4: a held name without a close this long pages
 
     def forced(self, d: date) -> str | None:
         """The paper dry run's state for a decision on ``d`` (None: no dry-run decision)."""
@@ -371,6 +380,7 @@ class BfApp:
         self.log: list[str] = []
         self._month_ends: frozenset[date] | None = None  # BF-D35: cached calendar month-ends
         self.strategy: dict[str, str] | None = None  # BF-D45: the running strategy version
+        self._wind_step_pending = 1  # review L2
 
     # ------------------------------------------------------------ calendar helpers
     def is_session(self, d: date) -> bool:
@@ -381,6 +391,28 @@ class BfApp:
         if not later:
             raise ValueError(f"no session after {d} in the calendar")
         return later[0]
+
+    # ------------------------------------------------------------ review H3 / H4
+    def is_order_day(self, d: date) -> bool:
+        """A session on which new orders may be sent: not an early close (24 / 31 Dec)
+        and not an ad-hoc closure (``execution.no_order_days``)."""
+        return self.is_session(d) and d not in self.s.early_closes and d not in self.s.no_order_days
+
+    def order_day(self, d: date) -> date:
+        """The execution day of a decision on ``d``: the next full order day (an early
+        close or a listed closure carries the orders to the next full session)."""
+        x = self.next_session(d)
+        while not self.is_order_day(x):
+            x = self.next_session(x)
+        return x
+
+    def latest_send_at(self, d: date) -> datetime:
+        """No order is sent after this (review H3): 15:55, or the early close minus 10
+        minutes."""
+        ec = self.s.early_closes.get(d)
+        if ec is not None:
+            return at(d, ec) - timedelta(minutes=10)
+        return at(d, self.s.latest_send)
 
     def sessions_between(self, a: date, b: date) -> int:
         return sum(1 for x in self.sessions if a < x <= b)
@@ -433,7 +465,10 @@ class BfApp:
         data_as_of: date | None = None,
     ) -> RiskContext:
         d0 = at(day, "00:00").astimezone(UTC)
-        n, buys = self.j.sent_between(book, d0, d0 + timedelta(days=1))
+        n, buys, nb = self.j.sent_detail(book, d0, d0 + timedelta(days=1))
+        cm = self.s.order_params.commission
+        # review M4: cash already committed to buys sent and not yet filled (any batch)
+        cash = broker.account().settled_cash - self.j.open_buy_reserve(book, cm)
         return RiskContext(
             now=now.astimezone(UTC),
             session=day,
@@ -442,7 +477,7 @@ class BfApp:
             safety=SafetyLevel.NORMAL,  # the Executor adds the journal's latched level
             start_day=start_day,
             positions=self.j.map_codes(broker.positions()),  # BF-D19: a code change
-            settled_cash=broker.account().settled_cash,
+            settled_cash=cash,
             holdings_cost=self.j.holdings_cost(book),
             # BF-D34: a fund buy is capped on the fund's own cost; the shares still held
             # in FUND state are being sold and never block it
@@ -453,7 +488,35 @@ class BfApp:
             ),
             orders_sent_today=n,
             buys_sent_today_aud=buys,
+            buy_orders_sent_today=nb,
+            commission=cm,
         )
+
+    def _data_as_of(self, decision_date: date) -> date:
+        """Review M3: the latest close the system holds for a send (the decision's day
+        when its closes are in, else the session before: the breaker then refuses)."""
+        try:
+            if self.closes(decision_date):
+                return decision_date
+        except Exception:  # noqa: S110 - no closes = stale
+            pass
+        return max((d for d in self.sessions if d < decision_date), default=decision_date)
+
+    # ------------------------------------------------------------ review H1
+    def job_gw_check(self, day: date, now: datetime) -> None:
+        """10:30 and 15:15: the gateway is connected and logged in before the approval
+        deadline; else PAGE (the owner can log the gateway in before 15:45)."""
+        f = getattr(self.broker, "ensure_connected", None)
+        try:
+            if callable(f):
+                f()
+            self.broker.account()
+        except Exception as e:
+            self.say(
+                f"PAGE gateway not logged in ({type(e).__name__}: {e})"[:300]
+                + f". Orders of {day} cannot go at 15:45 until it is: log the paper "
+                "gateway in (IB Gateway / 2FA), then check the Server screen."
+            )
 
     def lic_list_refused(self, day: date, now: datetime, step: str) -> str | None:
         """BF-D21: None when the frozen LIC list is present and is the registered file.
@@ -555,7 +618,7 @@ class BfApp:
             for j, e in enumerate(panel.entities)
             if liq.tv_med20[j] == liq.tv_med20[j]
         }
-        x = self.next_session(day)
+        x = self.order_day(day)
         acted: dict[str, set[tuple[str, str]]] = {}
         lst = self._record_list(day, now, emg2_list(panel)) if ready else None  # one list
         trend = self._band_trend(panel, day, now, lst)  # L15: one state for every book
@@ -667,7 +730,7 @@ class BfApp:
             for j, e in enumerate(panel.entities)
             if liq.tv_med20[j] == liq.tv_med20[j]
         }
-        x = self.next_session(day)
+        x = self.order_day(day)
         for book, ex, broker, mode in self._books():
             key = f"sweep:{book}:{day}"
             if self.j.job_done(key) or self.j.job_done(f"decide:{book}:{day}"):
@@ -972,7 +1035,37 @@ class BfApp:
             out.append((bid, waited >= self.s.buy_funds_wait_sessions))
         return out
 
+    def submit_missed(self, day: date, now: datetime) -> None:
+        """Review H3: the send window is over (the trader was down at 15:45): nothing is
+        sent late; approved orders of the day lapse (held buys keep waiting) and PAGE."""
+        n = 0
+        for book, _ex, _b, _ in self._books():
+            for bid, xd in self.j.batches_of(book):
+                if xd != day:
+                    continue
+                for it, st in self.j.intents_of(bid):
+                    if st in (Status.RISK_OK, Status.APPROVED):
+                        self.j.set_status(it.client_order_id, Status.LAPSED, {
+                            "why": "after the latest send time; not sent late"}, now)  # fmt: skip
+                        n += 1 if book == self.s.book else 0
+        self.say(
+            f"PAGE {day}: the 15:45 send did not run before "
+            f"{self.latest_send_at(day):%H:%M} (trader down?). Nothing was sent late; "
+            f"{n} approved order(s) lapsed. The next decision makes new ones."
+        )
+
     def job_submit(self, day: date, now: datetime) -> None:
+        if now > self.latest_send_at(day):
+            self.submit_missed(day, now)
+            return
+        if not self.is_order_day(day):  # review H4: early close / closure: nothing goes
+            waiting = [bid for bid, xd in self.j.batches_of(self.s.book) if xd == day]
+            if waiting:
+                self.say(f"PAGE {day} is not a full order day (early close or closure); "
+                         f"{', '.join(waiting)} not sent.")  # fmt: skip
+            return
+        for p in self.ex.recover(now):  # review L5: NEEDS_REVIEW re-checked each session
+            self.say("PAGE " + p)
         if self.lic_list_refused(day, now, "send") is not None:
             return  # BF-D21: no order of any book is sent (the twins stay in step)
         for book, ex, broker, _ in self._books():
@@ -984,10 +1077,11 @@ class BfApp:
                 )  # BF-D28/D34: a switch as the start
                 rep = ex.submit(
                     bid,
-                    self._ctx(book, broker, day, b["decision_date"], now, start_day),
+                    self._ctx(book, broker, day, b["decision_date"], now, start_day,
+                              data_as_of=self._data_as_of(b["decision_date"])),
                     now,
                     final_day=final,
-                )
+                )  # fmt: skip
                 if book == self.s.book:
                     if rep.sent or rep.not_approved or rep.rejected:
                         self.say(
@@ -1000,9 +1094,23 @@ class BfApp:
     # ------------------------------------------------------------ after the close
     def job_collect(self, day: date, now: datetime) -> None:
         self.ex.collect_fills(now, session_closed=True)
-        self._carry(self.s.book, self.ex, self.broker, self.s.approval_mode, day, now)
+        for p in self.ex.recover(now):  # review L5
+            self.say("PAGE " + p)
 
-    def _carry(
+    def job_carry(self, day: date, now: datetime) -> bool:
+        """Review M2: the L7 carry is priced at the day's close, so it runs once the
+        day's closes are in (22:16, after the twin); until ``RETRY_UNTIL``, then at the
+        broker's close (paged)."""
+        try:
+            have = bool(self.closes(day))
+        except Exception:
+            have = False
+        if not have and now < at(day, RETRY_UNTIL):
+            return False
+        self._carry(self.s.book, self.ex, self.broker, self.s.approval_mode, day, now)
+        return True
+
+    def _carry(  # noqa: PLR0912, PLR0915 - one branch per L7 case
         self, book: str, ex: Executor, broker: Broker, mode: str, day: date, now: datetime
     ) -> None:
         """L7: an order unfilled at the close is carried to the next session at a new
@@ -1029,9 +1137,24 @@ class BfApp:
                     )
                 continue
             if closes is None:
-                closes = self.closes(day)
+                try:
+                    closes = dict(self.closes(day))
+                except Exception:
+                    closes = {}
             ent, ratio = idmap.get(it.entity, (it.entity, Decimal(1)))
-            ref = closes.get(ent) or it.ref_price
+            ref = closes.get(ent)
+            if ref is None:  # review M2: the broker's close, never the stale old reference
+                try:
+                    q = broker.quote(ent)
+                except Exception:
+                    q = None
+                ref = (q.close or q.last) if q is not None else None
+                if ref is None:
+                    self.j.mark_job(key, {"carried": False, "why": "NO_CLOSE"}, now)
+                    if book == self.s.book:
+                        self.say(f"PAGE {it.entity}: no close for {day}; the unfilled "
+                                 f"{it.side.value.lower()} is not carried (L7)")  # fmt: skip
+                    continue
             if sell:
                 lim = round_to_step(ref * (1 - band), Side.SELL)
                 qty = int(rest * ratio)  # shares of the new code (fractions dropped)
@@ -1064,7 +1187,7 @@ class BfApp:
         batch = OrderBatch(
             bid, book, day, intents, (), sha256_json([i.client_order_id for i in intents])
         )
-        x = self.next_session(day)
+        x = self.order_day(day)
         ex.plan(batch, mode, x, self._ctx(book, broker, x, day, now, False))
         for key in keys:
             self.j.mark_job(key, {"carried": True, "batch": bid}, now)
@@ -1245,6 +1368,7 @@ class BfApp:
             return
         if not sts:
             return
+        self._flex_fills(sts, now)  # review M6 / L6: the trade backstop
         cal = self._calendar(self._held_codes(), day) or CaCalendar()
         px = dict(self.marks(day)) if any(st.corporate_actions for st in sts) else {}
         res = ingest_flex(self.j, self.s.book, sts, cal, px, now)
@@ -1262,6 +1386,54 @@ class BfApp:
                 f"(share count by the ratio, cost kept). Confirm: /idmap {old} {new} "
                 f"<ratio> <code>. Undo: /idmap_reject {old} <code>."
             )
+
+    def _flex_fills(self, sts: Sequence[FlexStatement], now: datetime) -> None:
+        """Review M6: IBKR's own trade records as a backstop. A Flex trade whose
+        execution (by its id base) is not booked is booked against its intent (order
+        reference, else the one sent order of that name, side and day), and a SENT
+        intent it fills is closed. A booked fill whose commission differs (a missing
+        commission report, GST in ``taxes``) is corrected (review L6, tax F12)."""
+        from trader.broker.base import exec_base
+        from trader.journal import FillRecord, JournalError
+
+        bases = self.j.fill_bases()
+        open_ = [(it, st) for it, st in self._all_intents(self.s.book)
+                 if st in (Status.SENT, Status.PARTIAL, Status.NEEDS_REVIEW)]  # fmt: skip
+        booked = 0
+        for st in sts:
+            if st.account_id and not st.account_id.startswith("DU"):
+                continue  # paper only in this build
+            for t in st.trades:
+                cost = t.commission.copy_abs() + t.taxes.copy_abs()
+                have = bases.get(exec_base(t.exec_id))
+                if have is not None:
+                    if cost > 0:
+                        self.j.correct_fill_commission(have, cost, "flex")
+                    continue
+                side = Side.BUY if t.side == "BUY" else Side.SELL
+                cands = [it for it, _ in open_ if it.client_order_id == t.order_reference] or [
+                    it for it, _ in open_ if it.entity == t.symbol and it.side is side
+                ]
+                if len(cands) != 1:
+                    self.say(f"PAGE Flex trade {t.exec_id} {t.side} {t.quantity} "
+                             f"{t.symbol} {t.trade_date} not matched to one sent order; "
+                             "not booked")  # fmt: skip
+                    continue
+                it = cands[0]
+                when = datetime.combine(t.trade_date, time(16, 10), ASX_TZ).astimezone(UTC)
+                try:
+                    if self.j.add_fill(FillRecord(
+                        t.exec_id, it.client_order_id, self.s.book, it.entity, side,
+                        int(t.quantity), t.price, cost, when,
+                    )):  # fmt: skip
+                        booked += 1
+                        bases[exec_base(t.exec_id)] = t.exec_id
+                except JournalError:
+                    continue
+        if booked:
+            self.ex.settle_statuses(now)
+            self.say(f"{self.s.book}: {booked} fill(s) booked from IBKR's Flex record "
+                     "(missed by the gateway session)")  # fmt: skip
 
     def _ca_sim(self, day: date, now: datetime, closes: Mapping[str, Decimal]) -> None:
         """The simulated books' corporate actions of the day from the calendar (vendor
@@ -1351,7 +1523,7 @@ class BfApp:
                 batch = build_orders(
                     rest, line=self.s.line, params=self.s.order_params, kind="S", tv_med20=tv
                 )
-                x = self.next_session(day)
+                x = self.order_day(day)
                 ctx = self._ctx(self.s.book, self.broker, x, sd, now, True)
                 self.ex.plan(batch, self.s.approval_mode, x, ctx)
                 self.j.mark_job(done_key, {"batch": batch.batch_id}, now)
@@ -1360,7 +1532,11 @@ class BfApp:
                     f"Canary filled and reconciled to the cent. Remaining {len(batch.intents)} "
                     f"start buys for {x}:\n" + render_batch(self.j, batch.batch_id, "PAPER"),
                 )
-            elif can and all(st in TERMINAL for _, st in can):
+            elif can and all(  # review M2: an unfilled canary is decided after its carry
+                st in TERMINAL
+                and (st != Status.EXPIRED or self.j.job_done(f"carry:{it.client_order_id}"))
+                for it, st in can
+            ):
                 self.j.mark_job(done_key, {"stopped": [st for _, st in can]}, now)
                 self.say(
                     "PAGE canary did not fill; the start stops here (L6). "
@@ -1548,6 +1724,17 @@ class BfApp:
         return last
 
     def job_report(self, day: date, now: datetime) -> None:
+        try:
+            self._report(day, now)
+        except Exception as first:  # review L8: once more, then a page
+            try:
+                self._report(day, now)
+            except Exception as e:
+                self.say(f"PAGE the daily L11 evaluation of {day} failed twice "
+                         f"({type(first).__name__}; {type(e).__name__}: {e})"[:400])  # fmt: skip
+                raise
+
+    def _report(self, day: date, now: datetime) -> None:
         px = dict(self.marks(day))
         stale = self._carry_marks(px, day, now)
         pos = self._book_positions(self.s.book, day)
@@ -1629,13 +1816,24 @@ class BfApp:
         missing = sorted(e for e in held if e not in px)
         if missing:
             last = self._last_marks()
+            payout = self.s.params.payout_after_sessions
             for e in missing:
                 if e in last:
+                    since = date.fromisoformat(last[e][0])
+                    n = sum(1 for d in self.sessions if since < d <= day)
+                    if n >= payout:  # review L4: as the decision values it (payout path)
+                        px[e] = Decimal(0)
+                        if e in shown:
+                            flags.append(f"PAGE: {e} has had no close for {n} sessions "
+                                         "(suspended?): valued at zero, as the decision does "
+                                         "(payout rule); check its status")  # fmt: skip
+                        continue
                     px[e] = Decimal(last[e][1])
                     if e in shown:  # random twins' names are carried without a flag
+                        lvl = "PAGE" if n >= self.s.stale_mark_sessions else "WARN"
                         flags.append(
-                            f"WARN: no mark for {e} on {day}; valued at its last mark "
-                            f"{last[e][1]} of {last[e][0]}"
+                            f"{lvl}: no mark for {e} on {day}; valued at its last mark "
+                            f"{last[e][1]} of {last[e][0]} ({n} session(s))"
                         )
                 elif e in shown:
                     flags.append(f"PAGE: no mark ever recorded for held {e}; valued at zero")
@@ -1730,27 +1928,10 @@ class BfApp:
             self.say(f"PAGE HIGH PRIORITY L11 integrity check {verdict}")
 
     def _l11_episode(self) -> dict[str, Any] | None:
-        """The open stage-2/3 episode, from the journal: since when, deepest stage,
-        written confirmation, owner stop, wind-down step done."""
-        ep: dict[str, Any] | None = None
-        for key, rec in self.j.job_records("l11:"):
-            kind = key.split(":")[1]
-            if kind == "breach":
-                if ep is None:
-                    ep = {"since": key.rsplit(":", 1)[1], "stage": 0, "confirmed": False,
-                          "stop": False, "wind": 0}  # fmt: skip
-                ep["stage"] = max(ep["stage"], int(rec["stage"]))
-            elif ep is None:
-                continue
-            elif kind == "end":
-                ep = None
-            elif kind == "confirm":
-                ep["confirmed"] = True
-            elif kind == "stop":
-                ep["stop"] = True
-            elif kind == "wind":
-                ep["wind"] = int(rec["step"])
-        return ep
+        """The open stage-2/3 episode, from the journal (``loss_rule.l11_episode``)."""
+        from trader.loss_rule import l11_episode
+
+        return l11_episode(self.j.job_records("l11:"))
 
     def _l11_decide(
         self,
@@ -1766,7 +1947,13 @@ class BfApp:
         if wind is None:
             return None
         ctx = self._ctx(self.s.book, self.broker, x, day, now, False, data_as_of=as_of)
-        self.ex.plan(wind, self.s.approval_mode, x, ctx)
+        self.ex.plan(wind, self.s.approval_mode, x, ctx)  # idempotent on batch id + digest
+        # review L2: the step is recorded only after its batch exists; a crash in between
+        # re-plans the same batch (same id and digest) instead of stepping twice
+        step = self._wind_step_pending
+        self.j.mark_job(f"l11:wind:{day}", {"step": step}, now)
+        if step == 2:
+            self.j.mark_job(f"l11:end:{day}", {"why": "wind-down complete"}, now)
         self.j.mark_job(key, {"digest": digest, "batch": wind.batch_id}, now)
         self.say_batch(
             wind.batch_id,
@@ -1785,10 +1972,10 @@ class BfApp:
         if ep is None:
             return None
         lvl = self.j.safety_level()
-        if ep["wind"] >= 1:  # step 2: the rest, then the episode closes
-            self.j.mark_job(f"l11:wind:{day}", {"step": 2}, now)
-            self.j.mark_job(f"l11:end:{day}", {"why": "wind-down complete"}, now)
+        if ep["wind"] >= 1:  # step 2: the rest, then the episode closes (recorded by
+            self._wind_step_pending = 2  # _l11_decide once the batch is planned, L2)
             return self._wind_down(day, 2, tv20)
+        self._wind_step_pending = 1
         test = StagedTest(
             integrity=self._integrity_breaks(),
             twin_percentile=self.twin_rank(day),
@@ -1799,8 +1986,13 @@ class BfApp:
         self.j.mark_job(f"l11:test:{day}", {"outcome": outcome.value, "why": list(why)}, now)
         if outcome is Outcome.RESUME:
             self.j.mark_job(f"l11:end:{day}", {"why": "staged test passed"}, now)
-            if lvl is SafetyLevel.HALTED_BUYS:
+            other = self._other_halts()
+            if lvl is SafetyLevel.HALTED_BUYS and not other:  # review M7: L11's own halt only
                 self.j.set_safety(SafetyLevel.NORMAL, "L11 staged test passed", "l11", now)
+            elif other:
+                self.say(f"L11 {day}: staged test passed, but buys stay halted by "
+                         f"{', '.join(other)} (not an L11 halt; /resume <code> after a "
+                         "look).")  # fmt: skip
             self.say(
                 f"L11 {day}: staged test passed (integrity, twin percentile "
                 f"{test.twin_percentile}, no L12 stop, no owner stop): buys resume with this "
@@ -1814,8 +2006,18 @@ class BfApp:
                 + ". Re-tested at the next decision; /resume <code> resumes now."
             )
             return None
-        self.j.mark_job(f"l11:wind:{day}", {"step": 1}, now)
         return self._wind_down(day, 1, tv20)
+
+    def _other_halts(self) -> list[str]:
+        """Review M7: a latch in force that is not the book monitors' (a breaker, owner
+        or integrity latch): the staged test never clears it."""
+        # the book monitors in breach with an L11 episode (BW-RSK-20/22/29) clear with it
+        # (BF-D15); a breaker, integrity or owner latch never does
+        out: list[str] = []
+        why = self.j.safety_reason()
+        if why and not why.startswith(("book monitor:", "L11")):
+            out.append(f"'{why}'")
+        return out
 
     def _wind_down(self, day: date, step: int, tv20: Mapping[str, Decimal]) -> OrderBatch:
         """L11 stage 3 without confirmation: sell half of each holding (rounded up) at
@@ -1826,6 +2028,8 @@ class BfApp:
         bid = batch_id_for(self.s.book, day, "W")
         pending: dict[str, int] = {}  # sells still open (a carried step-1 sell, an EMG2 sell)
         for it, st in self._all_intents(self.s.book):
+            if it.batch_id == bid:
+                continue  # review L2: this step's own batch (a re-plan after a crash)
             if it.side is Side.SELL and st not in TERMINAL:
                 done = sum(f.qty for f in self.j.fills(coid=it.client_order_id))
                 pending[it.entity] = pending.get(it.entity, 0) + it.qty - done

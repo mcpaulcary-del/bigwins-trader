@@ -34,6 +34,7 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "app_proxy_key",  # BF-D46: dashboard -> trader request signatures
         "worker_job_key",  # BF-D48: trader -> host worker server-job signatures
         "db_dashboard_password",  # BF-D52: the dashboard's SELECT-only database role
+        "healthchecks_backup_url",  # review F9: optional second check for good backups
     }
 )
 

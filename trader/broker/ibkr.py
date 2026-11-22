@@ -29,6 +29,7 @@ container (Docker secrets); this adapter only opens the local API socket.
 
 from __future__ import annotations
 
+import contextlib
 import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ from ib_async import IB, LimitOrder, Stock
 from trader.broker.base import (
     LIVE_TRADING_ENABLED,
     AccountSnapshot,
+    BrokerDisconnectedError,
     BrokerQuote,
     BrokerRejectedError,
     BrokerTimeoutError,
@@ -49,6 +51,7 @@ from trader.broker.base import (
     OrderRequest,
     OrderState,
     assert_paper,
+    exec_base,
 )
 from trader.orders import OrderType, Side
 
@@ -68,6 +71,8 @@ class IbkrSettings:
     exchange: str = "ASX"
     currency: str = "AUD"
     market_data_type: int = 3  # delayed [unverified]
+    reconnect_tries: int = 3  # review H1: bounded reconnects before the trader exits
+    reconnect_wait: float = 5.0
 
 
 def wire_price(d: Decimal) -> float:
@@ -95,13 +100,16 @@ class IbkrPaperBroker:
         settings: IbkrSettings,
         ib_factory: Callable[[], Any] = IB,
         clock: Callable[[], float] = _time.monotonic,
+        wait: Callable[[float], None] = _time.sleep,
     ) -> None:
         self.s = settings
         self._guard()
         self.account_id = settings.account_id
         self.ib = ib_factory()
         self._clock = clock
+        self._wait = wait
         self._contracts: dict[str, Any] = {}
+        self.reconnects = 0  # review H1: how many times the session was re-opened
 
     def _guard(self) -> None:
         if LIVE_TRADING_ENABLED:
@@ -136,6 +144,48 @@ class IbkrPaperBroker:
     def disconnect(self) -> None:
         self.ib.disconnect()
 
+    # ------------------------------------------------------------- review H1 / H2
+    def pump(self) -> None:
+        """Let ib_async process what the gateway sent since the last call (order
+        statuses, executions, account updates): without it a long-running process that
+        only calls synchronous methods between jobs misses events (review H2)."""
+        with contextlib.suppress(Exception):  # a closed socket: found by ensure_connected
+            self.ib.sleep(0)
+
+    def is_connected(self) -> bool:
+        f = getattr(self.ib, "isConnected", None)
+        return bool(f()) if callable(f) else True
+
+    def ensure_connected(self) -> None:
+        """Before every broker call or job: re-open the API session after the gateway's
+        nightly restart or a 2FA time-out. The reconnect goes through ``connect()``, so
+        the paper / managed-account guards run again. Bounded retries; then
+        ``BrokerDisconnectedError`` (the trader pages and exits; Docker restarts it)."""
+        self._guard()
+        if self.is_connected():
+            self.pump()
+            return
+        last: Exception | None = None
+        for k in range(max(1, self.s.reconnect_tries)):
+            try:
+                with contextlib.suppress(Exception):  # a half-closed session
+                    self.ib.disconnect()
+                self.connect()
+                self._contracts.clear()
+                self.reconnects += 1
+                self.pump()
+                return
+            except LiveTradingRefusedError:
+                raise  # a live login on the paper port is never retried
+            except Exception as e:
+                last = e
+                if k + 1 < self.s.reconnect_tries:
+                    self._wait(self.s.reconnect_wait * (k + 1))
+        raise BrokerDisconnectedError(
+            f"gateway not reachable or not logged in after {self.s.reconnect_tries} tries: "
+            f"{type(last).__name__ if last else '?'}: {last}"[:300]
+        )
+
     def _contract(self, symbol: str) -> Any:
         c = self._contracts.get(symbol)
         if c is None:
@@ -149,6 +199,7 @@ class IbkrPaperBroker:
     # ------------------------------------------------------------- orders
     def place(self, req: OrderRequest, timeout: float = 10.0) -> OrderState:
         self._guard()
+        self.ensure_connected()
         if req.account != self.s.account_id:
             raise LiveTradingRefusedError(f"order for account {req.account!r} refused")
         if req.order_type not in (OrderType.LOC, OrderType.LMT) or req.tif != "DAY":
@@ -195,11 +246,13 @@ class IbkrPaperBroker:
         return found[0] if found else None
 
     def find_order(self, client_order_id: str) -> OrderState | None:
+        self.ensure_connected()
         t = self._by_ref(client_order_id)
         return self._state(t) if t is not None else None
 
     def cancel(self, client_order_id: str) -> bool:
         """Cancel reduces risk: allowed in any safety state (BW-EXE-10)."""
+        self.ensure_connected()
         for t in self.ib.openTrades():
             if t.order.orderRef == client_order_id:
                 self.ib.cancelOrder(t.order)
@@ -207,10 +260,12 @@ class IbkrPaperBroker:
         return False
 
     def open_orders(self) -> list[OrderState]:
+        self.ensure_connected()
         return [self._state(t) for t in self.ib.reqAllOpenOrders()]
 
     # ------------------------------------------------------------- account
     def positions(self) -> dict[str, int]:
+        self.ensure_connected()  # also pumps the event loop (review H2)
         out: dict[str, int] = {}
         for p in self.ib.positions(self.s.account_id):
             q = int(Decimal(repr(p.position)))
@@ -219,6 +274,7 @@ class IbkrPaperBroker:
         return dict(sorted(out.items()))
 
     def account(self) -> AccountSnapshot:
+        self.ensure_connected()
         vals: dict[str, Decimal] = {}
         for v in self.ib.accountValues(self.s.account_id):
             if v.currency in (self.s.currency, "BASE") and v.tag in (
@@ -240,12 +296,32 @@ class IbkrPaperBroker:
         )
 
     def executions(self) -> list[Execution]:
+        """This session's executions: ``reqExecutions()`` asks the gateway (so fills
+        that arrived while the client was idle or reconnecting are not missed, review
+        H2), merged with the client's ``fills()``. A corrected execution (same base id,
+        a higher ``.NN`` suffix) replaces the earlier one (review L6)."""
+        self.ensure_connected()
+        seen: dict[str, Any] = {}
+        req = getattr(self.ib, "reqExecutions", None)
+        got = list(req()) if callable(req) else []
+        for f in [*got, *self.ib.fills()]:
+            eid = str(f.execution.execId)
+            base = exec_base(eid)
+            old = seen.get(base)
+            if (
+                old is None
+                or str(old.execution.execId) < eid
+                or (str(old.execution.execId) == eid and not old.commissionReport)
+            ):
+                seen[base] = f
         out: list[Execution] = []
-        for f in self.ib.fills():
+        for f in seen.values():
             e = f.execution
             if e.acctNumber and e.acctNumber != self.s.account_id:
                 continue
-            comm = f.commissionReport.commission if f.commissionReport else 0.0
+            cr = f.commissionReport
+            # review L6: a missing commission report books 0 and is corrected from Flex
+            comm = cr.commission if cr and cr.commission == cr.commission else 0.0
             out.append(
                 Execution(
                     exec_id=e.execId,
@@ -261,6 +337,7 @@ class IbkrPaperBroker:
         return out
 
     def quote(self, symbol: str) -> BrokerQuote | None:
+        self.ensure_connected()
         tk = self.ib.reqTickers(self._contract(symbol))
         if not tk:
             return None

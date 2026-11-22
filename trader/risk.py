@@ -22,7 +22,8 @@ L10 order value       buy value at limit <= ``order_value_max_aud`` (the L15    
                       fund order: ``fund_order_max_aud``, paged above the first)
 BW-RSK-06 particip.   qty x ref <= ``participation_max`` x ``tv_med20``          CLIP
 L5 min parcel         a clipped buy under A$500                                  REJECT
-L10 orders a day      <= start/normal limit and <= BW-RSK-09 hard 80             REJECT+PAGE
+L10 orders a day      buys <= start/normal limit (sells never count); every order REJECT+PAGE
+                      <= BW-RSK-09 hard 80 (only this one latches HALTED_BUYS)
 L10 buys a day        value <= start/normal limit                                REJECT
 BW-RSK-11 cash        buy cost (limit + commission) <= settled cash              CLIP/REJECT
 L1 capital cap        holdings at cost + buys <= ``capital_cap_aud``             REJECT
@@ -88,10 +89,10 @@ class RiskLimits:
     # own limit (the capital cap by default) and is paged above ``order_value_max_aud``
     fund_order_max_aud: Decimal = Decimal(10000)
     orders_per_day_start: int = 24
-    orders_per_day_normal: int = 16
+    orders_per_day_normal: int = 20  # review H6: buys only; 18 must fit
     orders_per_day_hard: int = 80  # BW-RSK-09
     buys_per_day_start_aud: Decimal = Decimal(10500)
-    buys_per_day_normal_aud: Decimal = Decimal(4500)
+    buys_per_day_normal_aud: Decimal = Decimal(10500)  # review H6: a whole book of buys
     price_band: Decimal = Decimal("0.03")  # L7 band (BW-RSK-07 allows 5% for band C; L7 is tighter)
     gap_hold: Decimal = Decimal("0.15")
     absurd_move: Decimal = Decimal("0.60")
@@ -135,6 +136,7 @@ class RiskContext:
     blocked: frozenset[str] = frozenset()
     orders_sent_today: int = 0
     buys_sent_today_aud: Decimal = Decimal(0)
+    buy_orders_sent_today: int = 0  # review H6: only buys count against the L10 limit
     commission: CommissionModel = field(default_factory=CommissionModel)
 
 
@@ -167,6 +169,8 @@ class _Day:
         self.cash = ctx.settled_cash
         self.cost = ctx.holdings_cost
         self.fund_cost = ctx.fund_cost
+        self.sold: dict[str, int] = {}  # review L1: sells of each name so far in this plan
+        self.buy_orders = ctx.buy_orders_sent_today  # review H6: only buys count (L10)
 
 
 def _pre_checks(  # noqa: PLR0911, PLR0912 - one return per breaker rule
@@ -199,7 +203,7 @@ def _pre_checks(  # noqa: PLR0911, PLR0912 - one return per breaker rule
     if (buy and it.limit_price < it.ref_price) or (not buy and it.limit_price > it.ref_price):
         return Verdict.REJECT, "PRICE_BAND"
     if not buy and it.qty > ctx.positions.get(it.entity, 0):
-        return Verdict.REJECT, "NO_SHORT"
+        return Verdict.REJECT, "NO_SHORT"  # (the running count per name: check_intents)
     max_value = lim.fund_order_max_aud if "FUND" in it.flags else lim.order_value_max_aud
     if buy and it.value_at_limit > max_value:
         return Verdict.REJECT, "MAX_ORDER_VALUE"
@@ -234,6 +238,13 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             out.append(RiskResult(it, pre[0], (pre[1],)))
             continue
         cur = it
+        # review L1: two sells of one name in a plan cannot oversell it
+        if cur.side is Side.SELL and (
+            day.sold.get(cur.entity, 0) + cur.qty > ctx.positions.get(cur.entity, 0)
+        ):
+            pages.append(f"NO_SHORT: sells of {cur.entity} in this batch exceed the position")
+            out.append(RiskResult(it, Verdict.REJECT, ("NO_SHORT",)))
+            continue
         if cur.side is Side.SELL and cur.value_at_limit > lim.order_value_max_aud:
             pages.append(f"sell {cur.entity} A${cur.value_at_limit} above the L10 order limit")
             reasons.append("SELL_ABOVE_ORDER_LIMIT")
@@ -284,14 +295,23 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             if base + cur.value_at_limit > lim.capital_cap_aud:
                 out.append(RiskResult(it, Verdict.REJECT, ("CAPITAL_CAP",)))
                 continue
-        if day.orders + 1 > per_day:
+        # review H6: sells (C6 / L11 wind-down / forced) never count against the L10
+        # orders limit and are never stopped by it; buys over it are rejected and paged,
+        # without latching HALTED_BUYS (BW-RSK-09's hard limit still counts every order)
+        over_hard = day.orders + 1 > lim.orders_per_day_hard
+        if over_hard or (cur.side is Side.BUY and day.buy_orders + 1 > per_day):
             if "MAX_ORDERS" not in {r for res in out for r in res.reasons}:
-                pages.append(f"orders-per-day limit {per_day} reached; rest rejected")
-            latch = SafetyLevel.HALTED_BUYS if latch is None else latch
+                lab = lim.orders_per_day_hard if over_hard else per_day
+                pages.append(f"orders-per-day limit {lab} reached; the rest of the buys rejected")
+            if over_hard:
+                latch = SafetyLevel.HALTED_BUYS if latch is None else latch  # BW-RSK-09
             out.append(RiskResult(it, Verdict.REJECT, ("MAX_ORDERS",)))
             continue
         day.orders += 1
+        if cur.side is Side.SELL:
+            day.sold[cur.entity] = day.sold.get(cur.entity, 0) + cur.qty
         if cur.side is Side.BUY:
+            day.buy_orders += 1
             day.buys += cur.value_at_limit
             day.cash -= cur.value_at_limit + ctx.commission(cur.value_at_limit)
             day.cost += cur.value_at_limit

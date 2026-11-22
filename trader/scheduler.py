@@ -35,7 +35,10 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from trader.bf_app import DAY_JOBS, BfApp, at
+from trader.broker.base import BrokerDisconnectedError
 from trader.constants import ASX_TZ
+
+GATEWAY_EXIT = 3  # review H1: the process exits with this; Docker restarts it
 
 
 def due_jobs(app: BfApp, now: datetime) -> list[tuple[str, str]]:
@@ -71,8 +74,16 @@ def run_once(app: BfApp, now: datetime, hooks: Sequence[Hook] = ()) -> list[str]
     _hooks(hooks, now, app)
     ran = []
     for key, name in due_jobs(app, now):
+        if name == "submit" and now > app.latest_send_at(day):  # review H3: never late
+            app.submit_missed(day, now)
+            app.j.mark_job(key, {"skipped": "after the latest send time"}, now)
+            ran.append(key)
+            continue
         try:
             done = app.run_job(name, day, now)
+        except BrokerDisconnectedError as e:  # review H1: page, then exit for a restart
+            app.say(f"PAGE gateway down: {e}. The trader restarts; jobs resume after.")
+            raise
         except Exception as e:  # paged and recorded, never silently retried
             app.j.mark_job(key, {"error": f"{type(e).__name__}: {e}"[:300]}, now)
             app.say(f"PAGE job {name} of {day} failed: {type(e).__name__}: {e}"[:400])
@@ -107,7 +118,13 @@ def run_forever(
     """``sleep``: the phone app's control server passes one that returns early when an
     action arrives (BF-D39), so an app action is handled within a second or two."""
     start_up(app, clock())
-    while not stop():
-        run_once(app, clock(), hooks)
-        _hooks(hooks, clock(), app)
-        sleep(poll_seconds)
+    pump = getattr(app.broker, "pump", None)
+    try:
+        while not stop():
+            run_once(app, clock(), hooks)
+            _hooks(hooks, clock(), app)
+            sleep(poll_seconds)
+            if callable(pump):  # review H2: the ib_async loop runs between jobs
+                pump()
+    except BrokerDisconnectedError as e:
+        raise SystemExit(GATEWAY_EXIT) from e

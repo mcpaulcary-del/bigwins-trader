@@ -263,22 +263,23 @@ def test_BW_RSK_06_participation_clip() -> None:
 
 
 def test_L10_orders_per_day_and_buys_per_day() -> None:
-    many = [_it(f"E{k}", qty=500, seq=k) for k in range(20)]
+    many = [_it(f"E{k}", qty=500, seq=k) for k in range(23)]
     rep = check_intents(
-        many, _ctx(settled_cash=Decimal(100000)), RiskLimits(buys_per_day_normal_aud=Decimal(10**6))
+        many,
+        _ctx(settled_cash=Decimal(100000)),
+        RiskLimits(buys_per_day_normal_aud=Decimal(10**6), capital_cap_aud=Decimal(10**6)),
     )
-    assert (
-        sum(r.sendable for r in rep.results) == 16
-        and rep.latch is SafetyLevel.HALTED_BUYS
-        and rep.pages
+    assert (  # review H6: rejected and paged, no latch at plan time
+        sum(r.sendable for r in rep.results) == 20 and rep.latch is None and rep.pages
     )
     rep2 = check_intents(
         many,
         _ctx(settled_cash=Decimal(100000), start_day=True),
         RiskLimits(buys_per_day_start_aud=Decimal(10**6), capital_cap_aud=Decimal(10**6)),
     )
-    assert sum(r.sendable for r in rep2.results) == 20
-    rep3 = check_intents(many, _ctx(settled_cash=Decimal(100000)))
+    assert sum(r.sendable for r in rep2.results) == 23  # the start limit is 24
+    rep3 = check_intents(many, _ctx(settled_cash=Decimal(100000)),
+                         RiskLimits(buys_per_day_normal_aud=Decimal(4500)))  # fmt: skip
     assert sum(r.sendable for r in rep3.results) == 8  # 8 x 510 <= 4,500 < 9 x 510
     assert {r.reasons for r in rep3.results if not r.sendable} == {("MAX_BUYS_PER_DAY",)}
 

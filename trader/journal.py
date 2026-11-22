@@ -532,6 +532,23 @@ class Journal:
         with self.engine.begin() as c:
             self._event(c, "job", key, None, "DONE", detail, at)
 
+    def claim_job(
+        self, key: str, detail: Mapping[str, Any] | None = None, at: datetime | None = None
+    ) -> bool:
+        """Review L3: mark a job done only if nobody has, in one transaction (a
+        PostgreSQL transaction-level advisory lock on the key serialises writers).
+        Returns False if it was already done."""
+        from sqlalchemy import text
+
+        with self.engine.begin() as c:
+            if c.dialect.name == "postgresql":
+                c.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": key})
+            q = select(events.c.id).where(events.c.kind == "job", events.c.ref == key)
+            if c.execute(q).first() is not None:
+                return False
+            self._event(c, "job", key, None, "DONE", detail, at)
+            return True
+
     def job_records(self, prefix: str) -> list[tuple[str, dict[str, Any]]]:
         """``(key, detail)`` of every job record whose key starts with ``prefix``, oldest
         first: the app's restart-safe memory (start state, book peak, L13 notes)."""
@@ -583,12 +600,16 @@ class Journal:
         detail: Mapping[str, Any] | None = None,
         at: datetime | None = None,
         qty: int | None = None,
+        expected: str | None = None,
     ) -> None:
+        """``expected``: the status the caller saw (review L3); a different one refuses."""
         with self.engine.begin() as c:
             r = c.execute(select(intents.c.status).where(intents.c.client_order_id == coid)).first()
             if r is None:
                 raise JournalError(f"unknown intent {coid}")
             frm = r[0]
+            if expected is not None and frm != expected:
+                raise JournalError(f"{coid}: status is {frm}, expected {expected}")
             if to not in TRANSITIONS.get(frm, frozenset()):
                 raise JournalError(f"{coid}: {frm} -> {to} is not allowed")
             vals: dict[str, Any] = {"status": to}
@@ -596,12 +617,30 @@ class Journal:
                 if frm not in (Status.PLANNED, Status.HELD, Status.RISK_OK, Status.APPROVED):
                     raise JournalError("quantity can change only before send")
                 vals["qty"] = qty
-            c.execute(update(intents).where(intents.c.client_order_id == coid).values(**vals))
+            # review L3: compare-and-set; a concurrent change of the status fails loudly
+            res = c.execute(
+                update(intents)
+                .where(intents.c.client_order_id == coid, intents.c.status == frm)
+                .values(**vals)
+            )
+            if res.rowcount != 1:
+                raise JournalError(f"{coid}: status changed under us (expected {frm})")
             self._event(c, "intent", coid, frm, to, detail, at)
+
+    def events_of(self, coid: str) -> list[dict[str, Any]]:
+        """The intent's status events' details, oldest first (tests and the app)."""
+        with self.engine.connect() as c:
+            q = select(events.c.detail).where(events.c.kind == "intent", events.c.ref == coid)
+            return [dict(r[0] or {}) for r in c.execute(q.order_by(events.c.id))]
 
     def sent_between(self, book: str, start: datetime, end: datetime) -> tuple[int, Decimal]:
         """Orders sent (SENDING) for ``book`` in [start, end) and the buy value at limit."""
-        n, buys = 0, Decimal(0)
+        n, buys, _ = self.sent_detail(book, start, end)
+        return n, buys
+
+    def sent_detail(self, book: str, start: datetime, end: datetime) -> tuple[int, Decimal, int]:
+        """As ``sent_between``, plus the number of buys (review H6)."""
+        n, buys, nb = 0, Decimal(0), 0
         with self.engine.connect() as c:
             q = select(events.c.ref, events.c.at).where(
                 events.c.kind == "intent", events.c.to_status == Status.SENDING
@@ -615,7 +654,42 @@ class Journal:
             n += 1
             if it.side is Side.BUY:
                 buys += it.value_at_limit
-        return n, buys
+                nb += 1
+        return n, buys, nb
+
+    def open_buy_reserve(self, book: str, commission: Any) -> Decimal:
+        """Review M4: cash still committed to buys sent and not yet (fully) filled (the
+        unfilled quantity at the limit, plus commission), across all batches."""
+        total = Decimal(0)
+        for it, _st in self.intents_in(
+            [Status.SENDING, Status.SENT, Status.PARTIAL, Status.NEEDS_REVIEW], book
+        ):
+            if it.side is not Side.BUY:
+                continue
+            rest = it.qty - sum(f.qty for f in self.fills(coid=it.client_order_id))
+            if rest > 0:
+                v = it.limit_price * rest
+                total += v + commission(v)
+        return total
+
+    def correct_fill_commission(self, exec_id: str, commission: Decimal, source: str) -> bool:
+        """Review L6: the commission of a booked fill corrected later (a missing
+        commission report, then the Flex statement). Returns True if it changed."""
+        with self.engine.begin() as c:
+            r = c.execute(select(fills.c.commission).where(fills.c.exec_id == exec_id)).first()
+            if r is None or Decimal(r[0]) == commission:
+                return False
+            c.execute(update(fills).where(fills.c.exec_id == exec_id).values(commission=commission))
+            self._event(c, "fill", exec_id, None, "COMMISSION", {
+                "from": str(r[0]), "to": str(commission), "source": source})  # fmt: skip
+            return True
+
+    def fill_bases(self) -> dict[str, str]:
+        """exec-id base -> booked exec id (review L6: a corrected execution keeps its base)."""
+        from trader.broker.base import exec_base
+
+        with self.engine.connect() as c:
+            return {exec_base(r[0]): r[0] for r in c.execute(select(fills.c.exec_id))}
 
     # ------------------------------------------------------------ approvals
     def add_approval(
@@ -1045,6 +1119,13 @@ class Journal:
             q = select(safety.c.level).where(safety.c.scope == scope)
             r = c.execute(q.order_by(safety.c.id.desc()).limit(1)).first()
         return SafetyLevel(r[0]) if r else SafetyLevel.NORMAL
+
+    def safety_reason(self, scope: str = "") -> str:
+        """Why the current level was latched ("" when never set)."""
+        with self.engine.connect() as c:
+            q = select(safety.c.reason).where(safety.c.scope == scope)
+            r = c.execute(q.order_by(safety.c.id.desc()).limit(1)).first()
+        return str(r[0]) if r else ""
 
     def set_safety(
         self,

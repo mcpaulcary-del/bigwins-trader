@@ -46,6 +46,13 @@ class MockGateway:
     marks: dict[str, float] = field(default_factory=dict)
     unsettled: float = 0.0  # sale proceeds not yet settled (O-2 stand-in)
     clock: datetime = datetime(2026, 12, 1, 5, 10, tzinfo=UTC)  # execution time of fills
+    # review H2: an async-style gateway: events wait here until the client's loop runs
+    # (``sleep`` / ``waitOnUpdate``); False = they are applied at once (the default)
+    async_events: bool = False
+    pending: list[Any] = field(default_factory=list)
+    quote_time: datetime | None = None  # review M3: None = a fresh quote
+    login_ok: bool = True  # review H1: False = the gateway is up but not logged in
+    connects: int = 0
 
     # session
     def connect(
@@ -57,7 +64,10 @@ class MockGateway:
         readonly: bool,
         account: str,
     ) -> None:
+        if not self.login_ok:
+            raise ConnectionRefusedError("gateway not logged in")
         self.connected = True
+        self.connects += 1
         self.connect_args = {"host": host, "port": port, "clientId": clientId, "account": account}
 
     def disconnect(self) -> None:
@@ -69,8 +79,24 @@ class MockGateway:
     def reqMarketDataType(self, t: int) -> None:
         self.md_type = t
 
+    def isConnected(self) -> bool:
+        return self.connected
+
     def sleep(self, secs: float = 0.02) -> bool:
+        self._run_pending()
         return True
+
+    def waitOnUpdate(self, timeout: float = 0) -> bool:
+        self._run_pending()
+        return True
+
+    def _run_pending(self) -> None:
+        while self.pending:
+            self.pending.pop(0)()
+
+    def reqExecutions(self, execFilter: Any = None) -> list[Fill]:
+        self._run_pending()
+        return list(self.fills_)
 
     def restart(self) -> None:
         self.session_trades = []
@@ -159,6 +185,12 @@ class MockGateway:
     def fill(
         self, order_ref: str, price: float, qty: float | None = None, commission: float = 6.6
     ) -> None:
+        if self.async_events:  # review H2: delivered only when the client's loop runs
+            self.pending.append(lambda: self._fill(order_ref, price, qty, commission))
+            return
+        self._fill(order_ref, price, qty, commission)
+
+    def _fill(self, order_ref: str, price: float, qty: float | None, commission: float) -> None:
         t = next(t for t in self.gateway_trades if t.order.orderRef == order_ref)
         q = qty if qty is not None else t.order.totalQuantity - t.orderStatus.filled
         t.orderStatus.filled += q
@@ -185,7 +217,7 @@ class MockGateway:
         self.cash += (-q * price if side == "BOT" else q * price) - commission
 
     def fills(self) -> list[Fill]:
-        return list(self.fills_)
+        return list(self.fills_)  # the client's cache: only what its loop has processed
 
     def positions(self, account: str = "") -> list[Position]:
         return [
@@ -208,7 +240,11 @@ class MockGateway:
         out = []
         for c in cs:
             t = Ticker(contract=c)
-            t.bid, t.ask, t.last, t.close = 0.995, 1.005, 1.0, 0.99
-            t.time = datetime(2026, 12, 1, 4, 30, tzinfo=UTC)
+            m = self.marks.get(c.symbol)
+            if m is None:  # no price yet (before the first auction): a quote of 1.00
+                t.bid, t.ask, t.last, t.close = 0.995, 1.005, float("nan"), 0.99
+            else:  # review M3: the last auction close, as a delayed quote would show it
+                t.bid, t.ask, t.last, t.close = m * 0.995, m * 1.005, m, m
+            t.time = self.quote_time or datetime.now(UTC)
             out.append(t)
         return out

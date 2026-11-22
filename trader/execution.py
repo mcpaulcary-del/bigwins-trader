@@ -30,7 +30,15 @@ from trader.broker.base import (
 )
 from trader.journal import FillRecord, Journal, JournalError, Status
 from trader.orders import OrderBatch, Side
-from trader.risk import RiskContext, RiskLimits, SafetyLevel, Verdict, check_intents, worst
+from trader.risk import (
+    Quote,
+    RiskContext,
+    RiskLimits,
+    SafetyLevel,
+    Verdict,
+    check_intents,
+    worst,
+)
 
 CrashHook = Callable[[str, str], None]  # (point, client_order_id); tests raise to simulate a crash
 
@@ -95,7 +103,7 @@ class Executor:
         return out
 
     # ------------------------------------------------------------ send time
-    def submit(
+    def submit(  # noqa: PLR0912 - one branch per send case
         self, batch_id: str, ctx: RiskContext, now: datetime, *, final_day: bool = True
     ) -> SendReport:
         """Send every approved, risk-OK intent of the batch once.
@@ -116,6 +124,19 @@ class Executor:
             for it, st in self.journal.intents_of(batch_id)
             if st in (Status.RISK_OK, Status.APPROVED, Status.HELD)
         ]
+        xd = b["execution_date"]
+        if xd is not None and xd < ctx.session:  # review H5: an approval is for its day only
+            rest = []
+            for it, st in pending:
+                if st == Status.HELD:
+                    rest.append((it, st))  # L7: a buy held for funds (or a gap) rolls
+                    continue
+                self.journal.set_status(
+                    it.client_order_id, Status.LAPSED,
+                    {"why": f"approved for {xd}, not sent that day; not carried"}, now,
+                )  # fmt: skip
+                rep.not_approved.append(it.client_order_id)
+            pending = rest
         for it, st in pending:
             if it.seq not in ok:
                 rep.not_approved.append(it.client_order_id)
@@ -129,6 +150,14 @@ class Executor:
             if st in (Status.HELD, Status.RISK_OK):
                 self.journal.set_status(it.client_order_id, Status.APPROVED, at=now)
         to_send = [it for it, st in self.journal.intents_of(batch_id) if st == Status.APPROVED]
+        quotes = (
+            {it.entity: self._quote(it) for it in to_send}
+            if getattr(self.broker, "quotes_for_breaker", True)
+            else {}
+        )
+        live = {e: q for e, (q, _) in quotes.items() if q is not None}
+        if live:  # review M3: the breaker's gap / stale / sanity checks see the real quote
+            ctx = RiskContext(**{**ctx.__dict__, "quotes": {**ctx.quotes, **live}})
         risk = check_intents(to_send, ctx, self.limits)  # send-time breaker
         rep.pages.extend(risk.pages)
         if risk.latch is not None:
@@ -145,15 +174,32 @@ class Executor:
                 self.journal.set_status(coid, to, {"reasons": list(r.reasons)}, now)
                 rep.rejected.append((coid, ",".join(r.reasons)))
                 continue
-            self._send_one(r.intent, now, rep)
+            self._send_one(r.intent, now, rep, quotes.get(r.intent.entity, (None, None))[1])
         return rep
 
-    def _send_one(self, it: object, now: datetime, rep: SendReport) -> None:
+    def _quote(self, it: object) -> tuple[Quote | None, object]:
+        """The broker's quote before the send (review M3): the breaker's ``Quote`` (last
+        and the decision's close, or the quote's close) and the raw quote (BF-D22)."""
+        from trader.orders import OrderIntent
+
+        assert isinstance(it, OrderIntent)
+        try:
+            q = self.broker.quote(it.entity)
+        except Exception as e:  # the quote never blocks the order by failing
+            return None, e
+        if q is None or q.last is None or q.last <= 0:
+            return None, q
+        prev = it.prev_close if it.prev_close and it.prev_close > 0 else q.close
+        if prev is None or prev <= 0:
+            return None, q
+        return Quote(q.last, prev, q.time), q
+
+    def _send_one(self, it: object, now: datetime, rep: SendReport, raw: object = None) -> None:
         from trader.orders import OrderIntent
 
         assert isinstance(it, OrderIntent)
         coid = it.client_order_id
-        self._record_quote(it, now)
+        self._record_quote(it, now, raw)
         self.journal.set_status(coid, Status.SENDING, {"qty": it.qty}, now, qty=it.qty)
         self.crash("after_persist", coid)
         req = OrderRequest(
@@ -177,18 +223,25 @@ class Executor:
         self.journal.set_status(coid, Status.SENT, {"perm_id": st.perm_id}, now)
         rep.sent.append(coid)
 
-    def _record_quote(self, it: object, now: datetime) -> None:
+    def _record_quote(self, it: object, now: datetime, raw: object = None) -> None:
         """Keep the broker's quote (bid, ask, mid) at the moment of the order (BF-D22).
 
         A quote that is missing or fails is recorded as such and never blocks the order."""
+        from trader.broker.base import BrokerQuote
         from trader.orders import OrderIntent
 
         assert isinstance(it, OrderIntent)
         note = ""
-        try:
-            q = self.broker.quote(it.entity)
-        except Exception as e:  # the quote is information only: never block the order
-            q, note = None, f"quote failed: {type(e).__name__}: {e}"
+        q: BrokerQuote | None
+        if isinstance(raw, BrokerQuote):
+            q = raw
+        elif isinstance(raw, Exception):
+            q, note = None, f"quote failed: {type(raw).__name__}: {raw}"
+        else:
+            try:
+                q = self.broker.quote(it.entity)
+            except Exception as e:  # the quote is information only: never block the order
+                q, note = None, f"quote failed: {type(e).__name__}: {e}"
         if q is None:
             self.journal.record_order_quote(
                 it, None, None, None, None, type(self.broker).__name__, note or "no quote", now
@@ -232,10 +285,18 @@ class Executor:
     # ------------------------------------------------------------ fills
     def collect_fills(self, now: datetime, session_closed: bool = False) -> int:
         """Book broker executions once each; settle statuses; expire unfilled DAY orders."""
+        from trader.broker.base import exec_base
+
         new = 0
+        bases = self.journal.fill_bases()
         for ex in self.broker.executions():
             if ex.client_order_id is None:
                 continue  # a foreign order (BP-02): reported by reconciliation, never booked here
+            booked = bases.get(exec_base(ex.exec_id))
+            if booked is not None:  # review L6: a correction (or a late commission report)
+                if ex.commission > 0:
+                    self.journal.correct_fill_commission(booked, ex.commission, "broker")
+                continue
             if ex.exec_id in self._booked:
                 continue  # booked by this process already (add_fill is idempotent anyway)
             try:
@@ -257,6 +318,13 @@ class Executor:
             ):
                 new += 1
             self._booked.add(ex.exec_id)
+        self.settle_statuses(now, session_closed)
+        return new
+
+    def settle_statuses(self, now: datetime, session_closed: bool = False) -> None:
+        """SENT / PARTIAL intents to FILLED or PARTIAL by their booked fills; after the
+        close, an order the broker no longer has is EXPIRED (review M6: also run after
+        Flex trades are booked)."""
         for it, st in self.journal.intents_in([Status.SENT, Status.PARTIAL], self.book):
             done = sum(f.qty for f in self.journal.fills(coid=it.client_order_id))
             if done >= it.qty:
@@ -269,7 +337,6 @@ class Executor:
                     self.journal.set_status(
                         it.client_order_id, Status.EXPIRED, {"filled": done}, now
                     )
-        return new
 
     # ------------------------------------------------------------ kill switch
     def kill(self, now: datetime, actor: str = "owner") -> int:

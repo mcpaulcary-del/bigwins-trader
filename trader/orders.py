@@ -78,15 +78,34 @@ def is_valid_step(price: Decimal) -> bool:
 
 @dataclass(frozen=True)
 class CommissionModel:
-    """IBKR fixed pricing, ASX: max(A$6.60, 0.088%) incl. GST (FD §11.2; GST line I1 unverified)."""
+    """IBKR commission on an ASX order, incl. GST (review M1; config ``broker.pricing``).
+
+    * ``fixed`` (the default here): max(A$6.60, 0.088%), i.e. A$6.00 / 0.08% + 10% GST
+      (FD §11.2).
+    * ``tiered`` (the owner's plan): (max(``minimum``, ``rate`` x value) + the exchange /
+      clearing / regulatory pass-through ``fees_rate`` x value) x (1 + ``gst``). IBKR
+      Australia's public schedule: 0.08% up to A$3m a month, minimum A$5.00, ex GST; the
+      ASX pass-through fees are **[unverified]** (a config value, checked in the
+      reality spike against real fills)."""
 
     minimum: Decimal = Decimal("6.60")
     rate: Decimal = Decimal("0.00088")
+    pricing: str = "fixed"
+    fees_rate: Decimal = Decimal(0)
+    gst: Decimal = Decimal(0)
 
     def __call__(self, value: Decimal) -> Decimal:
         if value <= 0:
             return Decimal(0)
+        if self.pricing == "tiered":
+            base = max(self.minimum, value * self.rate) + value * self.fees_rate
+            return (base * (1 + self.gst)).quantize(CENT, ROUND_CEILING)
         return max(self.minimum, (value * self.rate).quantize(CENT, ROUND_CEILING))
+
+
+def tiered_commission(fees_rate: Decimal = Decimal("0.00005")) -> CommissionModel:
+    """IBKR Australia tiered, tier I (public schedule): 0.08%, min A$5.00, + GST 10%."""
+    return CommissionModel(Decimal("5.00"), Decimal("0.0008"), "tiered", fees_rate, Decimal("0.10"))
 
 
 def client_order_id(book: str, d: date, entity: str, side: Side, attempt: int = 1) -> str:

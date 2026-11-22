@@ -93,6 +93,10 @@ class SimBroker:
     def executions(self) -> list[Execution]:
         return list(self.fills_)
 
+    # review M3: its "quote" is the decision close itself: the breaker's quote checks
+    # are for the real broker only (the twin stays in step with the paper book)
+    quotes_for_breaker = False
+
     def quote(self, symbol: str) -> BrokerQuote | None:
         c = self.last_close.get(symbol)
         if c is None:

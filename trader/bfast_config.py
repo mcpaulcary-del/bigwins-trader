@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from trader.lines.band_trend import BandTrendParams
 from trader.lines.emg2 import Emg2_20Params
-from trader.orders import OrderParams, OrderType
+from trader.orders import CommissionModel, OrderParams, OrderType
 from trader.risk import RiskLimits
 from trader.yamlio import load_yaml
 
@@ -34,12 +34,27 @@ class _M(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class CommissionCfg(_M):
+    """Review M1: the IBKR pricing plan's numbers (ex GST). Tiered tier I from IBKR's
+    public schedule; ``fees_rate`` (ASX exchange / clearing pass-through) is
+    [unverified] until the reality spike compares it with real fills."""
+
+    tiered_rate: Decimal = Decimal("0.0008")
+    tiered_min_aud: Decimal = Decimal("5.00")
+    fixed_rate: Decimal = Decimal("0.0008")
+    fixed_min_aud: Decimal = Decimal("6.00")
+    fees_rate: Decimal = Decimal("0.00005")
+    gst: Decimal = Decimal("0.10")
+
+
 class BrokerCfg(_M):
     host: str
     port: int
     client_id: int
     account_id: str | None = None
     allow_live: Literal[False] = False
+    pricing: Literal["tiered", "fixed"] = "tiered"  # review M1: the owner's IBKR plan
+    commission: CommissionCfg = Field(default_factory=CommissionCfg)
 
     @field_validator("account_id")
     @classmethod
@@ -60,8 +75,21 @@ class ExecutionCfg(_M):
     approval_mode: Literal["per_order", "batch"]
     approval_deadline: str
     buy_funds_wait_sessions: int = Field(ge=0, le=4)
+    latest_send: str = "15:55"  # review H3: nothing is sent after this (early close: -10 min)
+    no_order_days: list[date] = Field(default_factory=list)  # review H4: ad-hoc closures
 
-    @field_validator("submit_at", "fallback_send_at", "fallback_cancel_at", "approval_deadline")
+    @field_validator("order_type")
+    @classmethod
+    def _no_lmt_yet(cls, v: OrderType) -> OrderType:
+        # review M5: the LMT fallback (send 15:30, cancel 15:58) is not implemented; it is
+        # refused until the reality spike decides LOC vs LMT and it is built and tested
+        if v is not OrderType.LOC:
+            raise ValueError("order_type LMT is not implemented yet (review M5): use LOC")
+        return v
+
+    @field_validator(
+        "submit_at", "fallback_send_at", "fallback_cancel_at", "approval_deadline", "latest_send"
+    )
     @classmethod
     def _hhmm(cls, v: str) -> str:
         if not HHMM.match(v):
@@ -119,7 +147,7 @@ class StartNormal(_M):
 
 class OrdersPerDay(_M):
     start: int = Field(ge=1, le=24)
-    normal: int = Field(ge=1, le=16)
+    normal: int = Field(ge=1, le=24)  # review H6: 18 buys must fit (L10 amendment)
     hard: int = Field(ge=1, le=80)
 
 
@@ -347,6 +375,21 @@ class BfastConfig(_M):
     strategy: StrategyCfg = Field(default_factory=StrategyCfg)  # BF-D45
 
     @model_validator(mode="after")
+    def _limits_fit_the_book(self) -> BfastConfig:
+        """Review H6: a whole book of buys (the start, a switch back from the fund) fits
+        the L10 day limits: buys a day >= capital cap x (1 + price band), and the buy
+        orders a day >= the slot count (sells never count against them)."""
+        cap = self.live_emg2_20.capital_cap_aud * (1 + self.risk.price_band)
+        for lab, v in (("start", self.risk.buys_per_day_aud.start),
+                       ("normal", self.risk.buys_per_day_aud.normal)):  # fmt: skip
+            if v < cap:
+                raise ValueError(f"risk.buys_per_day_aud.{lab} {v} < cap x (1 + band) {cap}")
+        n = self.live_emg2_20.slots
+        if min(self.risk.orders_per_day.start, self.risk.orders_per_day.normal) < n:
+            raise ValueError(f"risk.orders_per_day below the {n} slots (review H6)")
+        return self
+
+    @model_validator(mode="after")
     def _dry_run_paper_only(self) -> BfastConfig:
         d = self.paper_dry_run
         if d is None:
@@ -388,11 +431,21 @@ class BfastConfig(_M):
             sell_rule=c.sell_rule,
         )
 
+    def commission_model(self) -> CommissionModel:
+        """Review M1: the configured IBKR plan, GST included."""
+        c = self.broker.commission
+        if self.broker.pricing == "tiered":
+            return CommissionModel(c.tiered_min_aud, c.tiered_rate, "tiered", c.fees_rate, c.gst)
+        return CommissionModel(
+            (c.fixed_min_aud * (1 + c.gst)).quantize(Decimal("0.01")), c.fixed_rate * (1 + c.gst)
+        )
+
     def order_params(self) -> OrderParams:
         return OrderParams(
             order_type=self.execution.order_type,
             limit_band=self.execution.limit_band,
             min_parcel_aud=self.live_emg2_20.min_parcel_aud,
+            commission=self.commission_model(),
         )
 
     def risk_limits(self) -> RiskLimits:

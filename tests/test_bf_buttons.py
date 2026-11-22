@@ -211,8 +211,11 @@ def test_BF_D38_pause_is_one_tap_resume_and_continue_need_the_code() -> None:
     assert j.safety_level() is SafetyLevel.PAUSED
     _tap(bot, "bw:re", T_APPROVE + timedelta(seconds=40))
     assert _code(bot, T_APPROVE + timedelta(seconds=45)) == "re-armed: NORMAL"
-    _tap(bot, "bw:co", T_APPROVE + timedelta(seconds=70))
-    assert _code(bot, T_APPROVE + timedelta(seconds=75)).startswith("confirmation recorded")
+    _tap(bot, "bw:co", T_APPROVE + timedelta(seconds=70))  # review L7: only in stage 3
+    assert "only to an open L11 stage-3" in _code(bot, T_APPROVE + timedelta(seconds=75))
+    j.mark_job("l11:breach:2026-11-30", {"stage": 3, "value": "4900"})
+    _tap(bot, "bw:co", T_APPROVE + timedelta(seconds=80))
+    assert _code(bot, T_APPROVE + timedelta(seconds=85)).startswith("confirmation recorded")
     assert j.job_records("l11:confirm:")
 
 
