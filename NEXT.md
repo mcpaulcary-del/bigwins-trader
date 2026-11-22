@@ -1,4 +1,4 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 19 Nov 2026 (after piece 3, corporate actions, splits, the Flex pull and the band-trend switch)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 22 Nov 2026 (after piece 3, corporate actions, splits, the Flex pull, the band-trend switch, the phone dashboard and Telegram buttons)
 
 Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
 c07197c and deleted locally; **its remote copy could not be deleted from this session**
@@ -216,6 +216,26 @@ go-live checklist, by a reviewed code change.
   record's data the old draw left 14 (30 Oct) and 32 (18 Nov) of 100 twins under 18
   names; the new draw buys 18 in all 100. No golden re-pinned (all before 30 Nov).
 
+## Phone dashboard and Telegram buttons (22 Nov 2026; BF-D37, BF-D38)
+
+- **BF-D37** `trader-bf dashboard` (`trader/dashboard.py`): read-only phone page (value vs
+  A200 total return, holdings with cost / gain / days held / old-price flag, next and last
+  decision with order states, safety, L11 stage, L15 state, twin percentile, health);
+  installable (manifest + drawn icons), no JavaScript or CDN, refresh 60 s, "Waiting for
+  the first trading day" before any decision. GET/HEAD only; journal on a read-only
+  database session (`read_only_engine`, `Journal.read_only`). Compose service
+  `dashboard` (uid 10001, read-only root, only `db_password`, mounts `:ro`) published on
+  `127.0.0.1:8080` only; the owner runs `bigwins` option 9 (`tailscale serve --bg 8080`;
+  guide D5). `--demo` renders a short run of the real app on synthetic prices.
+  Open: a dedicated SELECT-only Postgres role (B4); render once from the record replay
+  on the server; the A200 line needs A200 in the store (it is: the L15 fund).
+- **BF-D38** Telegram buttons: approval requests carry Approve all / Refuse batch / one
+  per order / Status / Pause; `/menu` adds Kill, Stop, Resume, Continue. A tap is the
+  typed command through the same handler; approve / refuse / resume / continue then need
+  the 6-digit code within 3 minutes; Kill / Stop a second tap; Pause one tap. Guide D3.
+  Owner drill on the phone joins go-live item 4.
+- Gate: ruff, format, mypy --strict, validate-config x2, pytest, BF gate, compose config.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
@@ -276,12 +296,12 @@ go-live checklist, by a reviewed code change.
 | 1 | Reality spike filed; LOC or 15:30 limit fallback decided | Open (needs paper login) |
 | 2 | >= 5 paper sessions with orders, reconciled exactly | Open (runner + spike first) |
 | 3 | Every L10-L11 limit demonstrated on paper with a rejecting case | Unit-tested; L11 staged rule drilled on record data (BF-D15/17); paper log open |
-| 4 | `/kill`, `/pause`, `/stop`, `/continue` drilled from the owner's phone; re-arm needs 2FA | Code + tests done; phone drill open |
+| 4 | `/kill`, `/pause`, `/stop`, `/continue` drilled from the owner's phone; re-arm needs 2FA | Code + tests done (typed and buttons, BF-D38); phone drill open |
 | 5 | Unapproved orders not sent; approval expiry | Code + tests done; paper log open |
 | 6 | Paper/live guard both ways; live id pinned; API user without funding rights | Paper side tested; **live side is intentionally absent** in this build |
 | 7 | IBKR precautions set and photographed; max order value above A$10,000 (largest sell, BF-D3, and the one A200 order of L15, BF-D28) | Owner |
 | 8 | A$10,000 deposited and settled | Owner |
-| 9 | Backups, restore, no inbound port (scan) | Open (compose has no published ports) |
+| 9 | Backups, restore, no inbound port (scan) | Open (compose publishes only the read-only dashboard, on 127.0.0.1:8080, reached via `tailscale serve`; BF-D37) |
 | 10 | Dead-man heartbeat 5 days | Open |
 | 11 | Amendments registered; code hashes pinned | Record keeper |
 | 12 | A7(c) + class filter on band C; start list reviewed by the owner | Engine done; LIC list frozen and pinned (BF-D14, v2 BF-D20); a missing or changed list refuses every decision and order and pages (BF-D21, no fallback); owner review open |

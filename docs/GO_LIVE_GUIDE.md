@@ -193,7 +193,8 @@ timedatectl                   # "System clock synchronized: yes" (the authentica
 
 Install Tailscale on your laptop and phone too. From now on connect with
 `ssh root@<server's Tailscale name>`; the server has **no open inbound port** (UFW denies
-all; the compose file publishes none, `deploy/docker-compose.yml`). In BinaryLane you can
+all; the compose file publishes only the read-only phone page, and only on the server's
+own loopback address 127.0.0.1, reached through Tailscale: D5). In BinaryLane you can
 also turn off password log-in. (Go-live item 9 includes an outside port scan; I do it.)
 
 ### B3. Docker
@@ -529,6 +530,22 @@ nothing.
 The paper book's commands never stop the simulated twin or the random twins (BF-D16);
 they keep the comparison going.
 
+**Buttons (BF-D38).** You can tap instead of typing. Each approval message has buttons
+under it: **✅ Approve all**, **❌ Refuse batch**, one **✅ n** per order, **📊 Status** and
+**⏸ Pause**. Send `/menu` for **📊 Status, ⏸ Pause, 🛑 Kill, ✋ Stop, ▶️ Resume,
+✔️ Continue**. The rules are exactly those of the typed commands:
+
+- Approve, Refuse, Resume and Continue: after the tap the bot asks
+  "Send your 6-digit code to approve all 18 orders of <batch>". Type the code from your
+  authenticator within **3 minutes**. That is the same as typing `/ok <batch> all <code>`
+  (same 15:20 deadline, each code works once). A wrong code cancels the tap: tap again.
+- Pause: one tap, it acts at once.
+- Kill and Stop: the bot asks "Tap again to confirm KILL"; tap **Yes, KILL** within a
+  minute (or Cancel). This stops a slip of the finger.
+- Once a batch is approved or refused by button, its message changes to show the
+  result and the buttons go away. Buttons on old or late batches are refused.
+- Only your chat works; anyone else's taps are ignored.
+
 ### D4. Pages you may see
 
 Messages starting `PAGE` need a look; `PAGE HIGH PRIORITY` needs you the same day.
@@ -537,6 +554,28 @@ HALTED_INTEGRITY` with the difference - nothing is sent until you `/resume <code
 after we have looked); the loss rule stages (A$7,000 check, A$6,000 buys paused, A$5,000
 needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm with
 `/idmap`; a refused LIC list (BF-D21); a job that failed.
+
+### D5. The Big Wins app on your phone (read-only)
+
+A private page that shows the paper book at a glance: value against the ASX 200 fund
+(A200), your shares with gain or loss, the next decision and the last orders, the safety
+state and the server's health. It **cannot** approve, send or cancel anything: that stays
+in Telegram. Only devices signed in to your own Tailscale account can open it.
+
+1. On your phone: install the **Tailscale** app and sign in with the same account as the
+   server (B2). Turn it on.
+2. On the server: type `bigwins` and choose **9) Turn on the phone app** (it runs
+   `tailscale serve --bg 8080`). It prints the address, like
+   `https://bigwins.<your-tailnet>.ts.net`. If Tailscale asks you to enable HTTPS
+   certificates, click the link it shows and allow it, then choose 9 again.
+3. On the phone, open that address in **Chrome**. Then Chrome menu (⋮) >
+   **Add to Home screen**. The Big Wins icon now opens it like an app. It refreshes
+   itself every minute.
+
+Before the first trading day it says "Waiting for the first trading day"; that is normal.
+To turn it off: on the server `tailscale serve reset`. (Optional: to let only your own
+Tailscale log-in see it, put it under `dashboard: allowed_logins:` in
+`config/bfast.yaml`.)
 
 ---
 
