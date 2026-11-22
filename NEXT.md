@@ -267,6 +267,20 @@ go-live checklist, by a reviewed code change.
   `config/bfast.local.yaml`, `bigwins` 11 (allow my phone), 4 (restart), `sudo bigwins
   install-worker`, then in the app Inbox > Turn on alerts. GO_LIVE_GUIDE parts C/D.
 
+## Review fixes (22 Nov 2026; BF-D46..BF-D54)
+
+Signed dashboard -> trader actions and a control server bound to its private address
+(H1); a persistent, main-loop wrong-code lock-out, 3 in 15 minutes, one code request at
+a time (H2); signed server jobs carrying the exact approved commit, re-classified and
+fast-forwarded by the worker (H3); a SELECT-only dashboard role (M1); default-deny
+classification (M2); immediate mode only after the day's jobs and only covered by a
+decision of the new version (M3); per-kind queue and Cancel (M4); labels from the
+config (M5); tax screen = tax report, CSV summary rows (M6); L1-L5. Owner on the server:
+`bigwins update` makes `app_proxy_key`, `worker_job_key` and `db_dashboard_password`;
+the `db-roles` service creates the dashboard role at start; `bigwins` 11 again (adds
+`public_host`); journal migration j0007 (the trader adds the two columns itself at start; an
+Alembic-managed journal: `upgrade journal@head`, which skips columns that exist).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

@@ -292,6 +292,7 @@ put eodhd_api_token       # the EODHD data token (for the price-store refresh)
 put healthchecks_url      # your healthchecks.io ping URL (C5), or type: none
 openssl rand -hex 24 > secrets/db_password                   # database password, made here
 openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -out secrets/vapid_private_key  # phone-alert key (or: bigwins vapid)
+for n in app_proxy_key worker_job_key db_dashboard_password; do openssl rand -hex 32 > secrets/$n; done  # app keys (bigwins update makes them too)
 python3 -c 'import base64,os;print(base64.b32encode(os.urandom(20)).decode())' > secrets/totp_seed
 chmod 444 secrets/*        # see the note below
 ls -l secrets              # eight files, none empty, all -r--r--r--
@@ -331,6 +332,9 @@ mode, which the containers cannot see.
 | `totp_seed` | trader | `trader/approval.py` `TotpVerifier` |
 | `ibkr_flex_token`, `ibkr_flex_query_id` | trader | `trader/flex_pull.py` (read at each pull) |
 | `eodhd_api_token` | trader (price-store refresh, BF-D31) | `trader/store_refresh.py` (read at each refresh) |
+| `app_proxy_key` | dashboard and trader (signed app actions, BF-D46) | made by `bigwins update` |
+| `worker_job_key` | trader and the root host worker (signed server jobs, BF-D48) | made by `bigwins update` |
+| `db_dashboard_password` | the dashboard's SELECT-only database role (BF-D52) | made by `bigwins update`; the `db-roles` service sets it |
 | `healthchecks_url` | dead-man heartbeat (BF-D41), `none` = off | `trader/heartbeat.py` (pinged every 5 minutes) |
 
 ### B7. Your settings in `config/bfast.local.yaml` (this server only)
@@ -403,15 +407,17 @@ Before the first trading day it says "Waiting for the first trading day"; that i
 Viewing works for any device on your tailnet; **acting** needs your Tailscale log-in on
 the server's allow-list. Until it is set, every action is off and the app says so.
 
-1. On the server: `bigwins` > **11) Allow my phone to act**. It reads your log-in from
-   Tailscale (`tailscale status`), shows it, and after you type `y` writes it to
-   `config/bfast.local.yaml` (`app: allowed_logins`; this server only, never in git).
+1. On the server: `bigwins` > **11) Allow my phone to act**. It reads your log-in and the
+   app's address from Tailscale (`tailscale status`), shows them, and after you type `y`
+   writes them to `config/bfast.local.yaml` (`app: allowed_logins` and `public_host`;
+   this server only, never in git). Only requests from your own app's address count.
 2. `bigwins` > **4) Restart the trader** (it restarts the app too).
 
 ### C3. Turn on alerts
 
 1. In the app: **Inbox** > **Alerts on this phone** (or Settings > Turn on alerts).
-2. Tap **🔔 Turn on alerts**, then **Allow**. A test alert arrives: "Alerts are on for
+2. Type your 6-digit code (a new device needs it; at most 5 devices), tap **🔔 Turn on
+   alerts**, then **Allow**. A test alert arrives: "Alerts are on for
    this phone."
 3. Approval requests and PAGE alerts always arrive, at high priority; you can switch the
    daily report and other messages on or off on the same screen. Every message is also
@@ -451,6 +457,12 @@ pushes to its own app).
 Type `none` instead to keep it off.
 
 ### C6. Server worker and Claude on the server
+
+Who is trusted: anyone with root on the server (it runs Tailscale, Docker, the worker
+and Claude, and can read every secret). Keep root to yourself. The app's actions are
+signed between its parts and the worker runs only jobs the trader signed, for the exact
+commit you approved; an approved update expires after 12 hours. A rollback does not undo
+database migrations (the app asks before rolling back across one).
 
 - `sudo bigwins install-worker` (once): a small service that sends the server's status
   to the app's **Server** tab every 30 seconds and runs the server jobs you ask for in
