@@ -281,6 +281,31 @@ the `db-roles` service creates the dashboard role at start; `bigwins` 11 again (
 `public_host`); journal migration j0007 (the trader adds the two columns itself at start; an
 Alembic-managed journal: `upgrade journal@head`, which skips columns that exist).
 
+## Re-review fixes (22 Nov 2026; BF-D55..BF-D61)
+
+Real browsers' `Origin: null` accepted with `Sec-Fetch-Site: same-origin` and the
+referrer policy fixed (N1; checked in Chromium by `tests/test_bf_app_browser.py`); the
+signed host replaces an empty `public_host`, a changed address is explained and Pause /
+Kill / Stop still work (N1b); only a code the verifier checked clears the count, idmap
+arguments checked first (N2); the code slot is freed on any error (N3); `bigwins update`
+re-runs the new script after the pull, keys fail loudly (N4); deploy/, scripts/ and the
+Python project files count as infra changes (N5); 6 wrong codes in 24 hours lock for a
+day (N6); each signed job id runs once (N8); the control address is retried (N9).
+
+**Owner upgrade sequence (from any earlier build; BF-D61)**, on the server as root,
+outside ASX hours (10:00-16:15 Sydney):
+
+1. `git -C /srv/asx-trader pull --ff-only && bigwins update`
+   (the first line fetches the new menu itself; `bigwins update` then runs the new
+   steps: makes the new keys `app_proxy_key`, `worker_job_key`, `db_dashboard_password`
+   and the alert key if missing, rebuilds and restarts; the `db-roles` service creates
+   the dashboard's read-only database role).
+2. `bigwins` > **11) Allow my phone to act** (writes your log-in and the app's address).
+3. `sudo bigwins install-worker` (again: the worker unit has a longer time-out now).
+4. `bigwins` > **4) Restart the trader** (restarts the app too).
+5. On the phone, open the app > Server > Trader controls and test Pause (one tap: "PAUSED"),
+   then Resume with your code; Turn on alerts needs your code too.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

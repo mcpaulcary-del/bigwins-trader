@@ -474,6 +474,22 @@ database migrations (the app asks before rolling back across one).
   once in Termius**: `tmux attach -t remote`, follow the sign-in, then Ctrl-b d to leave
   it running. The Big Wins app never runs Claude or any command itself.
 
+### C7. Upgrading a server that already runs an earlier build
+
+**Owner upgrade sequence (from any earlier build; BF-D61)**, on the server as root,
+outside ASX hours (10:00-16:15 Sydney):
+
+1. `git -C /srv/asx-trader pull --ff-only && bigwins update`
+   (the first line fetches the new menu itself; `bigwins update` then runs the new
+   steps: makes the new keys `app_proxy_key`, `worker_job_key`, `db_dashboard_password`
+   and the alert key if missing, rebuilds and restarts; the `db-roles` service creates
+   the dashboard's read-only database role).
+2. `bigwins` > **11) Allow my phone to act** (writes your log-in and the app's address).
+3. `sudo bigwins install-worker` (again: the worker unit has a longer time-out now).
+4. `bigwins` > **4) Restart the trader** (restarts the app too).
+5. On the phone, open the app > Server > Trader controls and test Pause (one tap: "PAUSED"),
+   then Resume with your code; Turn on alerts needs your code too.
+
 ---
 
 ## D. First messages, approving in the app, and the controls
