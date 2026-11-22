@@ -19,6 +19,7 @@ from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
 
 from trader.app_store import SERVER_ACTIONS, get_state, inbox_rows, server_job_rows
+from trader.app_viz import arrow, donut, gauge, hero, ring, spark, threshold_meter
 from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
@@ -229,7 +230,7 @@ def _epoch(d: date) -> int:
 
 
 def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[date, float]],
-               label: str, note: str) -> str:  # fmt: skip
+               label: str, note: str, trades: Sequence[tuple[date, str]] = ()) -> str:  # fmt: skip
     """The interactive performance chart: a static SVG (all history) that the script
     redraws for 1M / 3M / 6M / All with a tap-and-drag read-out."""
     if len(series) < 2:
@@ -238,6 +239,7 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         "book": [[_epoch(d), float(v)] for d, v in series],
         "index": [[_epoch(d), float(v)] for d, v in index],
         "label": label,
+        "trades": [[_epoch(d), k] for d, k in trades],  # buy / sell days (dots)
     }
     w, h, pl, pr, pt, pb = 340, 190, 34, 8, 10, 22
     base = float(series[0][1])
@@ -269,6 +271,10 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" '
         f'aria-label="Paper book vs {e(label)}, both 100 at the start">{grid}'
         f'<line x1="{pl}" x2="{w - pr}" y1="{yy(100):.1f}" y2="{yy(100):.1f}" class="base"/>'
+        + '<defs><linearGradient id="gA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" '
+        'class="gA0"/><stop offset="1" class="gA1"/></linearGradient></defs>'
+        + f'<path d="{path(book)} L{xx(book[-1][0]):.1f},{h - pb} L{xx(d0):.1f},{h - pb} Z" '
+        'class="area"/>'
         + (f'<path d="{path(idx)}" class="s2"/>' if idx else "")
         + f'<path d="{path(book)}" class="s1"/>'
         f'<circle cx="{xx(book[-1][0]):.1f}" cy="{yy(book[-1][1]):.1f}" r="4" class="d1"/>'
@@ -276,7 +282,8 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         f'<text x="{w - pr}" y="{h - 6}" class="ax" text-anchor="end">{d1:%d %b %y}</text></svg>'
     )
     ranges = "".join(
-        f'<button type="button" data-range="{n}"{" class=on" if n == 0 else ""}>{lab}</button>'
+        f'<button type="button" data-range="{n}"{" class=on" if n == 0 else ""} '
+        f'aria-pressed="{"true" if n == 0 else "false"}">{lab}</button>'
         for lab, n in (("1M", 31), ("3M", 92), ("6M", 183), ("All", 0))
     )
     legend = '<span class="key k1"></span>Paper book'
@@ -284,7 +291,8 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         legend += f' <span class="key k2"></span>{e(label)} ({e(note)})'
     blob = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     return (
-        f'<div data-chart="perf-data"><div class="seg">{ranges}</div>{svg}</div>'
+        f'<div data-chart="perf-data" class="chartbox"><div class="seg" role="group" '
+        f'aria-label="Range">{ranges}</div>{svg}<div class="ctip" aria-hidden="true"></div></div>'
         f'<script type="application/json" id="perf-data">{blob}</script>'
         f'<p class="legend">{legend} · tap or drag the chart to read a day</p>'
     )
@@ -325,7 +333,8 @@ def dd_chart(dd: Sequence[tuple[date, float]]) -> str:
 
 def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | None = None,
                hi: float | None = None, marks: Sequence[tuple[date, float, str]] = (),
-               ref: float | None = None, fmt: str = "{:.0f}") -> str:  # fmt: skip
+               ref: float | None = None, fmt: str = "{:.0f}", label: str = "line chart"
+               ) -> str:  # fmt: skip
     if len(pts) < 2:
         return '<p class="muted small">Not enough days for a line yet.</p>'
     w, h, pl, pr, pt, pb = 340, 150, 40, 8, 10, 20
@@ -353,7 +362,7 @@ def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | N
         if ref is not None else ""
     )  # fmt: skip
     return (
-        f'<svg viewBox="0 0 {w} {h}" class="chart" role="img">'
+        f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" aria-label="{e(label)}">'
         f'<text x="{pl - 4}" y="{yy(hi) + 8:.1f}" class="ax" text-anchor="end">{fmt.format(hi)}</text>'
         f'<text x="{pl - 4}" y="{yy(lo):.1f}" class="ax" text-anchor="end">{fmt.format(lo)}</text>'
         f'{refl}<path d="{path}" class="{cls}"/>{dots}'
@@ -419,15 +428,18 @@ def actions_note(x: Extras, demo: bool) -> str:
     return ""
 
 
-def waiting_card(x: Extras, demo: bool) -> str:
+def waiting_card(x: Extras, demo: bool, now: datetime | None = None) -> str:
     if not x.waiting:
         return ""
+    now_iso = (now or datetime.now(UTC)).isoformat()
     out = []
     for w in x.waiting:
         out.append(
             f'<p class="summary">{w.n} order(s) waiting for your approval</p>'
             f'<p class="muted small">{e(w.batch_id)} · ≈ {aud(w.total, dp=0)} · by '
             f"{w.by:%a %d %b %H:%M}. Orders not approved are not sent.</p>"
+            f'<p class="cd">⏱ <span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until '
+            f"{w.by:%H:%M}</span></p>"
             '<div class="btns">'
             f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">✅ Approve all</a>'
             f'<a class="btn sec" href="{act_link(a="rf", b=w.batch_id)}">❌ Refuse</a></div>'
@@ -471,15 +483,27 @@ def home(v: Any, x: Extras) -> str:
         + tile("From peak", pct(cur_dd), f"worst {pct(max_dd)}", tone(cur_dd))
         + tile("Cash", aud(v.cash), f"money in {aud(v.capital_in, dp=0)}")
     )  # fmt: skip
-    body = waiting_card(x, v.demo)
+    trades = _trade_days(v)
+    chg = (f"{arrow(ct)}{aud(ct, True)} ({pct(ct_pct)}) today" if ct is not None
+           else "no change yet")  # fmt: skip
+    pill = (f'<span class="vs {tone(vs)}">{arrow(vs)}{pct(vs)} vs {e(v.index_label)}</span>'
+            if vs is not None else "")  # fmt: skip
+    since_pill = (f'<span class="vs {tone(since)}">{arrow(since)}{aud(since, True, dp=0)} since start'
+                  "</span>" if since is not None else "")  # fmt: skip
+    body = section("", hero(val, f"Account value · {v.series[-1][0]:%d %b}" if v.series else
+                            "Account value", chg, tone(ct),
+                            f'<div class="pills">{pill}{since_pill}</div>'
+                            + spark([float(x) for _, x in v.series[-60:]], 320, 46, "spk",
+                                    "Account value, last 60 trading days")), "herocard")  # fmt: skip
+    body += waiting_card(x, v.demo, v.now)
     body += section("Performance", f'<div class="tiles">{tiles}</div>'
-                    + perf_chart(v.series, v.index, v.index_label, v.index_note)
+                    + perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
                     + '<p class="small muted">Drawdown from peak</p>' + dd_chart(dd))  # fmt: skip
     body += twins_card(v, x)
     nd = (f"Next decision <b>{v.next_decision:%a %d %b %Y}</b>, 22:20 Sydney"
           if v.next_decision else "Next decision: -")  # fmt: skip
     body += section("Next", f"<p>{nd}.</p>")
-    body += safety_card(v) + inbox_peek(x)
+    body += safety_card(v) + loss_card(v) + inbox_peek(x)
     body += (
         '<div class="btns"><a class="btn sec" href="/act">⚙️ Controls</a>'
         '<a class="btn sec" href="/holdings" data-nav>📈 Holdings</a></div>'
@@ -503,7 +527,13 @@ def twins_card(v: Any, x: Extras) -> str:
         f'<span class="sub"> · L11 test (b) needs ≥ 10 · {e(v.twin_day)}</span></p>'
         if v.twin_pct is not None else ""
     )  # fmt: skip
-    hist = line_chart(x.twin_hist, "s3", 0, 100, ref=10) if len(x.twin_hist) > 1 else ""
+    hist = (
+        line_chart(x.twin_hist, "s3", 0, 100, ref=10, label="Twin percentile history")
+        if len(x.twin_hist) > 1
+        else ""
+    )
+    head = (gauge(v.twin_pct, 10, "Twin percentile among its random twins")
+            if v.twin_pct is not None else "") + head  # fmt: skip
     sim = (
         f"<p class='small muted'>Simulated twin value {aud(v.sim_value)}</p>" if v.sim_value else ""
     )
@@ -542,11 +572,55 @@ def safety_card(v: Any) -> str:
         what = "shares (EMG2-18)" if state == "EMG2" else "the A200 fund"
         forced = (f" - FORCED for the paper dry run (rule said {tr['forced_from']})"
                   if tr.get("forced_from") else "")  # fmt: skip
-        items.append(f"<li>Trend shield (L15): <b>{e(state)}</b>, holding {what}{e(forced)}</li>")
+        chip = ('<span class="pill ok">Shares</span>' if state == "EMG2"
+                else '<span class="pill amber">A200 fund</span>')  # fmt: skip
+        lv = [float(z) for z in tr.get("levels", []) if isinstance(z, int | float | str)
+              and str(z).replace(".", "", 1).replace("-", "", 1).isdigit()]  # fmt: skip
+        mean = tr.get("mean")
+        trend_sp = spark(lv, 120, 30, "spk", "Band index, last months") if len(lv) > 1 else ""
+        items.append(f"<li>Trend shield (L15): {chip} <b>{e(state)}</b>, holding {what}{e(forced)}"
+                     f'<div class="donutrow">{trend_sp}<span class="sub">'
+                     + (f"10-month average {float(mean):.3f}" if mean is not None else "")
+                     + "</span></div></li>")  # fmt: skip
     else:
         items.append("<li>Trend shield (L15): not decided yet</li>")
     return section("Safety", f'<ul class="list">{"".join(items)}</ul>'
                    '<a class="small" href="/act">Pause, Kill, Stop, Resume ›</a>')  # fmt: skip
+
+
+def loss_card(v: Any) -> str:
+    """L11 thresholds against the account value (A$7k check, A$6k pause, A$5k stop)."""
+    lim = getattr(v, "limits", None)
+    if v.value is None or lim is None:
+        return ""
+    val = float(v.value)
+    marks = [(float(lim.line), f"A${float(lim.line) / 1000:.0f}k stop"),
+             (float(lim.halt), f"A${float(lim.halt) / 1000:.0f}k pause"),
+             (float(lim.review), f"A${float(lim.review) / 1000:.0f}k check")]  # fmt: skip
+    hi = max(val, float(v.capital_in or 0), float(lim.review)) * 1.05
+    gap = val - float(lim.review)
+    return section(
+        "Loss rule (L11)",
+        f'<p><b class="num">{aud(v.value, dp=0)}</b> <span class="sub">· '
+        f"{aud(Decimal(str(abs(gap))), dp=0)} {'above' if gap >= 0 else 'below'} the first "
+        "check</span></p>"
+        + threshold_meter(val, marks, hi, f"Account value {val:,.0f} against the loss-rule "
+                          "thresholds")
+        + f'<p class="small muted">{e(v.l11_text or "Normal")}</p>',
+    )  # fmt: skip
+
+
+def _trade_days(v: Any) -> list[tuple[date, str]]:
+    """Days the broker book bought or sold (dots on the performance chart)."""
+    j = getattr(v, "journal", None)
+    if j is None:
+        return []
+    out: dict[tuple[date, str], None] = {}
+    fl: list[FillRecord] = safe(lambda: j.fills(v.book), [])
+    for f in fl:
+        out[(_aware(f.executed_at).astimezone(ASX_TZ).date(),
+             "b" if f.side is Side.BUY else "s")] = None  # fmt: skip
+    return sorted(out)
 
 
 def inbox_peek(x: Extras) -> str:
@@ -566,6 +640,20 @@ def inbox_peek(x: Extras) -> str:
 # ---------------------------------------------------------------- Holdings
 
 
+def _mark_history(j: Journal | None, last: int = 40) -> dict[str, list[float]]:
+    """Each code's recent last marks (for the holdings' sparklines)."""
+    out: dict[str, list[float]] = {}
+    if j is None:
+        return out
+    for _, rec in jobs(j, "marks:")[-last:]:
+        for code, px in rec.items():
+            try:
+                out.setdefault(code, []).append(float(px))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     seg = ('<div class="seg"><a class="on" href="/holdings" data-nav>Holdings</a>'
            '<a href="/tax" data-nav>Tax</a></div>')  # fmt: skip
@@ -574,26 +662,66 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
         return shell(v, x, "Holdings", body, "holdings")
     total = sum((h.value or Decimal(0) for h in v.holdings), Decimal(0))
     gain = sum((h.gain or Decimal(0) for h in v.holdings), Decimal(0))
+    hist = _mark_history(j)
+    ordered = sorted(v.holdings, key=lambda h: -(h.value or 0))
+    top = [(h.code, float(h.value or 0)) for h in ordered[:7]]
+    rest = sum(float(h.value or 0) for h in ordered[7:])
+    parts = top + ([("Other", rest)] if rest > 0 else [])
+    legend = "".join(
+        f'<li><i style="background:var(--c{i % 8})"></i>{e(c)}<span class="sp"></span>'
+        f"{float(val) / float(total or 1) * 100:.0f}%</li>"
+        for i, (c, val) in enumerate(parts)
+    )
+    max_gain = max((abs(float(h.gain_pct or 0)) for h in v.holdings), default=0) or 1.0
     rows = []
-    for h in sorted(v.holdings, key=lambda h: -(h.value or 0)):
+    for h in ordered:
         flag = ' <span class="warn">⚠ old price</span>' if h.stale else ""
         mark = f"{h.mark}" if h.mark is not None else "no price"
+        g = float(h.gain_pct or 0)
+        w_ = float(h.value or 0) / float(total or 1) * 100
         rows.append(
-            f'<li><a class="rowlink" href="/holdings/{quote(h.code)}" data-nav>'
+            f'<li data-code="{e(h.code)}" data-gain="{g:.6f}" data-value="{float(h.value or 0):.2f}" '
+            f'data-days="{h.days_held or 0}"><a class="rowlink" href="/holdings/{quote(h.code)}" '
+            f'data-nav data-sheet="1">'
             f'<span class="grow"><b>{e(h.code)}</b>{flag}<div class="sub">{h.qty} @ {e(mark)}'
             + (f" ({e(h.mark_day)})" if h.stale and h.mark_day else "")
-            + f" · {h.days_held if h.days_held is not None else '-'} days</div></span>"
-            f'<span class="r">{aud(h.value)}<div class="sub {tone(h.gain)}">{aud(h.gain, True)} '
-            f'{pct(h.gain_pct)}</div></span><span class="chev">›</span></a></li>'
+            + f" · {h.days_held if h.days_held is not None else '-'} days</div>"
+            f'<div class="bars"><span class="gb {tone(h.gain)}" title="gain"><b style="width:'
+            f'{min(100.0, abs(g) / max_gain * 100):.0f}%"></b></span><span class="wb" '
+            f'title="weight"><b style="width:{min(100.0, w_ * 4):.0f}%"></b></span></div></span>'
+            + spark(hist.get(h.code, [])[-30:], 64, 24, "spk", f"{h.code} price")
+            + f'<span class="r num">{aud(h.value)}<div class="sub {tone(h.gain)}">'
+            f"{arrow(h.gain)}{aud(h.gain, True)} {pct(h.gain_pct)}</div><div class='sub'>"
+            f'{w_:.1f}% of shares</div></span><span class="chev" aria-hidden="true">›</span></a></li>'
         )
     stale = sum(1 for h in v.holdings if h.stale)
     note = (f'<p class="warn small">⚠ {stale} share(s) had no price on the last report day; '
             "valued at their last price.</p>" if stale else "")  # fmt: skip
     tiles = (tile("Shares", aud(total), f"{len(v.holdings)} holdings")
              + tile("Unrealised", aud(gain, True), "", tone(gain)))  # fmt: skip
-    body = seg + section(
-        f"Holdings ({len(v.holdings)})",
-        f'<div class="tiles">{tiles}</div><ul class="list">{"".join(rows)}</ul>{note}',
+    sorts = "".join(
+        f'<button type="button" class="chip{" on" if k_ == "value" else ""}" data-sort="{k_}">'
+        f"{lab}</button>"
+        for k_, lab in (
+            ("value", "Value"),
+            ("gain", "Gain"),
+            ("days", "Days held"),
+            ("name", "Name"),
+        )
+    )
+    body = (
+        seg
+        + section(
+            "Allocation",
+            f'<div class="donutrow">{donut(parts, aud(total, dp=0), "in shares")}'
+            f'<ul class="legend2">{legend}</ul></div><p class="small muted">Tap a slice to find the '
+            "holding.</p>",
+        )
+        + section(
+            f"Holdings ({len(v.holdings)})",
+            f'<div class="tiles">{tiles}</div><div class="seg" role="group" aria-label="Sort">{sorts}'
+            f'</div><ul class="list hold" id="hlist">{"".join(rows)}</ul>{note}',
+        )
     )
     return shell(v, x, "Holdings", body, "holdings")
 
@@ -643,7 +771,8 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         parts.append(f'<div class="tiles">{tiles}</div>')
     buy_px = float(buys[0].price) if buys else None
     parts.append(section("Price since bought",
-                         line_chart(px, "s1", marks=marks, ref=buy_px, fmt="{:.3f}")
+                         line_chart(px, "s1", marks=marks, ref=buy_px, fmt="{:.3f}",
+                                    label=f"{code} price since bought, buys and sells marked")
                          + '<p class="legend"><span class="key" style="background:var(--up)">'
                          "</span>buy <span class=\"key\" style=\"background:var(--down)\"></span>"
                          "sell · dashed line: first buy price</p>"))  # fmt: skip
@@ -700,7 +829,31 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         + "<p class='small muted'>C6 sells only when both: 6 or more month-ends held and "
         "outside the keep zone.</p>"
     )  # fmt: skip
-    parts.append(section("Sell rule (C6)", rule))
+    c6 = ring((age or 0) / 6, f"{age if age is not None else '-'}/6", "months",
+              f"Sell rule C6: {age if age is not None else 0} of 6 month-ends held",
+              "good" if age is not None and age >= 6 else "acc")  # fmt: skip
+    kz_badge = ("" if latest is None else
+                f'<span class="pill {"ok" if kz else "amber"}">{"In" if kz else "Not in"} the '
+                "top 40% of band C</span>")  # fmt: skip
+    cgt = ""
+    if first is not None:
+        from trader.tax_report import TaxParams
+
+        due = TaxParams(discount_rule="12_months").eligible_from(first)
+        today = v.now.astimezone(ASX_TZ).date()
+        total_d = max((due - first).days, 1)
+        left = (due - today).days
+        cgt = ring(1 - max(left, 0) / total_d, "now" if left <= 0 else f"{left} d",
+                   "to discount" if left > 0 else "discount",
+                   f"50% CGT discount {'applies now' if left <= 0 else 'from ' + format(due, '%d %b %Y')}",
+                   "good" if left <= 0 else "warnr")  # fmt: skip
+        cgt += (
+            f'<p class="small muted">First parcel bought {first:%d %b %Y}; sold after '
+            f"{due:%d %b %Y} it gets the 50% discount (estimate, not tax advice).</p>"
+        )
+    parts.append(section("Sell rule (C6)", f'<div class="rings">{c6}{kz_badge}</div>' + rule))
+    if cgt:
+        parts.append(section("Capital gains discount", f'<div class="rings">{cgt}</div>'))
     return shell(v, x, code, "".join(parts), "holdings")
 
 
@@ -718,7 +871,7 @@ def _batches(j: Journal, book: str) -> list[dict[str, Any]]:
 
 
 def orders(v: Any, x: Extras, j: Journal) -> str:
-    body = waiting_card(x, v.demo)
+    body = waiting_card(x, v.demo, v.now)
     nd = (f"<p>Next decision: <b>{v.next_decision:%A %d %B %Y}</b>, 22:20 Sydney (orders go "
           "the next trading day, after your approval by 15:20).</p>" if v.next_decision else "")  # fmt: skip
     ver = {d: lab for d, _, lab in x.stamps}
@@ -780,6 +933,34 @@ def _timeline(j: Journal, coid: str, it: Any, st: str) -> str:
     return f'<ul class="tl2">{li}</ul>{extra}'
 
 
+STEP_NAMES = ("proposed", "approved", "sent", "filled")
+STEP_OF = {Status.PLANNED: 0, Status.RISK_OK: 0, Status.HELD: 0, Status.APPROVED: 1,
+           Status.SENDING: 2, Status.SENT: 2, Status.PARTIAL: 2, Status.FILLED: 3,
+           Status.NEEDS_REVIEW: 2}  # fmt: skip
+
+
+def _steps(st: str, approved: bool) -> str:
+    """proposed -> approved -> sent -> filled as progress dots (a red dot where it ended)."""
+    n = STEP_OF.get(st, -1)
+    if n == 0 and approved:
+        n = 1
+    bad = st in BAD_END
+    if bad:
+        n = {Status.LAPSED: 0, Status.VETOED: 0, Status.RISK_REJECTED: 0}.get(st, 2)
+    dots = []
+    for k in range(4):
+        cls = "on" if k <= n else ""
+        if bad and k == n + 1:
+            cls = "bad"
+        dots.append(f'<i class="{cls}" title="{STEP_NAMES[k]}"></i>')
+        if k < 3:
+            dots.append(f'<em class="{"on" if k < n else ""}"></em>')
+    label = STATUS_WORDS.get(st, st.lower())
+    return (f'<div class="steps" role="img" aria-label="Progress: {e(label)}">{"".join(dots)}</div>'
+            '<div class="stepl"><span>proposed</span><span>approved</span><span>sent</span>'
+            "<span>filled</span></div>")  # fmt: skip
+
+
 def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
     b = safe(lambda: j.batch(batch_id), None)
     if b is None:
@@ -787,6 +968,7 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
     its = j.intents_of(batch_id)
     ok = approved_seqs(j, batch_id)
     w = next((w for w in x.waiting if w.batch_id == batch_id), None)
+    now_iso = v.now.isoformat()
     apps = j.approvals(batch_id)
     who = "".join(
         f"<li>{e(a['action'])} {'all' if a['seq'] is None else a['seq']} · "
@@ -805,7 +987,9 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
             '<div class="btns">'
             f'<a class="btn" href="{act_link(a="ok", b=batch_id, n="all")}">✅ Approve all</a>'
             f'<a class="btn sec" href="{act_link(a="rf", b=batch_id)}">❌ Refuse</a></div>'
-            f'<p class="small muted">Deadline {w.by:%a %d %b %H:%M}.</p>' + actions_note(x, v.demo)))  # fmt: skip
+            f'<p class="small muted">Deadline {w.by:%a %d %b %H:%M}.</p>'
+            f'<p class="cd">⏱ <span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until {w.by:%H:%M}</span></p>'
+            + actions_note(x, v.demo)), "waitcard")  # fmt: skip
     cards = []
     for it, st in its:
         waiting = w is not None and st in OPEN_FOR_APPROVAL and it.seq not in ok
@@ -823,6 +1007,7 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
             f'<span class="pill {"amber" if waiting else "ok" if st == Status.FILLED else ""}">{e(word)}</span>'
             f'<div class="sub">{e(it.order_type.value)} limit {it.limit_price} (ref {it.ref_price}, '
             f"≈ {aud(Decimal(str(it.value_at_ref)), dp=0)}) · {e(it.reason)}</div>"
+            + _steps(st, it.seq in ok)
             + _timeline(j, it.client_order_id, it, st)
             + btn
             + "</li>"
@@ -846,8 +1031,13 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
         for k, lab in FILTERS
     )
     rows = []
+    last_day = None
     for r in x.inbox:
         k = str(r["kind"])
+        day = r["at"].astimezone(ASX_TZ).date() if r["at"] is not None else None
+        if day != last_day:
+            rows.append(f'<li class="day">{day:%A %d %B}</li>' if day else '<li class="day">-</li>')
+            last_day = day
         hide = kind != "all" and not (k == kind or (kind == "alerts" and k == "page"))
         link = str(r["link"] or "")
         go = (f' <a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""}>Open ›</a>'
@@ -918,16 +1108,21 @@ def server(v: Any, x: Extras) -> str:
         def meter(label: str, p: float | None) -> str:
             if p is None:
                 return ""
-            return (f"<li>{e(label)} <b>{p:.0f}%</b><div class='meter'><b style='width:"
-                    f"{min(100.0, p):.0f}%'></b></div></li>")  # fmt: skip
+            lvl = "crit" if p >= 90 else ("hi" if p >= 75 else "")
+            cls = "badt" if lvl == "crit" else ("warn2" if lvl else "good")
+            return (f"<div class='ht {cls}'><div class='tl'>{e(label)}<span>"
+                    f"{'⚠' if lvl else '✓'}</span></div><div class='tv'>{p:.0f}%</div>"
+                    f"<div class='meter {lvl}'><b style='width:{min(100.0, p):.0f}%'></b></div></div>")  # fmt: skip
 
         up = hs.get("uptime_s")
         cpus = hs.get("cpus") or 1
         load = hs.get("load1")
+        tiles_ = (
+            meter("CPU (1-min load)", None if load is None else float(load) / float(cpus) * 100)
+            + meter("Memory used", hs.get("mem_used_pct"))
+            + meter("Disk used", hs.get("disk_used_pct"))
+        )
         items = [
-            meter("CPU (1-min load)", None if load is None else float(load) / float(cpus) * 100),
-            meter("Memory used", hs.get("mem_used_pct")),
-            meter("Disk used", hs.get("disk_used_pct")),
             f"<li>Up <b>{float(up) / 86400:.1f} days</b></li>" if up is not None else "",
             f"<li>Tailscale: <b>{e(hs.get('tailscale', '-'))}</b></li>",
             f"<li>Code version: <b>{e(hs.get('code_version', '-'))}</b></li>",
@@ -941,7 +1136,7 @@ def server(v: Any, x: Extras) -> str:
         parts.append(section(
             "Machine", (f'<p class="note">Status is {ago(at, v.now)} old: is the worker running?</p>'
                         if stale else f'<p class="small muted">Status {ago(at, v.now)}</p>')
-            + f'<ul class="list">{"".join(items)}</ul>'))  # fmt: skip
+            + f'<div class="htiles">{tiles_}</div><ul class="list">{"".join(items)}</ul>'))  # fmt: skip
         if cont:
             parts.append(section("Containers", f'<ul class="list">{cont}</ul>'))
         if hs.get("log"):

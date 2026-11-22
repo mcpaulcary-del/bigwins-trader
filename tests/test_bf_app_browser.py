@@ -39,7 +39,7 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def test_BF_D55_real_browser_pause_kill_approve(tmp_path: Path) -> None:
+def test_BF_D55_D62_real_browser_buttons_chart_tabs_a11y(tmp_path: Path) -> None:
     module = _playwright()
     if module is None:
         pytest.skip("node / playwright not installed")
@@ -75,3 +75,10 @@ def test_BF_D55_real_browser_pause_kill_approve(tmp_path: Path) -> None:
         assert "cross-site" not in out[step] and "form token" not in out[step]
     assert "Approve all" in out["confirm"] and "total" in out["confirm"]
     assert len(out["posts"]) == 3
+    # BF-D62: the chart read-out, range buttons, tab switching, holdings interactions
+    assert out["tooltip"] and "A$" in out["tooltip"] and "gap" in out["tooltip"]
+    assert out["range"] == "true"
+    assert out["tab"] == ["holdings", "/holdings", "holdings"]
+    assert out["sorted"] is True and out["donut"] >= 1
+    # accessibility: every control has a name, every chart a label, text contrast >= 4.5
+    assert out["a11y"] == [], out["a11y"]

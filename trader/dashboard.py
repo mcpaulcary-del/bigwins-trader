@@ -145,6 +145,8 @@ class View:
     index_note: str = "with dividends"
     demo: bool = False
     live: bool = False  # BF-D50
+    limits: Any = None  # BF-D62: the L11 thresholds (loss-rule meter)
+    journal: Any = None  # BF-D62: read-only, for the chart's trade dots
     holdings: list[Holding] = field(default_factory=list)
     next_decision: date | None = None
     last_decision: date | None = None
@@ -255,6 +257,7 @@ def collect(src: Sources) -> View:
     v = View(
         now=src.clock(), book=src.book, started=False, index_label=src.index_label,
         index_note=src.index_note, demo=src.demo, live=src.live,
+        limits=src.limits, journal=src.journal,
     )  # fmt: skip
     if src.demo:
         v.notes.append("DEMO: synthetic prices from a short simulated run, not your book.")
@@ -528,7 +531,9 @@ def render(v: View, x: Extras | None = None) -> str:
 
 ICON_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-    f'<rect width="512" height="512" rx="96" fill="{THEME}"/>'
+    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" '
+    f'stop-color="{THEME}"/><stop offset="1" stop-color="#0f8a7e"/></linearGradient></defs>'
+    '<rect width="512" height="512" rx="112" fill="url(#g)"/>'
     '<polyline points="96,370 200,270 280,320 416,160" fill="none" stroke="#fff" '
     'stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>'
     '<circle cx="416" cy="160" r="34" fill="#f5c542"/></svg>'
