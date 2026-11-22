@@ -306,6 +306,13 @@ outside ASX hours (10:00-16:15 Sydney):
 5. On the phone, open the app > Server > Trader controls and test Pause (one tap: "PAUSED"),
    then Resume with your code; Turn on alerts needs your code too.
 
+## App polish (22 Nov 2026; BF-D62)
+
+Presentation only: calmer look (tokens, one accent, ▲/▼ with every gain or loss, tabular
+figures, reduced-motion respected), interactive chart, holdings donut / sort / sheet,
+C6 and CGT rings, safety gauge and L11 meter, order progress dots and a 15:20 countdown,
+inbox by day. The real-browser test also covers chart, tabs and an accessibility pass.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
