@@ -586,6 +586,7 @@ needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm w
 | # | Item | When |
 | --- | --- | --- |
 | 7 | Order precautions set on paper **and later on the live username**, Total Value Limit above A$10,000; photographed (A4) | now (paper); before real money (live) |
+| - | **Fresh Telegram bot token** (BotFather `/revoke`, then `put telegram_bot_token` on the server; no screenshots): the set-up tokens of 21-22 Nov 2026 were seen in chat screenshots | before real money |
 | 8 | **A$10,000 deposited and settled** in the live account | before real money |
 | 13 | Sign the risk statement; this is no more than 5% of your investable assets | before real money |
 | 14 | Confirm the parcel method (FIFO, the default) with your accountant; after 30 June 2027 give them `trader-bf tax-report --fy 2026-27` (BF-D29) | before the first sale / after the FY |
