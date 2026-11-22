@@ -1,8 +1,10 @@
 # Go-live guide for the owner (EMG2-18 book, paper first)
 
 Plain English, step by step, written to be done in one sitting (about 3 hours, plus
-IBKR's waiting times). Accurate to branch `bigwins-fast` as of 19 Nov 2026; file names
-are given so anything here can be checked against the code.
+IBKR's waiting times). Accurate to branch `bigwins-fast` as of 22 Nov 2026; file names
+are given so anything here can be checked against the code. Since 22 Nov 2026 you run
+the book from the **Big Wins app** on your phone (approvals, alerts, controls); Telegram
+is optional (appendix T).
 
 **What this build can and cannot do.** It runs the EMG2-18 book on an **IBKR paper
 account only**. It cannot place a real-money order: `LIVE_TRADING_ENABLED` is hard-coded
@@ -16,10 +18,12 @@ by you, **on the server**, into files under `deploy/secrets/`. Never paste them 
 chat (with me or anyone), an email, or a file in git. The code reads them only from
 those files (Docker secrets under `/run/secrets`, `trader/secrets.py`); there is no
 config field or environment variable for them. Your IBKR account id (`DU...`) and your
-Telegram chat id are not secrets and go in `config/bfast.yaml`.
+Tailscale log-in are not secrets; they go in `config/bfast.local.yaml` on the server
+(not in git; laid over `config/bfast.yaml`).
 
-Contents: A. IBKR - B. Server - C. Telegram and authenticator - D. First messages and
-commands - E. What is left before go-live.
+Contents: A. IBKR - B. Server - C. The phone app, alerts and the authenticator - D. First
+messages, approving in the app, the controls - E. What is left before go-live -
+T. Telegram (optional).
 
 ---
 
@@ -270,7 +274,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **eight** files in `deploy/secrets/`, with exactly these names
+Compose needs **eight** files in `deploy/secrets/` (nine with Telegram on), with exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -282,12 +286,12 @@ cd /srv/asx-trader/deploy
 mkdir -p secrets && chmod 700 secrets
 put() { read -rsp "$1: " v; printf '%s' "$v" > "secrets/$1"; unset v; echo; }
 put tws_password          # the IBKR PAPER password (used only by the gateway container)
-put telegram_bot_token    # from @BotFather (part C1)
 put ibkr_flex_token       # the Flex Web Service token (A6.2)
 put ibkr_flex_query_id    # the query id number (A6.1)
 put eodhd_api_token       # the EODHD data token (for the price-store refresh)
-put healthchecks_url      # a healthchecks.io ping URL; type: none   until we set it up
+put healthchecks_url      # your healthchecks.io ping URL (C5), or type: none
 openssl rand -hex 24 > secrets/db_password                   # database password, made here
+openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -out secrets/vapid_private_key  # phone-alert key (or: bigwins vapid)
 python3 -c 'import base64,os;print(base64.b32encode(os.urandom(20)).decode())' > secrets/totp_seed
 chmod 444 secrets/*        # see the note below
 ls -l secrets              # eight files, none empty, all -r--r--r--
@@ -322,24 +326,33 @@ mode, which the containers cannot see.
 | --- | --- | --- |
 | `tws_password` | gw-paper (IB Gateway login) | `deploy/docker-compose.yml` (`TWS_PASSWORD_FILE`) |
 | `db_password` | db and trader | compose; `trader/bfast_cli.py` `_journal_from_config` |
-| `telegram_bot_token` | trader | `trader/approval.py` `TelegramTransport` |
+| `vapid_private_key` | trader (phone alerts, BF-D40) | `trader/app_notify.py` `WebPush`; made on the server by `bigwins vapid` (and by `bigwins update` if missing) |
+| `telegram_bot_token` | trader, **only with Telegram on** (appendix T) | `trader/approval.py` `TelegramTransport` |
 | `totp_seed` | trader | `trader/approval.py` `TotpVerifier` |
 | `ibkr_flex_token`, `ibkr_flex_query_id` | trader | `trader/flex_pull.py` (read at each pull) |
 | `eodhd_api_token` | trader (price-store refresh, BF-D31) | `trader/store_refresh.py` (read at each refresh) |
-| `healthchecks_url` | dead-man heartbeat | not read yet (the heartbeat is still to build) |
+| `healthchecks_url` | dead-man heartbeat (BF-D41), `none` = off | `trader/heartbeat.py` (pinged every 5 minutes) |
 
-### B7. Two settings in `config/bfast.yaml`
+### B7. Your settings in `config/bfast.local.yaml` (this server only)
+
+Server-only settings go in `config/bfast.local.yaml`, which is not in git and is laid
+over `config/bfast.yaml` (so `bigwins update` never conflicts with them):
 
 ```bash
-cd /srv/asx-trader && nano config/bfast.yaml
+cd /srv/asx-trader && nano config/bfast.local.yaml
 ```
 
-- `broker.account_id: DU1234567` (your paper id; the trader refuses anything not `DU...`);
-- `telegram.allowed_chat_ids: [123456789]` (your chat id from C2; anyone else is
-  silently ignored).
+```yaml
+broker:
+  account_id: DU1234567       # your paper id; the trader refuses anything not DU...
+tax:
+  marginal_rate: 0.345        # optional: your marginal rate incl. Medicare, for the Tax screen
+```
 
-Change nothing else. `trader-bf run` refuses to start if either is empty
-(`trader/bfast_cli.py` `cmd_run`).
+Your Tailscale log-in (who may approve in the app) is added there by `bigwins` option 11
+(C2). `trader-bf run` refuses to start without the account id. (If you edited
+`config/bfast.yaml` itself earlier, move those lines here and run
+`git checkout config/bfast.yaml`; `bigwins update` says so if needed.)
 
 ### B8. First start (paper)
 
@@ -366,31 +379,53 @@ that is when the messages in part D begin.
 
 ---
 
-## C. Telegram and the authenticator
+## C. The phone app, alerts and the authenticator
 
-### C1. The bot
+The Big Wins app is a private web app on your server, reached only through your own
+Tailscale account (`tailscale serve`, HTTPS; nothing is open to the internet). You view
+the book, approve orders, get alerts and control the trader and the server from it.
 
-1. In Telegram, open **@BotFather** > `/newbot` > a name (e.g. "Bigwins trader") > a
-   username ending in `bot`.
-2. BotFather replies with the **token**. Type it into the server (`put
-   telegram_bot_token`, B6). Do not forward the BotFather message to anyone.
-3. Open a chat with your new bot and send `hello` (the bot must have seen you once).
+### C1. Put the app on your phone
 
-### C2. Your chat id
+1. On your phone: install the **Tailscale** app and sign in with the same account as the
+   server (B2). Turn it on.
+2. On the server: `bigwins` > **9) Turn on the phone app** (it runs `tailscale serve --bg
+   8080`). It prints the address, like `https://bigwins.<your-tailnet>.ts.net`. If
+   Tailscale asks you to enable HTTPS certificates, click its link, allow it, choose 9 again.
+3. On the phone, open that address. **iPhone**: Safari > Share > **Add to Home Screen**.
+   **Android**: Chrome menu (⋮) > **Add to Home screen**. From now on open Big Wins from
+   its icon (alerts on iPhone work only from the home-screen icon).
 
-Before the trader runs (only one program may read the bot's messages), open this
-address in **your own browser**, with your token in place of `<TOKEN>`:
+Before the first trading day it says "Waiting for the first trading day"; that is normal.
 
-`https://api.telegram.org/bot<TOKEN>/getUpdates`
+### C2. Allow your phone to act (approve, pause...)
 
-Find `"chat":{"id":123456789` - that number is your chat id. Put it in
-`telegram.allowed_chat_ids` (B7). It is not a secret.
+Viewing works for any device on your tailnet; **acting** needs your Tailscale log-in on
+the server's allow-list. Until it is set, every action is off and the app says so.
 
-### C3. The authenticator (second factor)
+1. On the server: `bigwins` > **11) Allow my phone to act**. It reads your log-in from
+   Tailscale (`tailscale status`), shows it, and after you type `y` writes it to
+   `config/bfast.local.yaml` (`app: allowed_logins`; this server only, never in git).
+2. `bigwins` > **4) Restart the trader** (it restarts the app too).
 
-Some commands need a 6-digit one-time code from an authenticator app (`trader/approval.py`:
-RFC 6238, SHA-1, 30 seconds, each code accepted once). On the server, show the seed you
-created in B6 as a QR code and scan it with Google Authenticator, Microsoft
+### C3. Turn on alerts
+
+1. In the app: **Inbox** > **Alerts on this phone** (or Settings > Turn on alerts).
+2. Tap **🔔 Turn on alerts**, then **Allow**. A test alert arrives: "Alerts are on for
+   this phone."
+3. Approval requests and PAGE alerts always arrive, at high priority; you can switch the
+   daily report and other messages on or off on the same screen. Every message is also
+   kept in the app's **Inbox** (with filters: alerts, approvals, reports, your actions).
+
+The alert key is made on the server (`bigwins vapid`, or automatically by `bigwins
+update`). If you ever make a new key, tap "Turn on alerts" again on each phone.
+
+### C4. The authenticator (second factor)
+
+Approving, refusing, resuming, continuing, code changes and server jobs need a 6-digit
+one-time code from an authenticator app (`trader/approval.py`: RFC 6238, SHA-1, 30
+seconds, each code accepted once, in the app and in Telegram alike). On the server, show
+the seed you created in B6 as a QR code and scan it with Google Authenticator, Microsoft
 Authenticator or 1Password:
 
 ```bash
@@ -402,180 +437,126 @@ The app now shows "bigwins-trader" with a 6-digit code. Keep a **paper backup** 
 seed (print the QR or write the letters down) somewhere safe: if you lose your phone,
 nobody can re-arm the system or approve an order without it.
 
+### C5. Optional: healthchecks.io (tells you if the server goes quiet)
+
+The app cannot tell you that the server is down, so the trader "checks in" with
+healthchecks.io every 5 minutes; if the check-ins stop, healthchecks.io emails you (or
+pushes to its own app).
+
+1. Sign up free at healthchecks.io, **Add Check**: period 5 minutes, grace 15 minutes.
+2. Copy its ping URL (`https://hc-ping.com/...`; keep it private).
+3. On the server: `bigwins` > 5) Add/replace a secret > `healthchecks_url`, paste it.
+   Restart the trader. The Server tab shows "Heartbeat OK".
+
+Type `none` instead to keep it off.
+
+### C6. Server worker and Claude on the server
+
+- `sudo bigwins install-worker` (once): a small service that sends the server's status
+  to the app's **Server** tab every 30 seconds and runs the server jobs you ask for in
+  the app (restart, update, go back a version, checks, Claude remote control; each
+  needs your code).
+- **Ask Claude about the server**: Server tab > Start / check… (code) starts Claude Code
+  in remote-control mode on the server; then tap **Open Claude** and continue in the
+  official Claude app (signed in with your Claude account). The **first sign-in is done
+  once in Termius**: `tmux attach -t remote`, follow the sign-in, then Ctrl-b d to leave
+  it running. The Big Wins app never runs Claude or any command itself.
+
 ---
 
-## D. First messages, the first approval, and the commands
+## D. First messages, approving in the app, and the controls
 
 ### D1. The daily rhythm (Sydney time, ASX trading days; `trader/bf_app.py` `DAY_JOBS`)
 
-| Time | What happens | What you see |
+| Time | What happens | What you see (Inbox + alert) |
 | --- | --- | --- |
-| 10:30, 12:30 | reads your commands | replies to anything you sent |
 | 13:05-16:25 | downloads the IBKR Flex statement (up to 5 tries) | a PAGE only if still missing at 16:25 |
 | 14:30 | reminder | "Reminder: 1 order(s) of ... are not approved ..." if you have not approved |
-| **15:20** | **approval deadline** | a later `/ok` is refused; unapproved orders lapse, never sent |
+| **15:20** | **approval deadline** | a later approval is refused; unapproved orders lapse, never sent |
 | 15:45 | sends approved orders (LOC, into the closing auction) | "...-C: sent 1, not approved 0, held/rejected 0" |
 | 16:20 | collects fills | |
 | 16:30 | reconciles journal v IBKR to the unit and the cent | a PAGE only on a break |
-| 17:35-22:05 | downloads the day's EODHD prices, dividends and splits into the price store (hourly until it is there) | a PAGE only if still missing at 22:05 (then no decision on stale prices) |
-| 22:20 | month-end (or start) decision; in state EMG2 a share is sold only after 6 month-ends held and outside the top 40% of band C (sell rule C6, BF-D35) | the decision message with orders for the **next** session |
-| 22:25 | in FUND state only: a share the switch could not sell (e.g. halted) is offered again, and its cash goes into A200 (BF-D34) | "Fund sweep ..." with orders to approve, only when there is something to sell or invest |
+| 17:35-22:05 | downloads the day's EODHD prices into the price store | a PAGE only if still missing at 22:05 (then no decision on stale prices) |
+| 22:20 | month-end (or start) decision; in state EMG2 a share is sold only after 6 month-ends held and outside the top 40% of band C (sell rule C6, BF-D35) | "Decision ...: N orders" with an alert, for the **next** session |
+| 22:25 | in FUND state only: the fund sweep (BF-D34) | "Fund sweep ..." to approve, only when needed |
 | 22:45 | daily report | the report (every trading day) |
 
-The trader also reads Telegram between jobs, so `/pause` and `/kill` act within
-seconds, not at the next tick (`trader/scheduler.py`).
+Your actions in the app are handled within a second or two (the trader wakes for them).
 
-### D2. The start: one A200 order, which is also the canary
+### D2. Approving in the app
 
-On the record's data the band-trend state is **FUND** (band 301-600 index below its
-10-month average, BF-D28), so the book very likely starts in the A200 fund, not in
-shares. Owner decision "Switch mechanics" 3: at a FUND start the **canary is the single
-fund order** and nothing follows it.
+When a decision has orders, you get an alert ("Decision 2026-11-30 (start...): 1
+order(s)"). Tap it, or open the app: **Home** shows "N orders waiting for your approval".
 
-**Evening of the start day (22:20)**, for example a start on 30 Nov 2026 (numbers
-illustrative; the real message has the real prices):
+1. Tap **✅ Approve all** (or open **See each order** to approve or veto one at a time).
+2. The next screen shows exactly what will happen, e.g. "Approve all 18 orders of
+   EMG2_18_PAPER-2026-11-30-R — total ≈ A$9,900", with each order (buy/sell, shares,
+   limit, value). Check it.
+3. Type the 6-digit code from your authenticator and tap **Approve all 18 orders**.
+4. "Done: approved all 18 orders of ..." The approval is in the journal as yours
+   (`app:<your log-in>`), and in the Inbox under "My actions".
 
-```
-Decision 2026-11-30 (start, canary first); list 3f9a1c0b7d2e; 1 order(s)
-state: FUND (band 301-600 index 0.7670 below its 10-month average 0.8580, 2026-11-30)
-LIC list: frozen record list config/lic_list.csv (69 codes, sha256 af441f284b2d...)
-PAPER
-Batch EMG2_18_PAPER-2026-11-30-C (per_order), decision 2026-11-30, execution 2026-12-01:
- 1. BUY 64 A200 LOC lim 154.5 (ref 150.00, ~A$9600.00) BT_FUND_BUY [RISK_OK]
-Reply /ok EMG2_18_PAPER-2026-11-30-C <n> <code> or /ok EMG2_18_PAPER-2026-11-30-C all <code> by 15:20.
-PAGE fund buy A200 A$9888.00 above the L10 share-order limit (L15 band-trend switch, BF-D28)
-```
+The rules are exactly those of the old Telegram commands (same code check, each code
+works once in the app or Telegram; the same 15:20 deadline; an old, refused or fully
+approved batch is refused). If you do nothing, you get a reminder at 14:30 and at 15:45
+the orders lapse: never sent later or automatically (L8). **Refuse** does the same with
+the code and sends nothing of that batch. After 5 wrong codes in 15 minutes, code
+actions lock for 15 minutes and you get a PAGE (Pause, Kill and Stop still work).
 
-How to read it: one buy of 64 A200 units, a limit of 3% above the reference close (the
-L7 band), worth about A$9,600 at the close; about 3% of the cash stays until a later
-top-up (BF-D28). The PAGE line is expected: it tells you this one order is above the
-A$800 share limit by design. Every message from the paper book says PAPER.
+The start (D2 of the old guide still applies in substance): at a FUND start the canary
+is one A200 order of about A$9,600; its PAGE line ("fund buy A200 ... above the L10
+share-order limit") is expected. After the fill and a clean reconciliation: "Canary
+filled and reconciled to the cent; no other start orders."
 
-**Next trading day, before 15:20**, approve it. Open your authenticator and send:
+### D3. The controls (Home > Controls, or Server > Trader controls)
 
-```
-/ok EMG2_18_PAPER-2026-11-30-C 1 482913
-```
+| Button | Code | What it does |
+| --- | --- | --- |
+| ⏸ Pause buying now | no, one tap | buys stop; registered sells go on |
+| 🛑 Kill… | no, but a "Yes, KILL" screen | stops all new orders and cancels open orders at IBKR |
+| ✋ Stop (L11)… | no, but a "Yes, STOP" screen | the loss rule's "owner says stop": buys stay paused, no automatic resume |
+| ▶️ Resume… | yes | re-arms after pause, kill, stop or a halt |
+| ✔️ Continue (L11)… | yes | your confirmation at loss-rule stage 3 (value below A$5,000) |
+| 📊 Status | no | shows the safety level |
+| Code changes: Confirm… / Undo… / Record a code change… | yes | the old `/idmap` and `/idmap_reject` (BF-D19, BF-D25) |
+| Approve / Veto (Orders > a batch) | yes | one order; a sell cannot be vetoed alone |
 
-(`1` is the order number; `all` approves every order of the batch.) Reply:
+The paper book's controls never stop the simulated twin or the random twins (BF-D16).
 
-```
-approved 1: BUY 64 A200
-```
+### D4. Alerts you may see
 
-If you do nothing, at 14:30 you get a reminder, and at 15:45 the order lapses
-(`LAPSED_NO_APPROVAL`): it is never sent later or automatically (L8).
+`PAGE` alerts need a look; `PAGE HIGH PRIORITY` needs you the same day: a reconciliation
+break (`HALTED_INTEGRITY`: nothing is sent until you Resume after we have looked); the
+loss-rule stages (A$7,000 check, A$6,000 buys paused, A$5,000 needs Continue); a missing
+Flex statement; a code change to confirm; a refused LIC list; a job that failed; app code
+actions locked.
 
-**15:45** `EMG2_18_PAPER-2026-11-30-C: sent 1, not approved 0, held/rejected 0`
+### D5. The rest of the app
 
-**16:30**, after the auction fill and a clean reconciliation:
-
-```
-Canary filled and reconciled to the cent; no other start orders.
-```
-
-(If the canary does not fill: `PAGE canary did not fill; the start stops here (L6).
-Review before a new start.`)
-
-**22:45** the daily report (every trading day; `trader/report.py`):
-
-```
-PAPER (IBKR paper account / simulation). No real money is at risk.
-Not shown to beat the index.
-
-EMG2_18_PAPER - 2026-12-01 - safety NORMAL
-state: FUND (band 301-600 index 0.7670 below its 10-month average 0.8580, 2026-11-30)
-Value A$9999.50 (cash A$399.50); capital in A$10000; result -0.01%
-Brokerage to date A$6.90 (0.07% of capital)
-Simulated twin A$9998.90 (difference A$0.60)
-Simulated twin at the 50.0 percentile of 100 random twins (their median A$9998.90; L11 test (b) needs >= 10)
-Holdings (1):
-  A200           64 @ 150.00 = A$9600.00
-Orders today (1):
-  EMG2_18_PAPER-2026-11-30-A200-BUY-1 FILLED
-Fills today (1):
-  +64 A200 @ 149.9 comm A$6.90
-```
-
-In FUND state the twin and the 100 random twins hold the fund too, so they move
-together. At each month-end the state is checked again; when the band index is back at
-or above its average the message says `state: EMG2`, the decision sells A200 and buys
-the EMG2-18 picks (up to about 18 orders, each A$500-A$800), and you approve each one
-the same way (`/ok <batch> all <code>` approves them all at once).
-
-### D3. The commands (exactly as in `trader/approval.py`)
-
-Only your chat id is obeyed; anyone else is ignored. The command word is not
-case-sensitive; copy the batch name exactly as the message shows it.
-`<code>` is the 6-digit authenticator code (each code works once).
-
-| Command | Needs a code | What it does | Reply |
-| --- | --- | --- | --- |
-| `/ok <batch> <n> <code>` | yes | approves order `n` of the batch (before 15:20 on its day) | `approved 1: BUY 64 A200` |
-| `/ok <batch> all <code>` | yes | approves every order of the batch | `approved all 18 orders of <batch>` |
-| `/kill` | no | stops all new orders and cancels open orders at IBKR (buys and sells) | `KILLED: no new orders; 1 open order(s) cancelled. /resume <code> to re-arm.` |
-| `/pause` | no | stops buys; registered sells still go | `PAUSED: buys stop, registered sells proceed. /resume <code> to re-arm.` |
-| `/stop` | no | the loss rule's "owner says stop" (L11 d): buys stay paused, no automatic resume; sells go on | `STOP recorded (L11 d): buys stay paused, sells go on. /resume <code> re-arms.` |
-| `/continue <code>` | yes | your written confirmation at loss-rule stage 3 (value below A$5,000) | `confirmation recorded (L11 stage 3): buys resume at the next decision if the staged test passes` |
-| `/idmap OLD NEW <code>` or `/idmap OLD NEW RATIO <code>` | yes | confirms a code change of a held share (e.g. `/idmap HGO KAN 482913`), optionally with a ratio (`1:10` = 1 new for 10 old) (BF-D19, BF-D25) | `code change HGO -> KAN confirmed` |
-| `/idmap_reject OLD <code>` | yes | undoes a recorded code change | `code change HGO -> KAN undone: HGO is carried again at its last mark (review the holding)` |
-
-Also implemented: `/resume <code>` (re-arms after `/pause`, `/kill`, `/stop` or a halt:
-`re-armed: NORMAL`), `/status` (`safety NORMAL`), `/veto <batch> <n> <code>` (drops one
-**buy**; a sell cannot be vetoed alone), `/refuse <batch> <code>` (refuses a whole
-batch). Risk-reducing commands (`/kill`, `/pause`, `/stop`) never need a code; anything
-that adds risk or re-arms does. A wrong or reused code gets `refused: ...` and changes
-nothing.
-
-The paper book's commands never stop the simulated twin or the random twins (BF-D16);
-they keep the comparison going.
-
-**Buttons (BF-D38).** You can tap instead of typing. Each approval message has buttons
-under it: **✅ Approve all**, **❌ Refuse batch**, one **✅ n** per order, **📊 Status** and
-**⏸ Pause**. Send `/menu` for **📊 Status, ⏸ Pause, 🛑 Kill, ✋ Stop, ▶️ Resume,
-✔️ Continue**. The rules are exactly those of the typed commands:
-
-- Approve, Refuse, Resume and Continue: after the tap the bot asks
-  "Send your 6-digit code to approve all 18 orders of <batch>". Type the code from your
-  authenticator within **3 minutes**. That is the same as typing `/ok <batch> all <code>`
-  (same 15:20 deadline, each code works once). A wrong code cancels the tap: tap again.
-- Pause: one tap, it acts at once.
-- Kill and Stop: the bot asks "Tap again to confirm KILL"; tap **Yes, KILL** within a
-  minute (or Cancel). This stops a slip of the finger.
-- Once a batch is approved or refused by button, its message changes to show the
-  result and the buttons go away. Buttons on old or late batches are refused.
-- Only your chat works; anyone else's taps are ignored.
-
-### D4. Pages you may see
-
-Messages starting `PAGE` need a look; `PAGE HIGH PRIORITY` needs you the same day.
-Examples (all in `trader/bf_app.py`): a reconciliation break (`PAGE EMG2_18_PAPER:
-HALTED_INTEGRITY` with the difference - nothing is sent until you `/resume <code>`
-after we have looked); the loss rule stages (A$7,000 check, A$6,000 buys paused, A$5,000
-needs `/continue`; BF-D15); a missing Flex statement; a code change to confirm with
-`/idmap`; a refused LIC list (BF-D21); a job that failed.
-
-### D5. The Big Wins app on your phone (read-only)
-
-A private page that shows the paper book at a glance: value against the ASX 200 fund
-(A200), your shares with gain or loss, the next decision and the last orders, the safety
-state and the server's health. It **cannot** approve, send or cancel anything: that stays
-in Telegram. Only devices signed in to your own Tailscale account can open it.
-
-1. On your phone: install the **Tailscale** app and sign in with the same account as the
-   server (B2). Turn it on.
-2. On the server: type `bigwins` and choose **9) Turn on the phone app** (it runs
-   `tailscale serve --bg 8080`). It prints the address, like
-   `https://bigwins.<your-tailnet>.ts.net`. If Tailscale asks you to enable HTTPS
-   certificates, click the link it shows and allow it, then choose 9 again.
-3. On the phone, open that address in **Chrome**. Then Chrome menu (⋮) >
-   **Add to Home screen**. The Big Wins icon now opens it like an app. It refreshes
-   itself every minute.
-
-Before the first trading day it says "Waiting for the first trading day"; that is normal.
-To turn it off: on the server `tailscale serve reset`. (Optional: to let only your own
-Tailscale log-in see it, put it under `dashboard: allowed_logins:` in
-`config/bfast.yaml`.)
+- **Home**: value, today, since start, vs A200, drawdown from peak; the chart with
+  1M / 3M / 6M / All (touch and drag to read a day); the twin check.
+- **Holdings**: tap a share for its price since you bought it, gain, days held, why it
+  was chosen (rank and scores at the decision) and where it stands on sell rule C6.
+  **Tax**: per financial year, gains parcel by parcel, the 50% discount, losses carried
+  forward, dividends, what selling today would mean, and an EOFY CSV for your accountant
+  ("Estimate for your records — not tax advice. Paper account: no real tax.").
+- **Orders**: every decision; tap one for each order's path (proposed, approved, sent,
+  filled) with prices and brokerage.
+- **Server**: the machine, containers, last log lines, heartbeat; Restart / Update / Re-run
+  checks / Refresh prices (each with your code; restart and update during ASX hours need
+  "Do it anyway").
+- **Strategy** (Server > Strategy): the running version, release notes, results by
+  version. When the server sees a new version on GitHub it shows "Strategy update
+  available" (or "App-only update") with what changes, why and how it was tested.
+  **Approve update…** (code) queues it. In `strategy.update_mode: immediate` (the default
+  while paper) it is applied once the ASX is closed and no order is working, and that
+  evening at 22:20 the trader makes an out-of-cycle decision with the new rules: its
+  orders come to you for approval as usual. In `next_decision` mode the new rules start
+  at the next month-end (not in the 24 hours before one unless you tick the override).
+  **Go back to the previous version…** returns to the version before the last update.
+  (Live later: daily strategy changes raise costs and tax; immediate mode on real money
+  will need a deliberate config change.)
+- **Settings** (gear): alerts, who may act, the go-live checklist items the app can see.
 
 ---
 
@@ -594,8 +575,8 @@ Tailscale log-in see it, put it under `dashboard: allowed_logins:` in
    EODHD service and its timing.
    `trader-bf deposit` / `kill` / `pause` / `status` act on the server's database, the
    same journal the running trader uses (BF-D30); they are run inside the trader
-   container, e.g. `docker compose exec trader trader-bf status`. **You see**: one or two small paper orders I ask you to approve with
-   `/ok`, and a written result in `NEXT.md`.
+   container, e.g. `docker compose exec trader trader-bf status`. **You see**: one or two small paper orders I ask you to approve in
+   the app, and a written result in `NEXT.md`.
 2. **Start the runner**: record the A$10,000 paper deposits (paper book and twin:
    `docker compose exec trader trader-bf deposit --book EMG2_18_PAPER --amount 10000`,
    the same with `--book EMG2_18_SIM`; the command prints `journal: postgresql+psycopg://trader@db...`
@@ -615,8 +596,8 @@ Tailscale log-in see it, put it under `dashboard: allowed_logins:` in
    seconds: `KILLED: no new orders; 1 open order(s) cancelled. ...`, and the order shows
    as cancelled in the IBKR app. Then `/resume <code>` -> `re-armed: NORMAL`. We also try
    `/pause`, `/stop`, `/continue <code>` and a wrong code once each.
-5. **Heartbeat and backups** (items 9-10): a dead-man check-in (the `healthchecks_url`
-   file), five days without a miss; nightly encrypted off-site copy of the database and
+5. **Heartbeat and backups** (items 9-10): the dead-man check-in is built (BF-D41;
+   C5), five days without a miss; nightly encrypted off-site copy of the database and
    one restore drill; an outside port scan showing nothing open. **You see**: an email
    from healthchecks.io if the server ever goes quiet.
 
@@ -625,11 +606,11 @@ Tailscale log-in see it, put it under `dashboard: allowed_logins:` in
 | # | Item | When |
 | --- | --- | --- |
 | 7 | Order precautions set on paper **and later on the live username**, Total Value Limit above A$10,000; photographed (A4) | now (paper); before real money (live) |
-| - | **Fresh Telegram bot token** (BotFather `/revoke`, then `put telegram_bot_token` on the server; no screenshots): the set-up tokens of 21-22 Nov 2026 were seen in chat screenshots | before real money |
+| - | If you keep Telegram on (appendix T): **fresh bot token** (BotFather `/revoke`, then a new `telegram_bot_token`; no screenshots): the set-up tokens of 21-22 Nov 2026 were seen in chat screenshots. With Telegram off, revoke the old token anyway | before real money |
 | 8 | **A$10,000 deposited and settled** in the live account | before real money |
 | 13 | Sign the risk statement; this is no more than 5% of your investable assets | before real money |
 | 14 | Confirm the parcel method (FIFO, the default) with your accountant; after 30 June 2027 give them `trader-bf tax-report --fy 2026-27` (BF-D29) | before the first sale / after the FY |
-| 15 | Be reachable by 15:20 on order days through April 2027 (orders need your `/ok`) | ongoing |
+| 15 | Be reachable by 15:20 on order days through April 2027 (orders need your approval in the app) | ongoing |
 | - | Answer the open decisions in `NEXT.md` (staged loss-rule interpretations, HGO -> KAN, BF-D24 demerged shares) | before go-live |
 | - | Market data: decide on the ASX Level 1 subscription (A5) | before real money |
 
@@ -686,3 +667,55 @@ deposits in `ledger_bf_paper`, and start the official paper book
 
 Real money needs, after all of the above, a separate reviewed code change that adds
 the live gateway with its own guards (go-live item 6); nothing in this build can do it.
+
+---
+
+## T. Appendix: Telegram (optional)
+
+The app replaces Telegram. To use Telegram as well (or instead), set in
+`config/bfast.local.yaml`:
+
+```yaml
+notify:
+  channel: both                 # or telegram (Telegram only)
+telegram:
+  allowed_chat_ids: [123456789] # your chat id (T2)
+```
+
+and add the bot token secret (T1). `bigwins` then adds `deploy/docker-compose.telegram.yml`
+by itself, and `check_secrets.sh` / `bigwins status` count the token. Restart the trader.
+
+### T1. The bot
+
+1. In Telegram, open **@BotFather** > `/newbot` > a name > a username ending in `bot`.
+2. BotFather replies with the **token**: `bigwins` > 5) Add/replace a secret >
+   `telegram_bot_token`. Do not forward the BotFather message to anyone.
+3. Open a chat with your new bot and send `hello`.
+
+### T2. Your chat id
+
+Before the trader runs with Telegram on, open in **your own browser** (your token in
+place of `<TOKEN>`) `https://api.telegram.org/bot<TOKEN>/getUpdates` and find
+`"chat":{"id":123456789`: that is your chat id (not a secret).
+
+### T3. The commands (`trader/approval.py`)
+
+Only your chat id is obeyed. `<code>` is the 6-digit authenticator code (each code works
+once, in Telegram or the app).
+
+| Command | Needs a code | What it does |
+| --- | --- | --- |
+| `/ok <batch> <n> <code>` / `/ok <batch> all <code>` | yes | approves one / every order of the batch (before 15:20) |
+| `/veto <batch> <n> <code>` | yes | drops one buy |
+| `/refuse <batch> <code>` | yes | refuses the whole batch |
+| `/approve <batch> <code>` | yes | approves a batch-mode batch |
+| `/pause`, `/kill`, `/stop` | no | as the app's Pause, Kill, Stop |
+| `/resume <code>`, `/continue <code>` | yes | re-arm; L11 stage-3 confirmation |
+| `/idmap OLD NEW [RATIO] <code>`, `/idmap_reject OLD <code>` | yes | confirm / undo a code change |
+| `/status`, `/menu` | no | safety level; the buttons |
+
+**Buttons (BF-D38)**: approval messages carry ✅ Approve all, ❌ Refuse batch, one ✅ n per
+order, 📊 Status and ⏸ Pause; `/menu` shows Status, Pause, Kill, Stop, Resume, Continue.
+A tap that needs a code asks for it (send the code within 3 minutes); Kill and Stop need
+a second confirming tap. Same rules as the typed commands and the app.
+

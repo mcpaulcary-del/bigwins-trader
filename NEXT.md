@@ -1,4 +1,4 @@
-# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 22 Nov 2026 (after piece 3, corporate actions, splits, the Flex pull, the band-trend switch, the phone dashboard and Telegram buttons)
+# NEXT — B-fast for the EMG2-18 slice (FD v3.0 §7.9, §21.1; AMENDMENT_live_EMG2_18), state on 22 Nov 2026 (after piece 3, corporate actions, splits, the Flex pull, the band-trend switch, the phone app with actions, alerts, server control, tax and strategy updates)
 
 Branch: `bigwins-fast` (pieces 1-3 merged; `bigwins-fast-wip` merged fast-forward at
 c07197c and deleted locally; **its remote copy could not be deleted from this session**
@@ -236,6 +236,37 @@ go-live checklist, by a reviewed code change.
   Owner drill on the phone joins go-live item 4.
 - Gate: ruff, format, mypy --strict, validate-config x2, pytest, BF gate, compose config.
 
+## The phone app runs the book; Telegram optional (22 Nov 2026; BF-D39..BF-D45)
+
+- **Actions in the app** (BF-D39): every owner command through the same `ApprovalBot`
+  dispatcher (shared TOTP verifier, 15:20 deadline, batch checks), served by the trader
+  (`trader/app_control.py`, private `control` network port 8081; the dashboard forwards
+  `/act/...`, keeps no write access). Tailscale log-in allow-list (`app.allowed_logins`,
+  empty = off; set on the server in `config/bfast.local.yaml` by `bigwins` option 11),
+  POST + CSRF, confirm screens, Kill/Stop confirm, 5-wrong-codes lock-out.
+- **Notifications** (BF-D40): inbox (`bf_inbox`, journal **j0006**) + Web Push (new secret
+  `vapid_private_key`, made by `bigwins vapid` / `bigwins update`); `notify.channel: app`
+  default, Telegram only with `telegram` / `both` (`deploy/docker-compose.telegram.yml`).
+- **Heartbeat** (BF-D41): `healthchecks_url` pinged every 5 minutes (`none` = off).
+- **Server from the app** (BF-D42): whitelisted server jobs run by a root host worker
+  (`sudo bigwins install-worker`, systemd timer); status snapshot on the Server tab;
+  Claude remote-control start/stop (the app never runs Claude or a command).
+- **Screens** (BF-D43): tab bar, interactive performance chart, holding detail (rank and
+  scores from the new `emg2list:<day>` record), order timelines, inbox filters, Server,
+  Settings. **Tax** (BF-D44): per FY, `tax.discount_rule: 12_months` (owner), EOFY CSV,
+  `tax.marginal_rate` (server only).
+- **Strategy updates** (BF-D45): version fingerprint stamped per decision
+  (`strategy:<day>`), release notes `config/strategy_changelog.yaml`, update card from the
+  worker's `git fetch` (strategy vs app-only), `strategy.update_mode: immediate` (default
+  while paper: applied when the ASX is closed and no order works, then an out-of-cycle
+  decision for approval) | `next_decision`; rollback to the recorded previous commit.
+  Not done: a parallel simulated twin of the previous version.
+- **Owner steps on the server**: `bigwins update` (pulls, makes the alert key, rebuilds;
+  the trader creates the four new tables at start; an Alembic-managed journal also takes
+  `upgrade journal@head`, j0006 skips tables that exist), move any edits of `config/bfast.yaml` to
+  `config/bfast.local.yaml`, `bigwins` 11 (allow my phone), 4 (restart), `sudo bigwins
+  install-worker`, then in the app Inbox > Turn on alerts. GO_LIVE_GUIDE parts C/D.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
@@ -321,11 +352,11 @@ go-live checklist, by a reviewed code change.
    (BF-D27) run against the real Flex Web Service with the owner's token.
 3. **Five reconciled paper dry runs** on a real IBKR paper gateway (sessions with
    orders, ledger = broker to the unit and the cent each day; go-live item 2).
-4. **`/kill` drill from the owner's phone** (cancel within 60 s), plus `/pause`,
-   `/stop`, `/continue`, `/idmap`; re-arm needs 2FA (item 4).
-5. **Heartbeat and backups**: healthchecks dead-man 5 days, nightly encrypted
+4. **Kill drill from the owner's phone app** (cancel within 60 s), plus Pause, Stop,
+   Continue, code change; re-arm needs 2FA (item 4).
+5. **Heartbeat** (built, BF-D41: five days without a miss) **and backups**: nightly encrypted
    off-site copy, a restore drill (items 9-10).
-6. Runner on the server (APScheduler, Telegram polling) with the journal migrated
+6. Runner on the server (scheduler, the app's actions and alerts) with the journal migrated
    (`alembic -x db=journal upgrade journal@head`) and the deposits recorded.
 
 ## What the owner must provide (on the server, never in chat)
@@ -337,7 +368,8 @@ go-live checklist, by a reviewed code change.
   **fixed** about A$845 — choose tiered. Tiger / moomoo charge about A$3 an order but
   their APIs are unproven for this system (no paper-tested order path): not used.
 - **BinaryLane** server in Sydney (always on), with Tailscale.
-- **Telegram** bot token and the owner's chat id (secret file / config).
+- **Phone app**: Tailscale on the phone, the owner's Tailscale log-in allowed
+  (`bigwins` option 11), alerts turned on in the app; Telegram only if wanted (appendix T).
 - **Authenticator**: the TOTP seed added to the owner's authenticator app (secret file).
 
 Owner decisions still wanted: confirm the BF-D28 points (open point 7), the BF-D15
