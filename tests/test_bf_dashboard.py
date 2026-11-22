@@ -168,7 +168,8 @@ def test_BF_D37_no_write_routes(tmp_path: Path) -> None:
     only forwarded to the trader's control server (BF-D39), never handled here."""
     d = _dash(_ro(tmp_path / "none.sqlite"))
     assert set(d.routes()) == {"/healthz", "/manifest.webmanifest", "/icon.svg", "/icon-192.png",
-                               "/icon-512.png", "/app.css", "/app.js", "/sw.js"}  # fmt: skip
+                               "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png",
+                               "/app.css", "/app.js", "/sw.js"}  # fmt: skip
     assert frozenset({"GET", "HEAD"}) == READ_METHODS
     for m in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
         for path in ("/", "/orders", "/inbox", "/settings"):

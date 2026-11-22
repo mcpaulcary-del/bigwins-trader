@@ -31,11 +31,9 @@ import json
 import math
 import re
 import shutil
-import struct
 import urllib.error
 import urllib.parse
 import urllib.request
-import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -588,15 +586,11 @@ def render(v: View, x: Extras | None = None) -> str:
 
 # ---------------------------------------------------------------- app icon and manifest
 
-ICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
-    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" '
-    f'stop-color="{THEME}"/><stop offset="1" stop-color="#0f8a7e"/></linearGradient></defs>'
-    '<rect width="512" height="512" rx="112" fill="url(#g)"/>'
-    '<polyline points="96,370 200,270 280,320 416,160" fill="none" stroke="#fff" '
-    'stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>'
-    '<circle cx="416" cy="160" r="34" fill="#f5c542"/></svg>'
-)
+# The app icon ("W" for Wins, midnight and mint). PNGs are pre-rendered from this SVG
+# into trader/assets/ (anti-aliased; maskable and apple-touch variants are full-bleed).
+ICON_BG = "#0f172a"
+ASSETS = Path(__file__).resolve().parent / "assets"
+ICON_SVG = (ASSETS / "icon.svg").read_text(encoding="utf-8")
 
 MANIFEST = {
     "name": "Big Wins",
@@ -605,57 +599,32 @@ MANIFEST = {
     "start_url": "/",
     "scope": "/",
     "display": "standalone",
-    "background_color": THEME,
-    "theme_color": THEME,
+    "background_color": ICON_BG,
+    "theme_color": ICON_BG,
     "icons": [
         {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
         {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
-        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        {
+            "src": "/icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable",
+        },
         {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
     ],
 }
 
 
-def _seg_dist(px: float, py: float, a: tuple[float, float], b: tuple[float, float]) -> float:
-    ax, ay = a
-    bx, by = b
-    dx, dy = bx - ax, by - ay
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
-    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+@cache
+def icon_png(size: int) -> bytes:
+    """The app icon as a PNG at 192 or 512 px, pre-rendered from ``ICON_SVG``."""
+    return (ASSETS / f"icon-{size}.png").read_bytes()
 
 
 @cache
-def icon_png(size: int) -> bytes:
-    """The app icon as a PNG (drawn here, no image files in the repository): the
-    brand square with a rising line, as ``ICON_SVG``."""
-    s = size / 512
-    pts = [(96 * s, 370 * s), (200 * s, 270 * s), (280 * s, 320 * s), (416 * s, 160 * s)]
-    half = 22 * s
-    dot, dot_r = (416 * s, 160 * s), 34 * s
-    bg = bytes.fromhex(THEME[1:])
-    raw = bytearray()
-    for yy in range(size):
-        raw.append(0)
-        for xx in range(size):
-            px, py = xx + 0.5, yy + 0.5
-            if math.hypot(px - dot[0], py - dot[1]) <= dot_r:
-                raw += b"\xf5\xc5\x42"
-            elif min(_seg_dist(px, py, a, b) for a, b in pairwise(pts)) <= half:
-                raw += b"\xff\xff\xff"
-            else:
-                raw += bg
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        c = struct.pack(">I", len(data)) + kind + data
-        return c + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-        + chunk(b"IEND", b"")
-    )
+def asset_png(name: str) -> bytes:
+    """A pre-rendered icon variant from trader/assets (maskable, apple-touch)."""
+    return (ASSETS / name).read_bytes()
 
 
 # ---------------------------------------------------------------- HTTP
@@ -778,6 +747,8 @@ class Dashboard:
             "/icon.svg": lambda: ("image/svg+xml", ICON_SVG.encode()),
             "/icon-192.png": lambda: ("image/png", icon_png(192)),
             "/icon-512.png": lambda: ("image/png", icon_png(512)),
+            "/icon-maskable-512.png": lambda: ("image/png", asset_png("icon-maskable-512.png")),
+            "/apple-touch-icon.png": lambda: ("image/png", asset_png("apple-touch-icon.png")),
         }
         for path, (ctype, text) in webui.STATIC.items():
             out[path] = _static(ctype, text)

@@ -108,14 +108,14 @@ def page(
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        f'<meta name="theme-color" content="{THEME}">'
+        '<meta name="theme-color" content="#0f172a">'
         '<meta name="color-scheme" content="light dark">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-title" content="Big Wins">'
         '<link rel="manifest" href="/manifest.webmanifest">'
         '<link rel="icon" href="/icon.svg" type="image/svg+xml">'
-        '<link rel="apple-touch-icon" href="/icon-192.png">'
+        '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
         f"{noscript}<title>{e(title)} · Big Wins</title>"
         f'<link rel="stylesheet" href="/app.css"></head>'
         f'<body data-tab="{e(active)}" data-latest-inbox="{latest_inbox}"'
