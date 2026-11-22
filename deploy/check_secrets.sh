@@ -14,7 +14,9 @@ if [ "$m" != "700" ]; then echo "SECRET CHECK FAILED: deploy/secrets is mode $m,
 # BF-D40: the phone app needs vapid_private_key; Telegram (notify.channel telegram|both)
 # needs telegram_bot_token
 channel=$(sed -n 's/^  channel: *\([a-z]*\).*/\1/p' ../config/bfast.yaml 2>/dev/null | head -1)
-names="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id vapid_private_key"
+names="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id db_dashboard_password"
+# BF-D46/D48: app_proxy_key and worker_job_key (made by bigwins update) with the app
+case "${channel:-app}" in app|both) names="$names vapid_private_key app_proxy_key worker_job_key";; esac
 case "${channel:-app}" in telegram|both) names="$names telegram_bot_token";; esac
 count=0
 for n in $names; do

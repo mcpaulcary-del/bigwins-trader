@@ -45,6 +45,7 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
             "ahead": env.get("UPD_AHEAD", "0"), "files": env.get("UPD_FILES", "").splitlines(),
             "new_config": env.get("UPD_CFG") or None, "new_changelog": env.get("UPD_LOG", ""),
             "subject": env.get("UPD_SUBJECT", ""), "previous": env.get("UPD_PREV", ""),
+            "previous_migrations": bool(env.get("UPD_PREV_MIG", "").strip()),
         },
     }  # fmt: skip
 

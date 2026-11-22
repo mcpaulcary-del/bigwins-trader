@@ -404,7 +404,7 @@ def shell(v: Any, x: Extras, title: str, body: str, active: str) -> str:
         notes.append(f"Code actions are locked until {x.lockout.astimezone(ASX_TZ):%H:%M} "
                      "(too many wrong codes).")  # fmt: skip
     return page(title, body, active, demo=v.demo, subtitle=sub, notes=notes,
-                latest_inbox=x.latest_inbox)  # fmt: skip
+                latest_inbox=x.latest_inbox, live=getattr(v, "live", False))  # fmt: skip
 
 
 def actions_note(x: Extras, demo: bool) -> str:
@@ -483,7 +483,11 @@ def home(v: Any, x: Extras) -> str:
     body += (
         '<div class="btns"><a class="btn sec" href="/act">⚙️ Controls</a>'
         '<a class="btn sec" href="/holdings" data-nav>📈 Holdings</a></div>'
-        "<footer>PAPER - no real money. Not shown to beat the index.</footer>"
+        + (
+            "<footer>LIVE account - real money. Not shown to beat the index.</footer>"
+            if getattr(v, "live", False)
+            else "<footer>PAPER - no real money. Not shown to beat the index.</footer>"
+        )
     )
     return shell(v, x, "Home", body, "home")
 
@@ -956,7 +960,13 @@ def server(v: Any, x: Extras) -> str:
         rows = "".join(
             f"<li><b>{e(r['action'])}</b> <span class='pill {'ok' if r['status'] == 'DONE' else 'amber' if r['status'] in ('PENDING', 'RUNNING') else 'bad'}'>"
             f"{e(r['status'])}</span><div class='sub'>{when(r['requested_at'])} · "
-            f"{e(str(r['result']).strip().splitlines()[-1] if str(r['result']).strip() else '')}</div></li>"
+            f"{e(str(r['result']).strip().splitlines()[-1] if str(r['result']).strip() else '')}</div>"
+            + (
+                f' <a class="small" href="{act_link(a="cancel", job=str(r["id"]))}">Cancel…</a>'
+                if r["status"] == "PENDING"
+                else ""
+            )
+            + "</li>"
             for r in x.server_jobs
         )
         parts.append(section("Server jobs", f'<ul class="list">{rows}</ul>'))

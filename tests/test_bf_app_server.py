@@ -53,8 +53,8 @@ def test_BF_D42_old_requests_are_not_run_and_only_whitelisted_names_exist() -> N
     add_server_job(j, "restart", True, "o", T0)
     assert claim_server_job(j, T0 + timedelta(minutes=16)) is None
     assert server_job_rows(j)[0]["status"] == "REFUSED"
-    add_server_job(j, "update", True, "o", T0)  # an update may wait for the close: a day
-    assert claim_server_job(j, T0 + timedelta(hours=25)) is None
+    add_server_job(j, "update", True, "o", T0, "a" * 40)  # may wait for the close: 12 h
+    assert claim_server_job(j, T0 + timedelta(hours=13)) is None
     assert server_job_rows(j)[0]["status"] == "REFUSED"
     assert set(SERVER_ACTIONS) == {"restart", "update", "rollback", "check", "claude_remote",
                                    "claude_stop"}  # fmt: skip
@@ -72,7 +72,9 @@ def test_BF_D42_cli_claim_finish_status(tmp_path: Path, monkeypatch: pytest.Monk
     jid = add_server_job(j, "check", False, "o", datetime.now(UTC))
     assert main(["server-jobs", "claim", "--journal", url]) == 0
     assert json.loads(capsys.readouterr().out) == {
-        "id": jid, "action": "check", "force": False, "strategy": False, "immediate": False}  # fmt: skip
+        "id": jid, "action": "check", "force": False, "strategy": False, "immediate": False,
+        "migration": False, "flags": 0, "commit": "", "sig": "",
+        "created": server_job_rows(j)[0]["requested_at"].strftime("%Y-%m-%dT%H:%M:%SZ")}  # fmt: skip
     assert main(["server-jobs", "claim", "--journal", url]) == 0
     assert json.loads(capsys.readouterr().out) == {}
     monkeypatch.setattr("sys.stdin", io.StringIO("ok: 8 files\ntoken=abcdef123\n"))
@@ -103,7 +105,7 @@ def test_BF_D42_host_scripts() -> None:
         subprocess.run(["bash", "-n", str(ROOT / "deploy/bigwins.sh")], check=False).returncode == 0
     )
     # the worker runs only the fixed list, refuses restart/update while the ASX is open
-    assert "restart) out=$(dc up -d" in sh and "update) out=$(do_update" in sh
+    assert "restart) out=$(dc up -d" in sh and 'update) out=$(update_to "$commit"' in sh
     assert '*) finish_job "$id" REFUSED' in sh and 'market_open && [ "$force" != True ]' in sh
     dc = yaml.safe_load((ROOT / "deploy/docker-compose.yml").read_text())
     for name, svc in dc["services"].items():  # no container gets the Docker socket or the host

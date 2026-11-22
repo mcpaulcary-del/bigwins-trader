@@ -13,7 +13,8 @@ DEPLOY=$REPO/deploy
 SECRETS=$DEPLOY/secrets
 CONFIG=$REPO/config/bfast.yaml
 LOCAL=$REPO/config/bfast.local.yaml
-BASE_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id vapid_private_key"
+BASE_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id db_dashboard_password"
+APP_SECRETS="vapid_private_key app_proxy_key worker_job_key"  # BF-D40, BF-D46, BF-D48: made here
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
 TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token"
@@ -29,10 +30,11 @@ channel() {  # BF-D40: notify.channel (app | telegram | both); the local file wi
   echo "${c:-app}"
 }
 
-all_secrets() {  # the files the stack needs for the channel (vapid_private_key is made here)
+all_secrets() {  # the files the stack needs for the channel (the generated ones are made here)
   case "$(channel)" in
-    telegram|both) echo "$BASE_SECRETS telegram_bot_token";;
-    *) echo "$BASE_SECRETS";;
+    telegram) echo "$BASE_SECRETS telegram_bot_token";;
+    both) echo "$BASE_SECRETS $APP_SECRETS telegram_bot_token";;
+    *) echo "$BASE_SECRETS $APP_SECRETS";;
   esac
 }
 ALL_SECRETS=$(all_secrets)
@@ -154,14 +156,52 @@ do_update() {  # no questions asked (the app's server worker uses it too)
   if [ "$(git -C $REPO rev-parse HEAD)" != "$before" ]; then
     python3 "$DEPLOY/gitops.py" record "$STATE" "$before"  # BF-D45: the rollback target
   fi
+  after_update
+}
+
+after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
-  [ -s "$SECRETS/vapid_private_key" ] || make_vapid
+  make_keys
   if [ -f "$DEPLOY/.env" ] && secrets_ready; then
     docker rm -f bigwins-demo >/dev/null 2>&1
     dc build && dc up -d && g "Updated and restarted."
   else
     g "Code updated. (The trader is not started yet, so nothing to restart.)"
   fi
+}
+
+make_keys() {  # BF-D40/D46/D48/D52: generated secrets, made here once, never shown
+  [ -s "$SECRETS/vapid_private_key" ] || make_vapid
+  local n
+  for n in app_proxy_key worker_job_key db_dashboard_password; do
+    if [ ! -s "$SECRETS/$n" ]; then
+      mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+      openssl rand -hex 32 > "$SECRETS/$n" && chmod 444 "$SECRETS/$n" && g "Made $n."
+    fi
+  done
+}
+
+update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing else
+  local commit=$1 flags=$2 before kind
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "refused: no exact commit in the job"; return 1; }
+  if ! git -C $REPO diff --quiet -- config/bfast.yaml 2>/dev/null; then
+    echo "refused: config/bfast.yaml was edited on this server (move those settings to config/bfast.local.yaml)"; return 1
+  fi
+  git -C $REPO fetch -q origin "$BRANCH" || { echo "refused: git fetch failed"; return 1; }
+  before=$(git -C $REPO rev-parse HEAD)
+  git -C $REPO merge-base --is-ancestor "$before" "$commit" || { echo "refused: the approved commit does not follow the running one"; return 1; }
+  git -C $REPO merge-base --is-ancestor "$commit" "origin/$BRANCH" || { echo "refused: the approved commit is not on origin/$BRANCH"; return 1; }
+  kind=$(git -C $REPO diff --name-only "$before" "$commit" | python3 "$DEPLOY/classify.py")
+  if [ "$kind" = strategy ] && [ $((flags & 4)) = 0 ]; then
+    echo "refused: this commit changes trading code but was approved as app-only; approve it again"; return 1
+  fi
+  if [ "$kind" = strategy ] && market_open; then
+    echo "refused: a trading update is applied outside ASX hours"; return 1
+  fi
+  git -C $REPO merge --ff-only -q "$commit" || { echo "refused: fast-forward failed (no changes made)"; return 1; }
+  python3 "$DEPLOY/gitops.py" record "$STATE" "$before"
+  echo "now at $(git -C $REPO log --oneline -1)"
+  after_update
 }
 
 cmd_update() {
@@ -221,16 +261,22 @@ print(d["User"][str(d["Self"]["UserID"])]["LoginName"])' 2>/dev/null)
   echo "The phone app will let this Tailscale log-in approve, refuse, pause, kill and resume:"
   echo "    $who"
   confirm "Allow it?" || { echo "Nothing changed."; return 0; }
-  python3 "$DEPLOY/set_login.py" "$LOCAL" "$who" || { r "Could not write $LOCAL."; return 1; }
+  local host; host=$(app_url | sed 's#^https://##')
+  python3 "$DEPLOY/set_login.py" "$LOCAL" "$who" "$host" || { r "Could not write $LOCAL."; return 1; }
   g "Saved in config/bfast.local.yaml (this server only, not in git)."
   y "Restart the trader and the app to use it (menu option 4)."
 }
 
-do_rollback() {  # BF-D45: back to the commit recorded before the last update, then restart
-  local head prev
+do_rollback() {  # BF-D45/D49: back to the commit recorded before the last update, then restart
+  local want=${1:-} flags=${2:-0} head prev
   head=$(git -C $REPO rev-parse HEAD)
   prev=$(python3 "$DEPLOY/gitops.py" target "$STATE" "$head") || { r "No previous version recorded."; return 1; }
+  [ -z "$want" ] || [ "$want" = "$prev" ] || { r "refused: the job's commit is not the recorded previous one"; return 1; }
   git -C $REPO merge-base --is-ancestor "$prev" "$head" || { r "The recorded commit is not an earlier version."; return 1; }
+  # a rollback does not undo database migrations: across one only when the owner ticked it
+  if [ -n "$(git -C $REPO diff --name-only "$prev" "$head" -- migrations/)" ] && [ $((flags & 16)) = 0 ]; then
+    r "refused: the rollback crosses a database migration (tick the box in the app to do it anyway)"; return 1
+  fi
   git -C $REPO reset --keep "$prev" || { r "Rollback failed (no changes made)."; return 1; }
   python3 "$DEPLOY/gitops.py" done "$STATE"
   dc build && dc up -d && g "Back on $(git -C $REPO log --oneline -1)."
@@ -250,7 +296,9 @@ update_check() {  # BF-D45: every 10 minutes, is the branch ahead, and what woul
   UPD_LOG=$(git -C $REPO show "origin/$BRANCH:config/strategy_changelog.yaml" 2>/dev/null)
   UPD_SUBJECT=$(git -C $REPO log -1 --format=%s "origin/$BRANCH" 2>/dev/null)
   UPD_PREV=$(python3 "$DEPLOY/gitops.py" target "$STATE" "$UPD_HEAD" 2>/dev/null)
-  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV
+  UPD_PREV_MIG=""
+  [ -n "$UPD_PREV" ] && UPD_PREV_MIG=$(git -C $REPO diff --name-only "$UPD_PREV" "$UPD_HEAD" -- migrations/ 2>/dev/null)
+  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG
 }
 
 host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no secrets)
@@ -275,12 +323,18 @@ finish_job() {  # id status text: record a server job's result (retried while th
 
 cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s, as root)
   host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status >/dev/null 2>&1
-  local job id action force out rc
+  local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
   id=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
   [ -n "$id" ] || return 0
-  action=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin)["action"])')
-  force=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("force") is True)')
+  jf() { printf '%s' "$job" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$1', ''))"; }
+  action=$(jf action); force=$(jf force); commit=$(jf commit); flags=$(jf flags)
+  created=$(jf created); sig=$(jf sig)
+  # BF-D48: only jobs the trader signed (key held by the trader and this root worker only)
+  if ! python3 "$DEPLOY/gitops.py" verify "$SECRETS/worker_job_key" "$id" "$action" "$commit" "$flags" "$created" "$sig"; then
+    finish_job "$id" REFUSED "refused: the job is not signed by the trader"
+    return 0
+  fi
   case "$action" in
     restart|update)
       if market_open && [ "$force" != True ]; then
@@ -297,8 +351,8 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
   esac
   case "$action" in  # the fixed list only; nothing from the app is ever run as a command
     restart) out=$(dc up -d 2>&1 && dc restart trader 2>&1); rc=$?;;
-    update) out=$(do_update 2>&1); rc=$?;;
-    rollback) out=$(do_rollback 2>&1); rc=$?;;
+    update) out=$(update_to "$commit" "$flags" 2>&1); rc=$?;;
+    rollback) out=$(do_rollback "$commit" "$flags" 2>&1); rc=$?;;
     claude_remote) out=$(claude_remote_status start 2>&1); rc=$?;;
     claude_stop) out=$(tmux kill-session -t remote 2>&1 && echo "Claude remote control stopped."); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
@@ -320,7 +374,7 @@ After=docker.service
 [Service]
 Type=oneshot
 ExecStart=$DEPLOY/bigwins.sh worker
-TimeoutStartSec=900
+TimeoutStartSec=3600
 EOF
   cat > /etc/systemd/system/bigwins-worker.timer <<'EOF'
 [Unit]

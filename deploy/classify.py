@@ -1,0 +1,34 @@
+"""bigwins worker (BF-D53): is an update a trading / strategy change? Default-deny: any
+change under trader/, config/ or migrations/, except the UI-only files below; docs/,
+tests/ and the rest are app-only. The same lists as trader/strategy_version.py (a test
+keeps them equal). Standard library only (the host's python3).
+
+    git diff --name-only HEAD <commit> | python3 classify.py     prints "strategy" or "app"
+"""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Iterable
+
+TRADING_DIRS = ("trader/", "config/", "migrations/")
+UI_ONLY = (
+    "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
+    "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
+)  # fmt: skip
+APP_ONLY_DIRS = ("docs/", "tests/")
+
+
+def is_trading_path(path: str) -> bool:
+    f = path.strip()
+    if not f or f in UI_ONLY or f.startswith(APP_ONLY_DIRS):
+        return False
+    return f.startswith(TRADING_DIRS)
+
+
+def classify(files: Iterable[str]) -> str:
+    return "strategy" if any(is_trading_path(f) for f in files) else "app"
+
+
+if __name__ == "__main__":
+    print(classify(sys.stdin.read().splitlines()))

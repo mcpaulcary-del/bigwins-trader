@@ -291,6 +291,10 @@ server_jobs = Table(
     Column("started_at", DateTime(timezone=True)),
     Column("finished_at", DateTime(timezone=True)),
     Column("result", Text, nullable=False),
+    # BF-D48: the exact commit the owner approved (update) or the recorded one (rollback),
+    # and the trader's signature the root worker checks before running the job
+    Column("commit", String(40)),
+    Column("sig", String(64)),
 )
 
 
@@ -365,6 +369,26 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# BF-D48: nullable columns added after a table was first created by the code (create_all
+# never alters a table); the same as the Alembic revision that adds them (j0007)
+LATE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("bf_server_jobs", "commit", "VARCHAR(40)"),
+    ("bf_server_jobs", "sig", "VARCHAR(64)"),
+)
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    for table, col, typ in LATE_COLUMNS:
+        if table in insp.get_table_names() and col not in {
+            c["name"] for c in insp.get_columns(table)
+        }:
+            with engine.begin() as c:
+                c.execute(text(f'ALTER TABLE {table} ADD COLUMN "{col}" {typ}'))
+
+
 def read_only_engine(url: str | URL) -> Engine:
     """An engine whose sessions are read-only in the database (BF-D37): PostgreSQL
     ``default_transaction_read_only = on`` for every connection; SQLite
@@ -401,6 +425,7 @@ class Journal:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
         md.create_all(engine)
+        _add_missing_columns(engine)
 
     @classmethod
     def sqlite(cls, path: str = ":memory:") -> Journal:

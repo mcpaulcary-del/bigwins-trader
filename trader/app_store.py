@@ -8,12 +8,14 @@ the jobs through its read-only engine.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import insert, select, update
 
+from trader.app_sign import sign_job
 from trader.journal import Journal, app_state, inbox, push_subs, server_jobs
 
 KINDS = ("page", "approval", "report", "info", "action")
@@ -33,7 +35,11 @@ FORCE_MARKET = 1  # "do it anyway" while the ASX is open (app-only updates, rest
 FORCE_MONTH_END = 2  # next_decision mode: override the 24-hour block before a decision
 STRATEGY = 4  # the update changes the strategy: applied only when safe (BF-D45)
 IMMEDIATE = 8  # update_mode immediate: an out-of-cycle decision follows
-LONG_WAIT = frozenset({"update", "rollback"})  # may wait for the close: stale after a day
+LONG_WAIT = frozenset({"update", "rollback"})  # may wait for the close
+LONG_WAIT_S = 12 * 3600  # BF-D48: an approved update / rollback is applied within 12 hours
+RUNNING_LIMIT_S = 2 * 3600  # BF-D49: a RUNNING job older than this is marked FAILED
+FORCE_MIGRATION = 16  # BF-D49: roll back across a database migration (owner ticked it)
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _utc(t: datetime) -> datetime:
@@ -155,21 +161,61 @@ def set_state(j: Journal, key: str, value: Any, at: datetime) -> None:
 # ---------------------------------------------------------------- server jobs (BF-D42)
 
 
-def add_server_job(j: Journal, action: str, force: bool | int, login: str, at: datetime) -> int:
+def created_text(t: datetime) -> str:
+    """The requested-at time as signed (BF-D48): UTC, whole seconds."""
+    a = aware(t)
+    assert a is not None
+    return a.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def add_server_job(
+    j: Journal,
+    action: str,
+    force: bool | int,
+    login: str,
+    at: datetime,
+    commit: str = "",
+    key: bytes | None = None,
+) -> int:
+    """Queue a server job. ``commit``: the exact 40-hex commit the owner reviewed (update)
+    or the recorded previous commit (rollback); ``key``: the worker key that signs the job
+    (BF-D48; the host worker runs no unsigned job)."""
     if action not in SERVER_ACTIONS:
         raise ValueError(f"not a server action: {action!r}")
+    if commit and not SHA40.fullmatch(commit):
+        raise ValueError("commit must be a full 40-hex commit id")
+    if action in ("update", "rollback") and not commit:
+        raise ValueError(f"{action} needs the exact commit")
+    t = _utc(at).replace(microsecond=0)
     with j.engine.begin() as c:
         r = c.execute(
             insert(server_jobs).values(
                 action=action,
                 force=int(force),
                 login=login[:200],
-                requested_at=_utc(at),
+                requested_at=t,
                 status="PENDING",
                 result="",
+                commit=commit or None,
+                sig=None,
             )
         )
-        return int(r.inserted_primary_key[0])
+        jid = int(r.inserted_primary_key[0])
+        if key is not None:
+            sig = sign_job(key, jid, action, commit, int(force), created_text(t))
+            c.execute(update(server_jobs).where(server_jobs.c.id == jid).values(sig=sig))
+        return jid
+
+
+def cancel_server_job(j: Journal, job_id: int, login: str, at: datetime) -> bool:
+    """BF-D49: the owner cancels a queued job (PENDING only; a running one finishes)."""
+    with j.engine.begin() as c:
+        r = c.execute(
+            update(server_jobs)
+            .where(server_jobs.c.id == job_id, server_jobs.c.status == "PENDING")
+            .values(status="REFUSED", finished_at=_utc(at), result=f"cancelled by {login[:80]}")
+        )
+        return bool(r.rowcount)
 
 
 def server_job_rows(j: Journal, limit: int = 20) -> list[dict[str, Any]]:
@@ -188,20 +234,36 @@ def claim_server_job(
     stale_s: int = 900,
     wait: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> dict[str, Any] | None:
-    """The oldest PENDING job, marked RUNNING (one worker at a time). A job requested
-    more than ``stale_s`` ago (a day for an update or rollback, which may wait for the
-    close) is not run any more (REFUSED: too old to be what the owner wants now).
-    ``wait(job)``: why a job must wait (BF-D45: a strategy update while the ASX is open
-    or orders are working); it stays PENDING with that reason as its result."""
+    """The oldest runnable PENDING job, marked RUNNING (one worker at a time).
+
+    * A job requested more than ``stale_s`` ago (``LONG_WAIT_S`` = 12 hours for an update
+      or rollback, which may wait for the close) is not run any more (REFUSED).
+    * ``wait(job)``: why a job must wait (BF-D45: a strategy update while the ASX is open
+      or orders are working); it stays PENDING with that reason as its result. A waiting
+      update holds back later updates / rollbacks only; restart, check and the Claude
+      jobs still run (BF-D49).
+    * A RUNNING job older than ``RUNNING_LIMIT_S`` is marked FAILED (the worker died or
+      hung; BF-D49) so it is reported and does not block the queue."""
     with j.engine.begin() as c:
+        for r in c.execute(select(server_jobs).where(server_jobs.c.status == "RUNNING")).all():
+            st = aware(r.started_at) or aware(r.requested_at)
+            assert st is not None
+            if (at - st).total_seconds() > RUNNING_LIMIT_S:
+                c.execute(
+                    update(server_jobs)
+                    .where(server_jobs.c.id == r.id, server_jobs.c.status == "RUNNING")
+                    .values(status="FAILED", finished_at=_utc(at),
+                            result="the server worker did not report back within 2 hours")
+                )  # fmt: skip
         rows = c.execute(
             select(server_jobs).where(server_jobs.c.status == "PENDING").order_by(server_jobs.c.id)
         ).all()
+        held = False  # an earlier update / rollback is waiting
         for r in rows:
             m = dict(r._mapping)
             req = aware(m["requested_at"])
             assert req is not None
-            limit = 86400 if m["action"] in LONG_WAIT else stale_s
+            limit = LONG_WAIT_S if m["action"] in LONG_WAIT else stale_s
             if (at - req).total_seconds() > limit:
                 c.execute(
                     update(server_jobs)
@@ -209,12 +271,15 @@ def claim_server_job(
                     .values(status="REFUSED", finished_at=_utc(at), result="too old: not run")
                 )
                 continue
+            if held and m["action"] in LONG_WAIT:
+                continue
             why = wait(m) if wait is not None else None
             if why is not None:
                 c.execute(
                     update(server_jobs).where(server_jobs.c.id == m["id"]).values(result=why[:4000])
                 )
-                return None  # in order: nothing after a waiting job runs first
+                held = held or m["action"] in LONG_WAIT
+                continue
             done = c.execute(
                 update(server_jobs)
                 .where(server_jobs.c.id == m["id"], server_jobs.c.status == "PENDING")
