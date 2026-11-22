@@ -313,6 +313,15 @@ figures, reduced-motion respected), interactive chart, holdings donut / sort / s
 C6 and CGT rings, safety gauge and L11 meter, order progress dots and a 15:20 countdown,
 inbox by day. The real-browser test also covers chart, tabs and an accessibility pass.
 
+## Backups and the accounts hub (22 Nov 2026; BF-D63..BF-D65)
+
+Setup & IBKR checklist (read-only); nightly encrypted backups (age) to the server and
+OneDrive (rclone), restore test, one-time recovery-key view, `bigwins restore` for a new
+server (GO_LIVE_GUIDE C8/C9); Accounts & services hub with safe tests. Owner, once:
+`apt install age rclone`, `git -C /srv/asx-trader pull --ff-only && bigwins update`,
+`sudo bigwins install-worker`, `bigwins onedrive`, then in the app Backups > Show recovery
+key (save it), Back up now, Restore test.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

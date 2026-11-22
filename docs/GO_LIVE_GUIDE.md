@@ -490,6 +490,41 @@ outside ASX hours (10:00-16:15 Sydney):
 5. On the phone, open the app > Server > Trader controls and test Pause (one tap: "PAUSED"),
    then Resume with your code; Turn on alerts needs your code too.
 
+### C8. Backups (server + OneDrive) and the recovery key
+
+1. On the server, once: `apt install age rclone` (if not there yet).
+2. `sudo bigwins install-worker` (again): it also installs the nightly backup at 23:30.
+3. `bigwins update` makes the backup recovery key (root only).
+4. **Connect OneDrive** (once, about 5 minutes). On a Windows laptop: download rclone from
+   rclone.org/downloads, unzip it, open a Command Prompt in that folder and run
+   `rclone authorize "onedrive"`; sign in to Microsoft in the browser and allow access;
+   copy the whole token line it prints. On the server: `bigwins` > **14) Connect
+   OneDrive** and answer rclone's questions as the screen says (paste the token when
+   asked). A phone alone cannot do this step (rclone needs a computer with a browser).
+5. In the app: Server > **Backups** > **Show recovery key…** (your code), then **Show the
+   key now**, and save it in your password manager. Then **Back up now…** and
+   **Restore test…**: both should say OK.
+
+Every night the server keeps an encrypted copy in `/var/backups/bigwins` and in OneDrive
+folder "Big Wins server backups" (30 daily, 12 monthly), plus a readable page of the day in
+"…/reports/YYYY/". A failed backup or restore test sends a PAGE.
+
+### C9. If the server dies
+
+You need: the recovery key (password manager), OneDrive access (or a copy of the backup
+files) and a computer with Termius.
+
+1. Order a new BinaryLane server and run the bootstrap and parts B1-B5 of this guide
+   (Tailscale, Docker, the code in `/srv/asx-trader`, `bigwins` installed). You do not
+   type the secrets again: they come back from the backup.
+2. `apt install age rclone`, then `bigwins onedrive` (as in C8 step 4).
+3. `bigwins restore` and paste the recovery key when asked. It fetches the latest backup
+   from OneDrive, decrypts it and puts back the journal, settings (incl.
+   `bfast.local.yaml`), the secret files and `.env`, the forward record, the price store,
+   the trader's reports and the worker's notes, then starts everything.
+4. `bigwins` > 11 (allow my phone), `sudo bigwins install-worker`, then check the app.
+   IBKR: log in to the paper gateway again if it asks (IBKR Mobile).
+
 ---
 
 ## D. First messages, approving in the app, and the controls
