@@ -8,6 +8,7 @@ JavaScript. Action buttons are plain links to the trader's confirm screens
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -15,11 +16,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
+from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
 
 from trader.app_store import SERVER_ACTIONS, get_state, inbox_rows, server_job_rows
-from trader.app_viz import arrow, donut, gauge, hero, ring, spark, threshold_meter
+from trader.app_viz import arrow, donut, gauge, hero, ring, slice_colours, spark, threshold_meter
 from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
@@ -148,6 +150,7 @@ class Extras:
     backup: tuple[dict[str, Any], datetime] | None = None  # BF-D64
     restore_test: tuple[dict[str, Any], datetime] | None = None
     backup_history: list[dict[str, Any]] = field(default_factory=list)
+    names: dict[str, str] = field(default_factory=dict)  # code -> company name (price store)
 
     @property
     def latest_inbox(self) -> int:
@@ -173,6 +176,34 @@ def waiting_batches(j: Journal, book: str, now: datetime, dl: str) -> list[Waiti
         if its:
             tot = sum((Decimal(str(it.value_at_ref)) for it in its), Decimal(0))
             out.append(Waiting(bid, len(its), tot, by))
+    return out
+
+
+_NAMES: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+def company_names(store_root: Path | None) -> dict[str, str]:
+    """Code -> company name from the price store's symbols.csv (read-only, cached by mtime)."""
+    if store_root is None:
+        return {}
+    f = store_root / "symbols.csv"
+    try:
+        mt = f.stat().st_mtime
+    except OSError:
+        return {}
+    hit = _NAMES.get(str(f))
+    if hit and hit[0] == mt:
+        return hit[1]
+    out: dict[str, str] = {}
+    try:
+        with f.open(newline="", encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                code, name = (r.get("Code") or "").strip(), (r.get("Name") or "").strip()
+                if code and name:
+                    out[code] = name
+    except (OSError, csv.Error):
+        return {}
+    _NAMES[str(f)] = (mt, out)
     return out
 
 
@@ -699,12 +730,11 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     gain = sum((h.gain or Decimal(0) for h in v.holdings), Decimal(0))
     hist = _mark_history(j)
     ordered = sorted(v.holdings, key=lambda h: -(h.value or 0))
-    top = [(h.code, float(h.value or 0)) for h in ordered[:7]]
-    rest = sum(float(h.value or 0) for h in ordered[7:])
-    parts = top + ([("Other", rest)] if rest > 0 else [])
+    parts = [(h.code, float(h.value or 0)) for h in ordered]  # every holding its own slice
+    colours = slice_colours(len(parts))
     legend = "".join(
-        f'<li><i style="background:var(--c{i % 8})"></i>{e(c)}<span class="sp"></span>'
-        f"{float(val) / float(total or 1) * 100:.0f}%</li>"
+        f'<li><i style="background:{colours[i]}"></i>{e(c)}<span class="sp"></span>'
+        f"{float(val) / float(total or 1) * 100:.1f}%</li>"
         for i, (c, val) in enumerate(parts)
     )
     max_gain = max((abs(float(h.gain_pct or 0)) for h in v.holdings), default=0) or 1.0
@@ -718,7 +748,9 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
             f'<li data-code="{e(h.code)}" data-gain="{g:.6f}" data-value="{float(h.value or 0):.2f}" '
             f'data-days="{h.days_held or 0}"><a class="rowlink" href="/holdings/{quote(h.code)}" '
             f'data-nav data-sheet="1">'
-            f'<span class="grow"><b>{e(h.code)}</b>{flag}<div class="sub">{h.qty} @ {e(mark)}'
+            f'<span class="grow"><b>{e(h.code)}</b>{flag}'
+            + (f'<div class="sub nm">{e(x.names[h.code])}</div>' if h.code in x.names else "")
+            + f'<div class="sub">{h.qty} @ {e(mark)}'
             + (f" ({e(h.mark_day)})" if h.stale and h.mark_day else "")
             + f" · {h.days_held if h.days_held is not None else '-'} days</div>"
             f'<div class="bars"><span class="gb {tone(h.gain)}" title="gain"><b style="width:'
@@ -748,7 +780,7 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
         seg
         + section(
             "Allocation",
-            f'<div class="donutrow">{donut(parts, aud(total, dp=0), "in shares")}'
+            f'<div class="donutrow">{donut(parts, aud(total, dp=0), "in shares", colours)}'
             f'<ul class="legend2">{legend}</ul></div><p class="small muted">Tap a slice to find the '
             "holding.</p>",
         )

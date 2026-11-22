@@ -804,6 +804,7 @@ class Dashboard:
         ) if _has_journal(j) else Extras(viewer=viewer, action_logins=self.action_logins,
                                          channel=self.channel)  # fmt: skip
         x.update_mode = self.update_mode
+        x.names = app_pages.safe(lambda: app_pages.company_names(src.store_root), {})
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
         sess: Sequence[date] = src.sessions() if src.sessions else []

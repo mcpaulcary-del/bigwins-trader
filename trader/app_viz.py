@@ -119,7 +119,14 @@ def threshold_meter(value: float | None, marks: Sequence[tuple[float, str]], hi:
     )
 
 
-def donut(parts: Sequence[tuple[str, float]], centre: str, sub: str) -> str:
+def slice_colours(n: int) -> list[str]:
+    """``n`` distinct, evenly spread hues (golden angle) that read on light and dark."""
+    return [f"hsl({(i * 137.508) % 360:.0f} 62% 58%)" for i in range(n)]
+
+
+def donut(
+    parts: Sequence[tuple[str, float]], centre: str, sub: str, colours: Sequence[str] = ()
+) -> str:
     """Allocation donut; each slice carries ``data-code`` for the tap-to-highlight script."""
     total = sum(v for _, v in parts) or 1.0
     r, c = 42.0, 2 * math.pi * 42.0
@@ -129,7 +136,8 @@ def donut(parts: Sequence[tuple[str, float]], centre: str, sub: str) -> str:
         ln = v / total * c
         segs.append(
             f'<circle class="ds c{i % 8}" data-code="{e(code)}" cx="60" cy="60" r="{r}" '
-            f'stroke-dasharray="{max(ln - 1.2, 0.1):.2f} {c:.2f}" stroke-dashoffset="{-off:.2f}" '
+            + (f'style="stroke:{colours[i]}" ' if i < len(colours) else "")
+            + f'stroke-dasharray="{max(ln - 1.2, 0.1):.2f} {c:.2f}" stroke-dashoffset="{-off:.2f}" '
             f'transform="rotate(-90 60 60)"><title>{e(code)} {v / total * 100:.0f}%</title></circle>'
         )
         off += ln
