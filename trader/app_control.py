@@ -77,9 +77,12 @@ from trader.webui import SECURITY_HEADERS, e, page, section
 
 CODE_ACTS = frozenset({"ok", "ap", "rf", "veto", "re", "co", "idmap", "idmap_reject"})
 CONFIRM_ACTS = frozenset({"ki", "so", "cancel"})
+RISK_REDUCING = frozenset({"pa", "ki", "so"})  # allowed even when the app's address changed
 ONE_TAP = frozenset({"pa", "st"})
 MAX_FAILS = 3
 LOCK = timedelta(minutes=15)
+DAY_FAILS = 6  # BF-D58 (N6): slow guessing
+DAY_LOCK = timedelta(hours=24)
 MAX_DEVICES = 5  # BF-D46 / L3: phones that may receive alerts
 BODY_MAX = 16384
 WAIT_S = 45.0
@@ -111,8 +114,8 @@ def same_origin(headers: Mapping[str, str], pinned: str = "") -> bool:
     if site and site != "same-origin":
         return False
     origin = header(headers, "origin")
-    if origin == "null":
-        return False
+    if origin == "null":  # BF-D55: a same-origin POST from a page with a strict referrer policy
+        return site == "same-origin"
     if pinned:
         if origin:
             return urlsplit(origin).netloc.lower() == pinned.lower()
@@ -233,7 +236,7 @@ class Control:
             u = self._locked_until
         return u if u is not None and now < u else None
 
-    def _execute(self, r: _Req) -> str:  # noqa: PLR0911 - one branch per kind
+    def _execute(self, r: _Req) -> str:  # noqa: PLR0911, PLR0912 - one branch per kind
         src = f"app:{r.login}"
         if r.kind == "bot":
             if self.bot is None:
@@ -242,13 +245,17 @@ class Control:
             if coded and self.locked(self.clock()):  # checked again where the code is used
                 return "refused: code actions are locked (too many wrong codes)"
             before = self.bot.verifier.failures
+            ok_before = self.bot.verifier.successes
             m = Incoming(APP_CHAT, str(r.data["command"]), r.at, source="app", login=r.login)
             reply = self.bot.handle(m)
             shown = str(r.data["shown"])
             add_inbox(self.journal, self.clock(), "action", f"You (app): {shown}"[:200],
                       f"{shown}\n-> {reply}", "/inbox", src, "off")  # fmt: skip
-            if coded:
-                self._count(self.bot.verifier.failures > before, r.at, r.login)
+            if coded:  # BF-D56 (N2): only a code the verifier actually checked counts
+                if self.bot.verifier.failures > before:
+                    self._count(True, r.at, r.login)
+                elif self.bot.verifier.successes > ok_before:
+                    self._count(False, r.at, r.login)
             return reply
         if r.kind == "subscribe":
             return self._subscribe_exec(r, src)
@@ -329,20 +336,30 @@ class Control:
         return [datetime.fromisoformat(str(x)) for x in raw]
 
     def _count(self, wrong: bool, at: datetime, login: str) -> None:
-        """BF-D47 lock-out (main loop only): the wrong codes of the last 15 minutes are kept
-        in the journal (``app-code-fails``) and cleared only by a correct code; 3 of them
-        lock code actions for 15 minutes (journaled and paged); each wrong code also leaves
-        a quiet inbox note."""
+        """BF-D47 / BF-D58 lock-out (main loop only): the wrong codes of the last 24 hours
+        are kept in the journal (``app-code-fails``) and cleared only by a code the verifier
+        accepted. 3 in 15 minutes lock code actions for 15 minutes; 6 in 24 hours (slow
+        guessing) lock them for 24 hours at high priority. Each wrong code before a lock
+        leaves a quiet inbox note. Pause, Kill and Stop never need a code."""
         if not wrong:
             if self._fails():
                 set_state(self.journal, "app-code-fails", [], at)
             return
-        fails = [t for t in self._fails() if at - t < LOCK] + [at]
+        fails = [t for t in self._fails() if at - t < DAY_LOCK] + [at]
+        recent = [t for t in fails if at - t < LOCK]
         page_text = None
         with self._lock:
-            if len(fails) >= MAX_FAILS:
-                self._locked_until = at + LOCK
+            if len(fails) >= DAY_FAILS:
+                self._locked_until = at + DAY_LOCK
                 fails = []
+                page_text = (
+                    f"PAGE HIGH PRIORITY app code actions LOCKED for 24 hours (until "
+                    f"{self._locked_until.astimezone(ASX_TZ):%a %H:%M} Sydney): {DAY_FAILS} wrong "
+                    f"codes in 24 hours (log-in {login}). Someone may be guessing. Pause, Kill "
+                    "and Stop still work; check the server."
+                )
+            elif len(recent) >= MAX_FAILS:
+                self._locked_until = at + LOCK
                 page_text = (
                     f"PAGE app code actions LOCKED until "
                     f"{self._locked_until.astimezone(ASX_TZ):%H:%M} Sydney: {MAX_FAILS} wrong "
@@ -352,17 +369,17 @@ class Control:
         set_state(self.journal, "app-code-fails", [t.isoformat() for t in fails], at)
         if page_text is None:
             add_inbox(self.journal, at, "info", "A wrong code was entered in the app",
-                      f"Wrong 6-digit code from log-in {login} ({len(fails)} of {MAX_FAILS} in "
-                      "15 minutes before code actions lock).", "/inbox", f"app:{login}",
-                      "off")  # fmt: skip
-        if page_text is not None:
-            assert self._locked_until is not None
-            set_state(self.journal, "app-lockout",
-                      {"until": self._locked_until.isoformat(), "login": login}, at)  # fmt: skip
-            if self.notify is not None:
-                self.notify(page_text, "page", "/inbox")
-            else:
-                add_inbox(self.journal, at, "page", page_text[:200], page_text, "/inbox")
+                      f"Wrong 6-digit code from log-in {login} ({len(recent)} of {MAX_FAILS} in "
+                      f"15 minutes, {len(fails)} of {DAY_FAILS} in 24 hours, before code actions "
+                      "lock).", "/inbox", f"app:{login}", "off")  # fmt: skip
+            return
+        assert self._locked_until is not None
+        set_state(self.journal, "app-lockout",
+                  {"until": self._locked_until.isoformat(), "login": login}, at)  # fmt: skip
+        if self.notify is not None:
+            self.notify(page_text, "page", "/inbox")
+        else:
+            add_inbox(self.journal, at, "page", page_text[:200], page_text, "/inbox")
 
     # ------------------------------------------------------------ HTTP side
     def respond(  # noqa: PLR0911, PLR0912 - one return per route
@@ -372,13 +389,13 @@ class Control:
         url = urlsplit(path)
         p = url.path.rstrip("/") or "/act"
         qs = {k: v[-1] for k, v in parse_qs(url.query).items()}
-        if self.proxy_key is not None and not self.demo:  # BF-D46: only signed requests
+        if self.proxy_key is not None:  # BF-D46: only signed requests (the demo signs too)
             signed = verify_proxy(self.proxy_key, headers, method, path, body, self._nonces)
             if signed is None:
                 return 403, hdrs, b"unsigned or stale request\n"
-            login = signed["login"]
+            login = "demo" if self.demo else signed["login"]
             headers = {"Cookie": header(headers, "cookie"), "Origin": signed["origin"],
-                       "Sec-Fetch-Site": signed["site"], "Host": self.public_host,
+                       "Sec-Fetch-Site": signed["site"], "Host": signed["host"],
                        "X-CSRF-Token": header(headers, "x-csrf-token")}  # fmt: skip
         else:
             login = "demo" if self.demo else header(headers, LOGIN_HEADER).lower()
@@ -428,15 +445,40 @@ class Control:
             return "This Tailscale log-in may not act."
         if len(body) > BODY_MAX:
             return "request too large"
-        if not same_origin(headers, self.public_host):
-            return "cross-site request refused"
+        form = parse_qs(body.decode("utf-8", "replace")) if body[:1] != b"{" else {}
+        why = self._origin_refusal(headers, (form.get("a") or [""])[-1])
+        if why is not None:
+            return why
         sent = header(headers, "x-csrf-token")
         if not sent:
-            form = parse_qs(body.decode("utf-8", "replace")) if body[:1] != b"{" else {}
             sent = (form.get("csrf") or [""])[-1]
         if not _cookie(headers, COOKIE) or not hmac.compare_digest(sent, self._token(sid, login)):
             return "missing or stale form token: reload the page and try again"
         return None
+
+    def _origin_refusal(self, headers: Mapping[str, str], action: str) -> str | None:
+        """BF-D55 (N1, N1b): the Origin must be the app's own host: ``app.public_host``
+        when it is set, else the host the dashboard received (signed). ``Origin: null`` is
+        accepted only with ``Sec-Fetch-Site: same-origin``. When the request came from a
+        real host that is not the pinned name (the server's Tailscale name changed), only
+        Pause, Kill and Stop go through, with a message how to fix the address."""
+        site = header(headers, "sec-fetch-site").lower()
+        if site and site != "same-origin":
+            return "cross-site request refused"
+        req_host = header(headers, "host").lower()
+        if same_origin(headers, self.public_host or req_host):
+            return None
+        origin = header(headers, "origin")
+        o_host = urlsplit(origin).netloc.lower() if origin and origin != "null" else ""
+        if self.public_host and o_host and o_host == req_host:
+            if action in RISK_REDUCING:
+                return None
+            return (
+                f"The app's address changed (this page came from {o_host}, the server expects "
+                f"{self.public_host}). On the server run bigwins option 11 (Allow my phone "
+                "to act) again, then restart. Pause, Kill and Stop still work meanwhile."
+            )
+        return "cross-site request refused"
 
     def _html(
         self, status: int, hdrs: dict[str, str], title: str, body: str, active: str = ""
@@ -856,10 +898,18 @@ class Control:
         try:
             return self._do_queue(a, form, login, hdrs, now, cmd, what, needs_code, code)
         except _RefusedError as r:
-            if needs_code:
-                with self._lock:
-                    self._code_busy = False
+            self._release_slot(needs_code)
             return self._result(hdrs, str(r), False)
+        except Exception:  # BF-D57 (N3): never keep the slot after an unexpected error
+            self._release_slot(needs_code)
+            raise
+
+    def _release_slot(self, needs_code: bool) -> None:
+        """Free the code slot of a request that was refused or failed before it was
+        queued (a queued one frees it in ``_run``)."""
+        if needs_code:
+            with self._lock:
+                self._code_busy = False
 
     def _do_queue(  # noqa: PLR0912 - one rule per branch
         self, a: str, form: Mapping[str, str], login: str, hdrs: dict[str, str], now: datetime,

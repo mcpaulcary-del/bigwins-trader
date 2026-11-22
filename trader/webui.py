@@ -41,7 +41,9 @@ CSP = (
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # BF-D55: "same-origin", not "no-referrer": with no-referrer Chromium sends
+    # `Origin: null` on the app's own form POSTs, which the CSRF check refused
+    "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Cache-Control": "no-store",
 }

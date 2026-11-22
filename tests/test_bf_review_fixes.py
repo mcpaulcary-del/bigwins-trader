@@ -121,7 +121,12 @@ def test_H1_dashboard_signs_what_it_forwards(monkeypatch: pytest.MonkeyPatch) ->
     fwd("POST", "/act/do", {"Tailscale-User-Login": OWNER, "Origin": "https://app.example",
                             "Sec-Fetch-Site": "same-origin"}, b"a=pa")  # fmt: skip
     signed = verify_proxy(KEY, got["h"], "POST", "/act/do", b"a=pa", NonceCache())
-    assert signed == {"login": OWNER, "origin": "https://app.example", "site": "same-origin"}
+    assert signed == {
+        "login": OWNER,
+        "origin": "https://app.example",
+        "site": "same-origin",
+        "host": "",
+    }  # (no Host header in this call; BF-D55 signs it)
     assert not any(k.lower() == "tailscale-user-login" for k in got["h"])
 
 
@@ -360,6 +365,7 @@ def test_M1_postgres_role_cannot_write(pg_url: str) -> None:
         c.execute(text("SET TRANSACTION READ WRITE"))  # even when it asks to write
         with pytest.raises(DBAPIError):
             c.execute(text(sql))
+    ro.dispose()
 
 
 # ---------------------------------------------------------------- M2
@@ -379,7 +385,8 @@ def test_M2_default_deny_classification_and_worker_agrees() -> None:
         assert sv.is_trading_path(f) and w["classify"]([f]) == "strategy", f
     ui = ["trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
           "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
-          "docs/DECISIONS.md", "tests/test_x.py", "deploy/bigwins.sh", "README.md"]  # fmt: skip
+          "docs/DECISIONS.md", "tests/test_x.py", "README.md"]  # fmt: skip
+    # (deploy/ counts as infrastructure since BF-D60, tested in test_bf_rereview_fixes)
     for f in ui:
         assert not sv.is_trading_path(f) and w["classify"]([f]) == "app", f
 

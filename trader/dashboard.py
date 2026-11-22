@@ -603,6 +603,39 @@ FORWARD_IN = ("tailscale-user-login", "tailscale-user-name", "cookie", "content-
 FORWARD_OUT = ("content-type", "set-cookie", "cache-control", "content-security-policy")
 
 
+def forward_headers(
+    headers: Mapping[str, str], method: str, path: str, body: bytes, key: bytes | None
+) -> dict[str, str]:
+    """The headers passed on to the trader: the browser's cookie, content type and CSRF
+    token; with ``key``, the log-in, Origin, Sec-Fetch-Site and the host the browser asked
+    for (``X-Forwarded-Host`` from tailscale serve, else ``Host``), signed (BF-D46/D55)."""
+
+    def hv(name: str) -> str:
+        return next((v for k, v in headers.items() if k.lower() == name), "")
+
+    fwd = {k: v for k, v in headers.items() if k.lower() in FORWARD_IN}
+    if key is None:  # unsigned (development only): the host for the Origin check
+        if hv("host"):
+            fwd["X-Forwarded-Host"] = hv("host")
+        return fwd
+    fwd = {k: v for k, v in fwd.items() if k.lower() != "tailscale-user-login"}
+    fwd.update(sign_proxy(key, hv("tailscale-user-login").strip().lower(), hv("origin"),
+                          hv("sec-fetch-site"), method, path, body,
+                          host=hv("x-forwarded-host") or hv("host")))  # fmt: skip
+    return fwd
+
+
+def signed_local(actions: ActionsFn, key: bytes) -> ActionsFn:
+    """The demo: the same signed forwarding, to an in-process control server."""
+
+    def forward(
+        method: str, path: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[int, dict[str, str], bytes]:
+        return actions(method, path, forward_headers(headers, method, path, body, key), body)
+
+    return forward
+
+
 def proxy_to(base: str, key: bytes | None = None, timeout: float = 70.0) -> ActionsFn:
     """BF-D39 / BF-D46: forward ``/act/...`` to the trader's control server (which checks
     the log-in, the form token and the code itself). With ``key`` (``app_proxy_key``) the
@@ -613,18 +646,7 @@ def proxy_to(base: str, key: bytes | None = None, timeout: float = 70.0) -> Acti
     def forward(
         method: str, path: str, headers: Mapping[str, str], body: bytes
     ) -> tuple[int, dict[str, str], bytes]:
-        fwd = {k: v for k, v in headers.items() if k.lower() in FORWARD_IN}
-        host = next((v for k, v in headers.items() if k.lower() == "host"), "")
-        if key is None and host:  # unsigned (development only): the host for the Origin check
-            fwd["X-Forwarded-Host"] = host
-        if key is not None:
-
-            def hv(name: str) -> str:
-                return next((v for k, v in headers.items() if k.lower() == name), "")
-
-            fwd = {k: v for k, v in fwd.items() if k.lower() != "tailscale-user-login"}
-            fwd.update(sign_proxy(key, hv("tailscale-user-login").strip().lower(), hv("origin"),
-                                  hv("sec-fetch-site"), method, path, body))  # fmt: skip
+        fwd = forward_headers(headers, method, path, body, key)
         req = urllib.request.Request(  # noqa: S310 - the fixed private control address
             base.rstrip("/") + path, data=body if method == "POST" else None, method=method,
             headers=fwd,

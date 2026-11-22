@@ -75,10 +75,13 @@ class TotpVerifier:
         self._window = window
         self._used: set[tuple[int, str]] = set()
         self.failures = 0  # codes refused so far (the app's lock-out counts them, BF-D39)
+        self.successes = 0  # codes accepted so far (only these clear the count, BF-D56)
 
     def verify(self, code: str, at: datetime) -> bool:
         ok = self._verify(code, at)
-        if not ok:
+        if ok:
+            self.successes += 1
+        else:
             self.failures += 1
         return ok
 
@@ -300,6 +303,7 @@ def render_batch(journal: Journal, batch_id: str, banner: str) -> str:
 CB_PREFIX = "bw"  # callback data "bw:<action>[:<batch>[:<n>|all]]", at most 64 bytes
 CB_MAX = 64
 CODE_RE = re.compile(r"\d{6}")
+SHARE_CODE = re.compile(r"[A-Z0-9]{1,6}")
 OPEN_FOR_APPROVAL = (Status.PLANNED, Status.RISK_OK, Status.HELD)
 PER_ORDER_BUTTONS_MAX = 24  # beyond this the message keeps "Approve all" and typed /ok n
 # Replies of the typed handlers that mean the whole batch is decided (its buttons go)
@@ -443,18 +447,26 @@ class ApprovalBot:
         }
         if act in fixed:
             return None, *fixed[act]
-        if act == "idmap" and len(args) in (2, 3):
-            ratio = f" {args[2]}" if len(args) == 3 else ""
-            old, new = args[0].upper(), args[1].upper()
-            return (
-                None,
-                f"/idmap {old} {new}{ratio}",
-                f"confirm the code change {old} -> {new}{ratio}",
-            )
-        if act == "idmap_reject" and len(args) == 1:
-            old = args[0].upper()
-            return None, f"/idmap_reject {old}", f"undo the code change of {old}"
+        if act in ("idmap", "idmap_reject"):  # BF-D56: the shape is checked before the code
+            return self._idmap_preview(act, args)
         return "unknown action", "", ""
+
+    def _idmap_preview(self, act: str, args: Sequence[str]) -> tuple[str | None, str, str]:
+        want = (2, 3) if act == "idmap" else (1,)
+        if len(args) not in want or any(not SHARE_CODE.fullmatch(x.upper()) for x in args[:2]):
+            return f"refused: {act} needs share codes of 1-6 letters or digits", "", ""
+        old = args[0].upper()
+        if act == "idmap_reject":
+            return None, f"/idmap_reject {old}", f"undo the code change of {old}"
+        ratio = ""
+        if len(args) == 3:
+            try:
+                parse_ratio(args[2])
+            except CaError as e:
+                return f"refused: {e}", "", ""
+            ratio = f" {args[2]}"
+        new = args[1].upper()
+        return None, f"/idmap {old} {new}{ratio}", f"confirm the code change {old} -> {new}{ratio}"
 
     def _batch_check(  # noqa: PLR0911, PLR0912 - one refusal per rule
         self, act: str, args: list[str], at: datetime

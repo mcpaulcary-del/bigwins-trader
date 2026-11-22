@@ -325,7 +325,7 @@ def _app_wiring(
     server-job results: hooks of the scheduler loop and its sleep."""
     import time as _time
 
-    from trader.app_control import Control, serve_control
+    from trader.app_control import Control
     from trader.constants import BUILD_SHA_FILE
     from trader.heartbeat import Heartbeat, ping_url
     from trader.secrets import read_secret
@@ -349,13 +349,7 @@ def _app_wiring(
             worker_key=key_bytes(read_secret("worker_job_key")),  # BF-D48
             live=cfg.mode != "paper",  # BF-D50
         )  # fmt: skip
-        bind = control_bind_address(cfg.app.control_bind_host)  # BF-D46: never 0.0.0.0
-        serve_control(ctl, bind, cfg.app.control_port)
-        print(
-            f"app actions on {bind}:{cfg.app.control_port} (control network); "
-            f"{len(ctl.allowed_logins)} log-in(s) allowed",
-            file=sys.stderr,
-        )
+        start_control_when_resolvable(ctl, cfg.app.control_bind_host, cfg.app.control_port)
         hooks.append(lambda now: ctl.process())
         hooks.append(lambda now: tell_server_jobs(j, notifier))
         sleep = ctl.wait
@@ -374,12 +368,54 @@ def key_bytes(secret: SecretValue) -> bytes:
     return v.encode()
 
 
-def control_bind_address(host: str) -> str:
+def wait_for_address(
+    host: str,
+    resolve: Callable[[str], str] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    max_wait_s: float = 60.0,
+) -> str:
+    """BF-D60 (N9): the control alias may resolve a moment after the container starts;
+    retry with a growing pause (logged) instead of stopping the trader."""
+    import socket
+    import time as _time
+
+    res = resolve or socket.gethostbyname
+    pause = 1.0
+    while True:
+        try:
+            return res(host)
+        except OSError as e:
+            print(f"app actions: {host} not resolvable yet ({e}); retrying in {pause:.0f} s",
+                  file=sys.stderr)  # fmt: skip
+            (sleep or _time.sleep)(pause)
+            pause = min(pause * 2, max_wait_s)
+
+
+def start_control_when_resolvable(ctl: object, host: str, port: int) -> None:
+    """Serve the app's actions once the control address resolves; until then the app
+    shows "actions unavailable" (the dashboard cannot reach the trader) and the trader
+    keeps trading. Runs in a background thread."""
+    import threading
+
+    from trader.app_control import Control, serve_control
+
+    assert isinstance(ctl, Control)
+
+    def run() -> None:
+        bind = control_bind_address(host, wait_for_address(host))
+        serve_control(ctl, bind, port)
+        print(f"app actions on {bind}:{port} (control network); "
+              f"{len(ctl.allowed_logins)} log-in(s) allowed", file=sys.stderr)  # fmt: skip
+
+    threading.Thread(target=run, name="app-control-bind", daemon=True).start()
+
+
+def control_bind_address(host: str, addr: str | None = None) -> str:
     """BF-D46: the address of the trader's ``control``-network alias; never a wildcard."""
     import ipaddress
     import socket
 
-    addr = socket.gethostbyname(host)
+    addr = addr or socket.gethostbyname(host)
     ip = ipaddress.ip_address(addr)
     if ip.is_unspecified:
         raise SystemExit(f"control_bind_host {host!r} resolves to {addr}: refused")
@@ -631,7 +667,14 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
             tax_params=tax,
         )  # fmt: skip
-        actions = demo_control(j, demo).respond
+        import secrets as _secrets
+
+        from trader.dashboard import signed_local
+
+        demo_key = _secrets.token_hex(32).encode()  # BF-D55: the demo signs like production
+        ctl = demo_control(j, demo)
+        ctl.proxy_key = demo_key
+        actions = signed_local(ctl.respond, demo_key)
     else:
         j = _read_only_journal(cfg, args.journal)
         store = Path(args.store) if args.store else cfg.data.forward_store
