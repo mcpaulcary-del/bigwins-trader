@@ -88,8 +88,10 @@ def test_BF_D37_renders_a_run_of_the_real_app(demo: Demo) -> None:
     assert len(v.index) > 1 and v.recon is not None and v.recon[1]
     assert v.report_at is not None  # (scheduler job keys are written by run_forever only)
     status, page = _get(Dashboard(src))
-    assert status == 200 and "Holdings (" in page and "<svg" in page and "DEMO" in page
-    assert "Twin vs 5 random twins" in page and "Waiting" not in page
+    assert status == 200 and "<svg" in page and "DEMO" in page and "perf-data" in page
+    assert "Twin vs 5 random twins" in page and "Waiting for the first" not in page
+    status, page = _get(Dashboard(src), "/holdings")
+    assert status == 200 and "Holdings (" in page
 
 
 def test_BF_D37_stale_mark_is_flagged(tmp_path: Path) -> None:
@@ -113,8 +115,11 @@ def test_BF_D37_stale_mark_is_flagged(tmp_path: Path) -> None:
     assert h["HGO"].stale and h["HGO"].mark == Decimal("1.20") and h["HGO"].mark_day == "2026-11-17"
     assert h["AAA"].days_held == 16 and v.safety == "PAUSED"
     assert v.last_job is not None and v.last_job[0].endswith("reconcile") and v.job_errors == 1
-    page = render(v)
-    assert "old price" in page and "PAUSED" in page and "failed: ValueError" in page
+    from trader.app_pages import Extras, holdings, server
+
+    assert "PAUSED" in render(v)
+    assert "old price" in holdings(v, Extras(), None)
+    assert "failed: ValueError" in server(v, Extras())
 
 
 def test_BF_D37_index_line_from_the_price_store(tmp_path: Path) -> None:
@@ -159,17 +164,33 @@ def test_BF_D37_postgres_session_is_read_only(pg_url: str) -> None:
 
 
 def test_BF_D37_no_write_routes(tmp_path: Path) -> None:
+    """BF-D37 / BF-D43: the app's own screens are read-only (GET/HEAD); ``/act/...`` is
+    only forwarded to the trader's control server (BF-D39), never handled here."""
     d = _dash(_ro(tmp_path / "none.sqlite"))
-    assert set(d.routes()) == {"/", "/healthz", "/manifest.webmanifest", "/icon.svg",
-                               "/icon-192.png", "/icon-512.png"}  # fmt: skip
+    assert set(d.routes()) == {"/healthz", "/manifest.webmanifest", "/icon.svg", "/icon-192.png",
+                               "/icon-512.png", "/app.css", "/app.js", "/sw.js"}  # fmt: skip
     assert frozenset({"GET", "HEAD"}) == READ_METHODS
     for m in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-        status, hdrs, _ = d.respond(m, "/", {})
-        assert status == 405 and hdrs["Allow"] == "GET, HEAD"
+        for path in ("/", "/orders", "/inbox", "/settings"):
+            status, hdrs, _ = d.respond(m, path, {})
+            assert status == 405 and hdrs["Allow"] == "GET, HEAD"
     assert _get(d, "/approve")[0] == 404
+    assert d.respond("POST", "/act/do", {}, b"a=pa")[0] == 503  # no control server: nothing
+    seen: list[tuple[str, str]] = []
+    d.actions = lambda m, p, h, b: (seen.append((m, p)) or (200, {}, b"forwarded"))  # type: ignore[func-returns-value]
+    assert d.respond("POST", "/act/do", {}, b"a=pa")[2] == b"forwarded" and seen == [
+        ("POST", "/act/do")
+    ]
     status, hdrs, _ = d.respond("GET", "/", {})
-    assert "default-src 'none'" in hdrs["Content-Security-Policy"]
-    assert "<form" not in render(collect(d.sources)) and "<script" not in render(collect(d.sources))
+    csp = hdrs["Content-Security-Policy"]
+    assert "default-src 'none'" in csp and "script-src 'self'" in csp and "unsafe-eval" not in csp
+    assert "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
+    for path in ("/", "/holdings", "/orders", "/inbox", "/server", "/settings"):
+        page = _get(d, path)[1]
+        assert "<form" not in page, path
+        assert page.count("<script") == page.count('<script src="/app.js"') + page.count(
+            'type="application/json"'
+        )
 
 
 def test_BF_D37_tailscale_login_allow_list(tmp_path: Path) -> None:
@@ -232,6 +253,7 @@ def test_BF_D37_compose_service_is_loopback_and_read_only() -> None:
     assert with_ports == {"dashboard"}  # nothing else is published
     d = svc["dashboard"]
     assert d["ports"] == ["127.0.0.1:8080:8080"]
+    assert set(d["networks"]) == {"internal", "dashboard", "control"}
     assert d["secrets"] == ["db_password"] and d["user"] == "10001:10001"
     assert d["read_only"] is True and d["cap_drop"] == ["ALL"]
     assert all(v.endswith(":ro") for v in d["volumes"])

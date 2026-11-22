@@ -27,12 +27,14 @@ job keys. The comparison line is the A200 fund's total return from the price sto
 from __future__ import annotations
 
 import gzip
-import html
 import json
 import math
 import re
 import shutil
 import struct
+import urllib.error
+import urllib.parse
+import urllib.request
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -46,6 +48,8 @@ from typing import Any
 
 from sqlalchemy import inspect, select
 
+from trader import app_pages, webui
+from trader.app_pages import Extras
 from trader.approval import approved_seqs
 from trader.constants import ASX_TZ
 from trader.journal import Journal, Status, events, safety
@@ -54,7 +58,7 @@ from trader.orders import Side
 CENT = Decimal("0.01")
 MINUS = "\u2212"  # a typographic minus sign
 REFRESH_SECONDS = 60
-THEME = "#0f6b4f"
+THEME = webui.THEME
 IndexProvider = Callable[[], list[tuple[date, float]]]  # (session, total-return level)
 
 STATUS_WORDS = {
@@ -210,6 +214,9 @@ class Sources:
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(ASX_TZ))
     index_note: str = "with dividends"
     demo: bool = False  # synthetic data (``--demo``): the page says so
+    approval_deadline: str = "15:20"
+    tax_params: Any = None  # trader.tax_report.TaxParams (BF-D44); None = the defaults
+    marginal_rate: Decimal | None = None  # tax.marginal_rate (BF-D44), set on the server only
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -507,376 +514,9 @@ def store_index(root: Path, code: str) -> IndexProvider:
 # ---------------------------------------------------------------- rendering
 
 
-def _e(x: object) -> str:
-    return html.escape(str(x), quote=True)
-
-
-def _aud(x: Decimal | None, sign: bool = False) -> str:
-    if x is None:
-        return "-"
-    q = x.quantize(CENT)
-    s = f"{abs(q):,.2f}"
-    if sign:
-        return ("+" if q >= 0 else MINUS) + "A$" + s
-    return (MINUS if q < 0 else "") + "A$" + s
-
-
-def _pct(x: float | None, sign: bool = True) -> str:
-    if x is None or not math.isfinite(x):
-        return "-"
-    s = f"{abs(x) * 100:.1f}%"
-    return (("+" if x >= 0 else MINUS) + s) if sign else s
-
-
-def _tone(x: float | Decimal | None) -> str:
-    if x is None:
-        return ""
-    return "up" if x > 0 else ("down" if x < 0 else "")
-
-
-def _when(t: datetime | None) -> str:
-    return "-" if t is None else t.astimezone(ASX_TZ).strftime("%a %d %b %H:%M")
-
-
-def _chart(v: View) -> str:
-    """Account value vs the index, both rebased to 100 at the book's first value."""
-    if len(v.series) < 2:
-        return '<p class="muted">The chart starts after the second trading day.</p>'
-    w, h, pl, pr, pt, pb = 340, 190, 34, 8, 10, 22
-    base = float(v.series[0][1])
-    book = [(d, float(x) / base * 100) for d, x in v.series]
-    idx = [(d, x / v.index[0][1] * 100) for d, x in v.index] if v.index else []
-    allv = [y for _, y in book + idx]
-    lo, hi = min(allv), max(allv)
-    pad = max((hi - lo) * 0.1, 0.5)
-    lo, hi = lo - pad, hi + pad
-    d0, d1 = book[0][0], book[-1][0]
-    span = max((d1 - d0).days, 1)
-
-    def x(d: date) -> float:
-        return pl + (d - d0).days / span * (w - pl - pr)
-
-    def y(val: float) -> float:
-        return pt + (hi - val) / (hi - lo) * (h - pt - pb)
-
-    def path(pts: list[tuple[date, float]]) -> str:
-        return " ".join(f"{'M' if i == 0 else 'L'}{x(d):.1f},{y(val):.1f}"
-                        for i, (d, val) in enumerate(pts))  # fmt: skip
-
-    grid = []
-    for k in range(4):
-        val = lo + (hi - lo) * (k + 0.5) / 4
-        grid.append(
-            f'<line x1="{pl}" x2="{w - pr}" y1="{y(val):.1f}" y2="{y(val):.1f}" class="grid"/>'
-            f'<text x="{pl - 4}" y="{y(val) + 3:.1f}" class="ax" text-anchor="end">'
-            f"{val:.0f}</text>"
-        )
-    y100 = y(100.0)
-    lines = [
-        f'<line x1="{pl}" x2="{w - pr}" y1="{y100:.1f}" y2="{y100:.1f}" class="base"/>',
-        f'<path d="{path(idx)}" class="s2"/>' if idx else "",
-        f'<path d="{path(book)}" class="s1"/>',
-        f'<circle cx="{x(book[-1][0]):.1f}" cy="{y(book[-1][1]):.1f}" r="4" class="d1"/>',
-    ]
-    labels = (
-        f'<text x="{pl}" y="{h - 6}" class="ax">{d0:%d %b %y}</text>'
-        f'<text x="{w - pr}" y="{h - 6}" class="ax" text-anchor="end">{d1:%d %b %y}</text>'
-    )
-    legend = '<span class="key k1"></span>Paper book'
-    if idx:
-        legend += f' <span class="key k2"></span>{_e(v.index_label)} ({_e(v.index_note)})'
-    title = f"Paper book vs {v.index_label}, both = 100 at the start"
-    return (
-        f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="{_e(title)}" class="chart">'
-        f"<title>{_e(title)}</title>{''.join(grid)}{''.join(lines)}{labels}</svg>"
-        f'<p class="legend">{legend}</p>'
-    )
-
-
-def _tile(label: str, value: str, sub: str = "", tone: str = "") -> str:
-    return (
-        f'<div class="tile"><div class="tl">{_e(label)}</div>'
-        f'<div class="tv {tone}">{_e(value)}</div>'
-        + (f'<div class="ts">{_e(sub)}</div>' if sub else "")
-        + "</div>"
-    )
-
-
-def _section(title: str, body: str) -> str:
-    return f"<section><h2>{_e(title)}</h2>{body}</section>"
-
-
-def render(v: View) -> str:
-    parts = [_header(v)]
-    if not v.started:
-        parts.append(
-            _section(
-                "Waiting for the first trading day",
-                "<p>The trader has not made its first decision yet, so there is nothing to "
-                "show. This page fills in by itself after the first trading evening "
-                "(the daily report at 22:45 Sydney).</p>"
-                + (
-                    f"<p>Next decision: <b>{v.next_decision:%A %d %B %Y}</b> (22:20).</p>"
-                    if v.next_decision
-                    else ""
-                ),
-            )
-        )
-        parts += [_safety_html(v), _health_html(v)]
-    else:
-        parts += [_value_html(v), _holdings_html(v), _decision_html(v)]
-        parts += [_safety_html(v), _health_html(v)]
-    parts.append(
-        "<footer>PAPER - no real money. Not shown to beat the index. Read-only page: "
-        "approvals and commands are in Telegram.</footer>"
-    )
-    return _page("".join(parts))
-
-
-def _header(v: View) -> str:
-    return (
-        '<header><div class="brand"><span class="logo">BW</span>Big Wins</div>'
-        f'<div class="badge">{"DEMO" if v.demo else "PAPER"}</div></header>'
-        f'<p class="muted small">{_e(v.book)} · '
-        f"updated {_when(v.now)} · refreshes every minute</p>"
-        + "".join(f'<p class="note">{_e(n)}</p>' for n in v.notes)
-    )
-
-
-def _value_html(v: View) -> str:
-    val = v.value
-    ct = v.change_today
-    prev = v.series[-2][1] if len(v.series) > 1 else None
-    ct_pct = float(ct / prev) if ct is not None and prev else None
-    since = val - v.capital_in if val is not None and v.capital_in else None
-    vs = (
-        v.book_return - v.index_return
-        if v.book_return is not None and v.index_return is not None
-        else None
-    )
-    day = f"on {v.series[-1][0]:%d %b}" if v.series else ""
-    tiles = (
-        _tile("Account value", _aud(val), day)
-        + _tile("Today", _aud(ct, True), _pct(ct_pct), _tone(ct))
-        + _tile("Since start", _aud(since, True), _pct(v.since_start), _tone(since))
-        + _tile(
-            f"vs {v.index_label}",
-            _pct(vs) if vs is not None else "-",
-            f"{v.index_label} {_pct(v.index_return)} since the book's first day"
-            if v.index_return is not None
-            else "index line not available",
-            _tone(vs),
-        )
-    )
-    return _section(
-        "Account",
-        f'<div class="tiles">{tiles}</div>{_chart(v)}'
-        f'<p class="muted small">Cash {_aud(v.cash)} · money in {_aud(v.capital_in)}</p>',
-    )
-
-
-def _holdings_html(v: View) -> str:
-    if not v.holdings:
-        return _section("Holdings", '<p class="muted">No shares held (all cash).</p>')
-    rows = []
-    for h in v.holdings:
-        flag = ' <span class="warn" title="no price today">⚠ old price</span>' if h.stale else ""
-        mark = f"{h.mark}" if h.mark is not None else "no price"
-        rows.append(
-            f"<tr><td><b>{_e(h.code)}</b>{flag}<div class='sub'>{h.qty} @ {_e(mark)}"
-            + (f" ({_e(h.mark_day)})" if h.stale and h.mark_day else "")
-            + f"</div></td><td class='r'>{_aud(h.value)}<div class='sub'>cost {_aud(h.cost)}"
-            f"</div></td><td class='r {_tone(h.gain)}'>{_aud(h.gain, True)}"
-            f"<div class='sub'>{_pct(h.gain_pct)}</div></td>"
-            f"<td class='r'>{h.days_held if h.days_held is not None else '-'}</td></tr>"
-        )
-    stale = sum(1 for h in v.holdings if h.stale)
-    note = (
-        f'<p class="warn small">⚠ {stale} share(s) had no price on the last report day; '
-        "valued at their last price (the report flags them too).</p>"
-        if stale
-        else ""
-    )
-    return _section(
-        f"Holdings ({len(v.holdings)})",
-        '<table><thead><tr><th>Share</th><th class="r">Value</th><th class="r">Gain</th>'
-        f'<th class="r">Days</th></tr></thead><tbody>{"".join(rows)}</tbody></table>{note}',
-    )
-
-
-def _decision_html(v: View) -> str:
-    nd = (
-        f"<p>Next decision: <b>{v.next_decision:%A %d %B %Y}</b>, 22:20 Sydney "
-        "(orders go the next trading day, after your approval by 15:20).</p>"
-        if v.next_decision
-        else ""
-    )
-    if not v.orders:
-        return _section("Decisions", nd + '<p class="muted">No orders yet.</p>')
-    counts: dict[str, int] = {}
-    for o in v.orders:
-        counts[o.status] = counts.get(o.status, 0) + 1
-    summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
-    rows = "".join(
-        f"<tr><td>{o.seq}</td><td class='{'buy' if o.side == 'BUY' else 'sell'}'>"
-        f"{_e(o.side.lower())}</td><td><b>{_e(o.code)}</b><div class='sub'>{o.qty} · "
-        f"~{_aud(o.value)}</div></td><td>{_e(o.status)}</td></tr>"
-        for o in v.orders
-    )
-    batches = sorted({o.batch_id for o in v.orders})
-    return _section(
-        "Decisions",
-        nd + f"<p>Last decision <b>{v.last_decision:%d %b %Y}</b>: {_e(summary)}.</p>"
-        f'<p class="muted small">{_e(", ".join(batches))}</p>'
-        f"<table><tbody>{rows}</tbody></table>",
-    )
-
-
-def _safety_html(v: View) -> str:
-    lvl = v.safety
-    tone = (
-        "ok" if lvl == "NORMAL" else ("bad" if lvl in ("KILLED", "HALTED_INTEGRITY") else "amber")
-    )
-    items = [
-        f'<li><span class="pill {tone}">{_e(lvl)}</span> {_e(SAFETY_WORDS.get(lvl, lvl))}'
-        + (
-            f'<div class="sub">{_e(v.safety_reason)} · {_when(v.safety_at)}</div>'
-            if v.safety_at
-            else ""
-        )
-        + "</li>"
-    ]
-    if v.started:
-        items.append(f"<li>Loss rule (L11): <b>{_e(v.l11_text or 'Normal')}</b></li>")
-    t = v.trend
-    if t:
-        state = str(t.get("state", "?"))
-        what = "shares (EMG2-18)" if state == "EMG2" else "the A200 fund"
-        rel = "at or above" if state == "EMG2" else "below"
-        forced = (
-            f" - FORCED for the paper dry run (rule said {t['forced_from']})"
-            if t.get("forced_from")
-            else ""
-        )
-        try:
-            detail = (
-                f"band index {float(t['level']):.3f} {rel} its {len(t.get('levels', []))}-month "
-                f"average {float(t['mean']):.3f} ({t.get('as_of', '')})"
-            )
-        except (KeyError, TypeError, ValueError):
-            detail = str(t.get("as_of", ""))
-        items.append(
-            f"<li>Trend shield (L15): <b>{_e(state)}</b>, holding {what}{_e(forced)}"
-            f'<div class="sub">{_e(detail)}</div></li>'
-        )
-    else:
-        items.append("<li>Trend shield (L15): not decided yet</li>")
-    if v.twin_pct is not None:
-        warn = " ⚠ below 10" if v.twin_pct < 10 else ""
-        items.append(
-            f"<li>Twin vs {v.twin_n} random twins: <b>{v.twin_pct:.0f}th percentile</b>{warn}"
-            f'<div class="sub">L11 test (b) needs ≥ 10 · {_e(v.twin_day)}</div></li>'
-        )
-    if v.sim_value is not None:
-        items.append(f"<li>Simulated twin value: <b>{_aud(v.sim_value)}</b></li>")
-    return _section("Safety", f'<ul class="list">{"".join(items)}</ul>')
-
-
-def _health_html(v: View) -> str:
-    def gb(n: int) -> str:
-        return f"{n / 1e9:.1f} GB"
-
-    items = []
-    items.append(
-        "<li>Price store: "
-        + (f"<b>{v.store_day:%a %d %b}</b>" if v.store_day else "<b>-</b>")
-        + (f" · refreshed {_when(v.store_refreshed_at)}" if v.store_refreshed_at else "")
-        + "</li>"
-    )
-    items.append(f"<li>Last daily report: <b>{_when(v.report_at)}</b></li>")
-    if v.recon:
-        ok = "reconciled to the cent" if v.recon[1] else "BREAK - see Telegram"
-        items.append(f"<li>Broker check {_e(v.recon[0])}: <b>{ok}</b></li>")
-    if v.last_job:
-        key, at, err = v.last_job
-        name = key.rsplit(":", 1)[1]
-        items.append(
-            f"<li>Last scheduled job: <b>{_e(name)}</b> {_when(at)}"
-            + (f' <span class="warn">failed: {_e(str(err)[:80])}</span>' if err else "")
-            + "</li>"
-        )
-    if v.job_errors:
-        items.append(f'<li class="warn">{v.job_errors} job error(s) in the last 7 days</li>')
-    items.append("<li>Heartbeat: not journaled yet (dead-man check is a later step)</li>")
-    if v.disk_free:
-        free, total = v.disk_free
-        tone = "warn" if free < 0.1 * total else ""
-        items.append(f'<li class="{tone}">Disk free: <b>{gb(free)}</b> of {gb(total)}</li>')
-    return _section("Health", f'<ul class="list">{"".join(items)}</ul>')
-
-
-CSS = """
-:root{color-scheme:light;--bg:#f6f6f3;--card:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;
---line:#e2e1dc;--s1:#2a78d6;--s2:#eb6834;--up:#0a7a3e;--down:#c0352f;--amber:#9a6500;
---ok-bg:#e3f3e8;--amber-bg:#fbeed3;--bad-bg:#fbe1df;--brand:#0f6b4f}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#111110;--card:#1a1a19;
---ink:#f0efec;--ink2:#c3c2b7;--line:#33332f;--s1:#3987e5;--s2:#d95926;--up:#4cc27a;
---down:#f07a72;--amber:#e0a63a;--ok-bg:#16301f;--amber-bg:#3a2c10;--bad-bg:#3d1714;
---brand:#2fa57c}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,
-"Segoe UI",Roboto,sans-serif;padding:12px 16px 32px;max-width:640px;margin-inline:auto}
-header{display:flex;justify-content:space-between;align-items:center}
-.brand{font-weight:700;font-size:20px;display:flex;align-items:center;gap:8px}
-.logo{background:var(--brand);color:#fff;border-radius:8px;font-size:13px;padding:5px 6px}
-.badge{border:1px solid var(--amber);color:var(--amber);border-radius:6px;font-size:12px;
-font-weight:700;padding:2px 8px}
-section{background:var(--card);border:1px solid var(--line);border-radius:14px;
-padding:12px 14px;margin:12px 0}
-h2{font-size:15px;margin:0 0 8px;color:var(--ink2);font-weight:600}
-.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
-.tile{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
-.tl{font-size:12px;color:var(--ink2)}.tv{font-size:20px;font-weight:700}
-.ts{font-size:12px;color:var(--ink2)}
-.up{color:var(--up)}.down{color:var(--down)}.warn{color:var(--amber)}
-.muted{color:var(--ink2)}.small,.sub{font-size:12px}.sub{color:var(--ink2)}
-.chart{width:100%;height:auto;display:block}
-.grid{stroke:var(--line);stroke-width:1}.base{stroke:var(--ink2);stroke-width:1;
-stroke-dasharray:3 3;opacity:.6}.ax{fill:var(--ink2);font-size:10px}
-.s1{fill:none;stroke:var(--s1);stroke-width:2;stroke-linejoin:round}
-.s2{fill:none;stroke:var(--s2);stroke-width:2;stroke-linejoin:round}
-.d1{fill:var(--s1);stroke:var(--card);stroke-width:2}
-.legend{font-size:12px;color:var(--ink2);margin:4px 0}
-.key{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;
-margin:0 4px 0 6px}.k1{background:var(--s1)}.k2{background:var(--s2)}
-table{width:100%;border-collapse:collapse}td,th{padding:6px 4px;border-top:1px solid
-var(--line);vertical-align:top;text-align:left}th{font-size:12px;color:var(--ink2);
-font-weight:600;border-top:0}.r{text-align:right}
-.buy{color:var(--up)}.sell{color:var(--down)}
-.list{list-style:none;padding:0;margin:0}.list li{padding:6px 0;border-top:1px solid
-var(--line)}.list li:first-child{border-top:0}
-.pill{font-size:12px;font-weight:700;border-radius:6px;padding:1px 6px}
-.ok{background:var(--ok-bg);color:var(--up)}.amber{background:var(--amber-bg);
-color:var(--amber)}.bad{background:var(--bad-bg);color:var(--down)}
-.note{background:var(--amber-bg);border-radius:8px;padding:6px 10px;font-size:13px}
-footer{font-size:12px;color:var(--ink2);text-align:center;margin-top:16px}
-"""
-
-
-def _page(body: str) -> str:
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">'
-        f'<meta name="theme-color" content="{THEME}">'
-        '<meta name="color-scheme" content="light dark">'
-        '<meta name="apple-mobile-web-app-capable" content="yes">'
-        '<meta name="apple-mobile-web-app-title" content="Big Wins">'
-        '<link rel="manifest" href="manifest.webmanifest">'
-        '<link rel="icon" href="icon.svg" type="image/svg+xml">'
-        '<link rel="apple-touch-icon" href="icon-192.png">'
-        f"<title>Big Wins</title><style>{CSS}</style></head><body>{body}</body></html>"
-    )
+def render(v: View, x: Extras | None = None) -> str:
+    """The Home screen (BF-D43; ``--snapshot`` writes it)."""
+    return app_pages.home(v, x or Extras())
 
 
 # ---------------------------------------------------------------- app icon and manifest
@@ -892,17 +532,17 @@ ICON_SVG = (
 MANIFEST = {
     "name": "Big Wins",
     "short_name": "Big Wins",
-    "description": "The Big Wins paper book (read-only)",
-    "start_url": "./",
-    "scope": "./",
+    "description": "The Big Wins paper book: view, approve, alerts",
+    "start_url": "/",
+    "scope": "/",
     "display": "standalone",
     "background_color": THEME,
     "theme_color": THEME,
     "icons": [
-        {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
-        {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
-        {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
-        {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml"},
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
     ],
 }
 
@@ -949,31 +589,80 @@ def icon_png(size: int) -> bytes:
     )
 
 
-# ---------------------------------------------------------------- HTTP (GET/HEAD only)
+# ---------------------------------------------------------------- HTTP
 
-SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
-        "manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-    ),
-    "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
-    "X-Frame-Options": "DENY",
-    "Cache-Control": "no-store",
-}
 READ_METHODS = frozenset({"GET", "HEAD"})
+ActionsFn = Callable[[str, str, Mapping[str, str], bytes], tuple[int, dict[str, str], bytes]]
+FORWARD_IN = ("tailscale-user-login", "tailscale-user-name", "cookie", "content-type",
+              "origin", "sec-fetch-site", "sec-fetch-mode", "x-csrf-token")  # fmt: skip
+FORWARD_OUT = ("content-type", "set-cookie", "cache-control", "content-security-policy")
+
+
+def proxy_to(base: str, timeout: float = 70.0) -> ActionsFn:
+    """BF-D39: forward ``/act/...`` unchanged to the trader's control server (which checks
+    the log-in, the form token and the code itself). The dashboard adds nothing and
+    keeps no state; a trader that is down gives a clear page, never a write elsewhere."""
+
+    def forward(
+        method: str, path: str, headers: Mapping[str, str], body: bytes
+    ) -> tuple[int, dict[str, str], bytes]:
+        fwd = {k: v for k, v in headers.items() if k.lower() in FORWARD_IN}
+        host = next((v for k, v in headers.items() if k.lower() == "host"), "")
+        if host:
+            fwd["X-Forwarded-Host"] = host
+            fwd["Host"] = host
+        req = urllib.request.Request(  # noqa: S310 - the fixed private control address
+            base.rstrip("/") + path, data=body if method == "POST" else None, method=method,
+            headers=fwd,
+        )  # fmt: skip
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+                status, hdrs, out = r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            status, hdrs, out = e.code, dict(e.headers), e.read()
+            e.close()
+        except OSError:
+            body_html = webui.page("Trader not reachable", webui.section(
+                "Actions unavailable",
+                "<p>The trader is not running or not reachable, so actions are unavailable "
+                "right now. Viewing still works. If it persists, check the Server tab or "
+                "run <code>bigwins</code> on the server.</p>",
+            ), refresh=False)  # fmt: skip
+            h = dict(webui.SECURITY_HEADERS)
+            h["Content-Type"] = "text/html; charset=utf-8"
+            return 502, h, body_html.encode()
+        keep = {k: v for k, v in hdrs.items() if k.lower() in FORWARD_OUT}
+        return int(status), {**webui.SECURITY_HEADERS, **keep}, out
+
+    return forward
+
+
+def _static(ctype: str, text: str) -> Callable[[], tuple[str, bytes]]:
+    data = text.encode()
+    return lambda: (ctype, data)
 
 
 @dataclass
 class Dashboard:
-    """The whole web app: ``respond`` maps a request to (status, headers, body)."""
+    """The whole web app: ``respond`` maps a request to (status, headers, body).
+
+    Its own screens are read-only (GET/HEAD; the journal session refuses writes).
+    ``/act/...`` goes to ``actions``: the trader's control server (``proxy_to``) or, in
+    ``--demo``, an in-process simulated one; None = actions unavailable."""
 
     sources: Sources
-    allowed_logins: frozenset[str] = frozenset()  # Tailscale log-ins; empty = any
+    allowed_logins: frozenset[str] = frozenset()  # Tailscale log-ins that may VIEW; empty = any
+    actions: ActionsFn | None = None
+    action_logins: frozenset[str] = frozenset()  # app.allowed_logins: may ACT (shown only)
+    channel: str = "app"
+    version: str = "paper"
+    checklist: Callable[[], list[tuple[str, bool | None]]] = field(default=lambda: [])
+    update_mode: str = "immediate"  # BF-D45 strategy.update_mode
+    changelog: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
 
     def routes(self) -> dict[str, Callable[[], tuple[str, bytes]]]:
-        return {
-            "/": lambda: ("text/html; charset=utf-8", render(collect(self.sources)).encode()),
+        """The fixed routes (screens with a path argument are matched in ``respond``)."""
+        out: dict[str, Callable[[], tuple[str, bytes]]] = {
             "/healthz": lambda: ("text/plain; charset=utf-8", b"ok\n"),
             "/manifest.webmanifest": lambda: (
                 "application/manifest+json",
@@ -983,25 +672,95 @@ class Dashboard:
             "/icon-192.png": lambda: ("image/png", icon_png(192)),
             "/icon-512.png": lambda: ("image/png", icon_png(512)),
         }
+        for path, (ctype, text) in webui.STATIC.items():
+            out[path] = _static(ctype, text)
+        return out
+
+    SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
+               "/strategy")  # fmt: skip
+
+    def _screen(  # noqa: PLR0911 - one return per screen
+        self, path: str, qs: Mapping[str, str], viewer: str
+    ) -> tuple[str, bytes] | None:
+        src = self.sources
+        v = collect(src)
+        j = src.journal
+        x = app_pages.collect_extras(
+            j, src.book, v.now, viewer, self.action_logins, self.channel, src.approval_deadline
+        ) if _has_journal(j) else Extras(viewer=viewer, action_logins=self.action_logins,
+                                         channel=self.channel)  # fmt: skip
+        x.update_mode = self.update_mode
+        x.changelog = app_pages.safe(self.changelog, [])
+        html_t = "text/html; charset=utf-8"
+        sess: Sequence[date] = src.sessions() if src.sessions else []
+        if path == "/":
+            return html_t, app_pages.home(v, x).encode()
+        if path == "/holdings":
+            return html_t, app_pages.holdings(v, x, j).encode()
+        if path.startswith("/holdings/"):
+            code = path.split("/", 2)[2].upper()
+            out = app_pages.holding_detail(v, x, j, code, sess) if _has_journal(j) else None
+            return None if out is None else (html_t, out.encode())
+        if path == "/orders":
+            body = app_pages.orders(v, x, j) if _has_journal(j) else app_pages.home(v, x)
+            return html_t, body.encode()
+        if path.startswith("/orders/"):
+            bid = urllib.parse.unquote(path.split("/", 2)[2])
+            out = app_pages.batch_detail(v, x, j, bid) if _has_journal(j) else None
+            return None if out is None else (html_t, out.encode())
+        if path == "/inbox":
+            return html_t, app_pages.inbox(v, x, qs.get("kind", "all")).encode()
+        if path == "/server":
+            return html_t, app_pages.server(v, x).encode()
+        if path == "/strategy":
+            return html_t, app_pages.strategy(v, x).encode()
+        if path == "/settings":
+            return html_t, app_pages.settings(v, x, self.version, self.checklist()).encode()
+        if path in ("/tax", "/tax.csv"):
+            from trader import tax_screen
+
+            if path == "/tax.csv":
+                return "text/csv; charset=utf-8", tax_screen.csv_export(src, qs).encode()
+            return html_t, tax_screen.screen(v, x, src, qs).encode()
+        return None
 
     def respond(
-        self, method: str, path: str, headers: Mapping[str, str]
+        self, method: str, path: str, headers: Mapping[str, str], body: bytes = b""
     ) -> tuple[int, dict[str, str], bytes]:
-        hdrs = dict(SECURITY_HEADERS)
+        hdrs = dict(webui.SECURITY_HEADERS)
+        url = urllib.parse.urlsplit(path)
+        p = url.path.rstrip("/") or "/"
+        who = next((v for k, v in headers.items() if k.lower() == "tailscale-user-login"), "")
+        who = who.strip().lower()
+        if self.allowed_logins and p != "/healthz" and who not in self.allowed_logins:
+            return 403, hdrs, b"not allowed\n"
+        if p == "/act" or p.startswith("/act/"):
+            if self.actions is None:
+                hdrs["Content-Type"] = "text/html; charset=utf-8"
+                msg = webui.page("Actions", webui.section(
+                    "Actions unavailable", "<p>This app was started without the trader's "
+                    "actions (read-only).</p>"), refresh=False)  # fmt: skip
+                return 503, hdrs, msg.encode()
+            return self.actions(method, path, headers, body)
         if method not in READ_METHODS:
             hdrs["Allow"] = "GET, HEAD"
             return 405, hdrs, b"read-only\n"
-        path = path.split("?", 1)[0].split("#", 1)[0] or "/"
-        if self.allowed_logins and path != "/healthz":
-            who = next((v for k, v in headers.items() if k.lower() == "tailscale-user-login"), "")
-            if who.strip().lower() not in self.allowed_logins:
-                return 403, hdrs, b"not allowed\n"
-        route = self.routes().get(path)
-        if route is None:
-            return 404, hdrs, b"not found\n"
-        ctype, body = route()
+        route = self.routes().get(p)
+        if route is not None:
+            ctype, out = route()
+        else:
+            qs = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
+            known = p in self.SCREENS or p.startswith(("/holdings/", "/orders/"))
+            res = self._screen(p, qs, who) if known else None
+            if res is None:
+                return 404, hdrs, b"not found\n"
+            ctype, out = res
+            if p == "/tax.csv":
+                hdrs["Content-Disposition"] = 'attachment; filename="bigwins_tax.csv"'
         hdrs["Content-Type"] = ctype
-        return 200, hdrs, body
+        if p == "/sw.js":
+            hdrs["Service-Worker-Allowed"] = "/"
+        return 200, hdrs, out
 
 
 def make_handler(app: Dashboard) -> type[BaseHTTPRequestHandler]:
@@ -1010,14 +769,16 @@ def make_handler(app: Dashboard) -> type[BaseHTTPRequestHandler]:
         sys_version = ""
 
         def _go(self) -> None:
-            status, hdrs, body = app.respond(self.command, self.path, dict(self.headers))
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(min(n, 16385)) if n > 0 else b""
+            status, hdrs, out = app.respond(self.command, self.path, dict(self.headers), body)
             self.send_response(status)
             for k, val in hdrs.items():
                 self.send_header(k, val)
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(out)))
             self.end_headers()
             if self.command != "HEAD":
-                self.wfile.write(body)
+                self.wfile.write(out)
 
         do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _go  # noqa: N815
 
