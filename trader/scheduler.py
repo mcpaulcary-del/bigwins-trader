@@ -14,7 +14,8 @@ Telegram between jobs so that ``/pause`` and ``/kill`` act within seconds.
   that day would be stale); the next session's jobs pick up held and carried orders.
 * At start-up ``Executor.recover`` adopts broker orders of intents left in SENDING
   (never resends).
-Non-session days run nothing but the Telegram poll.
+Non-session days run nothing but the Telegram poll, the phone app's actions and the
+heartbeat ping.
 
 The day, as wired in ``bf_app.DAY_JOBS``: owner ticks at 10:30 and 12:30, a reminder of
 unapproved orders at 14:30, the IBKR Flex statement download into the inbox at 13:05,
@@ -30,7 +31,7 @@ day) with its orders for the next session (the order day), and the report at 22:
 from __future__ import annotations
 
 import time as _time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from trader.bf_app import DAY_JOBS, BfApp, at
@@ -49,12 +50,25 @@ def due_jobs(app: BfApp, now: datetime) -> list[tuple[str, str]]:
     return out
 
 
-def run_once(app: BfApp, now: datetime) -> list[str]:
-    """Poll Telegram, then run every due job in order. Returns the job keys completed.
+Hook = Callable[[datetime], object]
+
+
+def _hooks(hooks: Sequence[Hook], now: datetime, app: BfApp) -> None:
+    for h in hooks:
+        try:
+            h(now)
+        except Exception as e:  # an app action, a push or a heartbeat never stops the jobs
+            app.log.append(f"hook failed: {type(e).__name__}")
+
+
+def run_once(app: BfApp, now: datetime, hooks: Sequence[Hook] = ()) -> list[str]:
+    """Poll Telegram, run the hooks (BF-D39 the phone app's queued actions, BF-D41 the
+    heartbeat), then run every due job in order. Returns the job keys completed.
     Stops at the first job that is not done yet, so later jobs keep their order."""
     day = now.astimezone(ASX_TZ).date()
     app.now = now
     app.bot.handle_all()
+    _hooks(hooks, now, app)
     ran = []
     for key, name in due_jobs(app, now):
         try:
@@ -88,8 +102,12 @@ def run_forever(
     sleep: Callable[[float], None] = _time.sleep,
     poll_seconds: float = 20.0,
     stop: Callable[[], bool] = lambda: False,
+    hooks: Sequence[Hook] = (),
 ) -> None:
+    """``sleep``: the phone app's control server passes one that returns early when an
+    action arrives (BF-D39), so an app action is handled within a second or two."""
     start_up(app, clock())
     while not stop():
-        run_once(app, clock())
+        run_once(app, clock(), hooks)
+        _hooks(hooks, clock(), app)
         sleep(poll_seconds)

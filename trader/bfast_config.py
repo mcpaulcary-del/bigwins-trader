@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -23,6 +23,9 @@ from trader.lines.emg2 import Emg2_20Params
 from trader.orders import OrderParams, OrderType
 from trader.risk import RiskLimits
 from trader.yamlio import load_yaml
+
+if TYPE_CHECKING:
+    from trader.tax_report import TaxParams
 
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -214,12 +217,85 @@ class TaxCfg(_M):
 
     parcel_method: Literal["FIFO", "min_tax"] = "FIFO"
     discount_days: int = Field(default=367, ge=366, le=400)
+    # BF-D44 (owner, 22 Nov 2026): "12_months" = disposal later than acquisition + 12
+    # months (the ATO test); "days" = held discount_days or more (BF-D29's margin)
+    discount_rule: Literal["12_months", "days"] = "12_months"
     fund_codes: list[str] = Field(default_factory=list)
     amit_csv: Path | None = None
+    # BF-D44: your marginal tax rate incl. Medicare levy (e.g. 0.345) for the app's estimate;
+    # empty by default: set it on the server only, never in the repository
+    marginal_rate: Decimal | None = Field(default=None, ge=0, le=Decimal("0.6"))
+
+    def params(self, funds: frozenset[str]) -> TaxParams:
+        from trader.tax_report import TaxParams
+
+        return TaxParams(self.parcel_method, self.discount_days, funds, self.discount_rule)
 
 
 class TelegramCfg(_M):
-    allowed_chat_ids: list[int]
+    # needed only when notify.channel is telegram or both (BF-D40)
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+
+
+class NotifyCfg(_M):
+    """BF-D40: where the trader's messages go and where the owner's commands come from.
+    ``app`` (default): the phone app only (inbox + Web Push, actions in the app);
+    ``telegram``: Telegram only (as before); ``both``."""
+
+    channel: Literal["app", "telegram", "both"] = "app"
+
+    @property
+    def telegram(self) -> bool:
+        return self.channel in ("telegram", "both")
+
+    @property
+    def app(self) -> bool:
+        return self.channel in ("app", "both")
+
+
+class AppCfg(_M):
+    """BF-D39: the phone app's actions. ``allowed_logins``: the Tailscale log-ins (the
+    ``Tailscale-User-Login`` header) that may act (approve, pause...); empty = actions
+    off, viewing still works. Set it on the server only (``bigwins`` menu), never in the
+    repository. The trader serves the actions on ``control_port`` of its private network;
+    the dashboard forwards ``/act/...`` there (``control_url``)."""
+
+    allowed_logins: list[str] = Field(default_factory=list)
+    control_port: int = Field(default=8081, ge=1024, le=65535)
+    control_url: str = "http://trader:8081"
+    push_subject: str = "mailto:bigwins-paper-trader@users.noreply.github.com"
+
+    @field_validator("push_subject")
+    @classmethod
+    def _subject(cls, v: str) -> str:
+        if not v.startswith(("mailto:", "https://")):
+            raise ValueError("push_subject must be a mailto: or https:// URL (RFC 8292)")
+        return v
+
+    @field_validator("control_url")
+    @classmethod
+    def _control(cls, v: str) -> str:
+        if not v.startswith("http://"):
+            raise ValueError("control_url is the trader's private http address")
+        return v
+
+
+class StrategyCfg(_M):
+    """BF-D45: how an approved strategy update takes effect. ``immediate`` (default while
+    the book is paper; the owner's choice for the early stage): applied as soon as the
+    ASX is closed and no order is working, then an out-of-cycle decision with the new
+    rules, its batch approved by the owner like any other. ``next_decision``: from the
+    next month-end decision (not in the 24 hours before one). Changing a live book to
+    ``immediate`` will need an explicit, acknowledged config change (later live step);
+    nothing here changes a live guard."""
+
+    update_mode: Literal["immediate", "next_decision"] = "immediate"
+
+
+class HeartbeatCfg(_M):
+    """BF-D41: ping the ``healthchecks_url`` secret every ``every_seconds`` (``none``: off)."""
+
+    every_seconds: int = Field(default=300, ge=60, le=3600)
 
 
 class JournalCfg(_M):
@@ -246,13 +322,17 @@ class BfastConfig(_M):
     live_emg2_20: Emg2_20Cfg
     risk: RiskCfg
     data: DataCfg
-    telegram: TelegramCfg
+    telegram: TelegramCfg = Field(default_factory=TelegramCfg)
     journal: JournalCfg
     band_trend: BandTrendCfg | None = None  # None = the switch is off (L15 not in use)
     tax: TaxCfg = Field(default_factory=TaxCfg)  # BF-D29 tax report
     # BF-D32: paper dry run with forced L15 states (None in normal running)
     paper_dry_run: PaperDryRunCfg | None = None
     dashboard: DashboardCfg = Field(default_factory=DashboardCfg)  # BF-D37
+    notify: NotifyCfg = Field(default_factory=NotifyCfg)  # BF-D40
+    app: AppCfg = Field(default_factory=AppCfg)  # BF-D39
+    heartbeat: HeartbeatCfg = Field(default_factory=HeartbeatCfg)  # BF-D41
+    strategy: StrategyCfg = Field(default_factory=StrategyCfg)  # BF-D45
 
     @model_validator(mode="after")
     def _dry_run_paper_only(self) -> BfastConfig:
@@ -391,8 +471,34 @@ def lic_codes(cfg: BfastConfig) -> LicList:
     return LicList(codes, frozen, got)
 
 
+LOCAL_SUFFIX = ".local.yaml"  # BF-D39: server-only settings, never in git
+
+
+def local_path(path: Path) -> Path:
+    """``config/bfast.yaml`` -> ``config/bfast.local.yaml``."""
+    return path.with_name(path.stem + LOCAL_SUFFIX)
+
+
+def _merge(base: dict[str, object], over: dict[str, object]) -> dict[str, object]:
+    out = dict(base)
+    for k, v in over.items():
+        b = out.get(k)
+        out[k] = _merge(b, v) if isinstance(b, dict) and isinstance(v, dict) else v
+    return out
+
+
 def load_bfast_config(path: Path) -> BfastConfig:
-    return BfastConfig.model_validate(load_yaml(path.read_text(encoding="utf-8")))
+    """The config file, with the server's own ``<name>.local.yaml`` next to it laid over
+    it when present (BF-D39: the owner's Tailscale log-in, the tax rate, the paper
+    account id... stay on the server, out of git, and never block a ``git pull``)."""
+    raw = load_yaml(path.read_text(encoding="utf-8"))
+    loc = local_path(path)
+    if loc.is_file():
+        over = load_yaml(loc.read_text(encoding="utf-8")) or {}
+        if not isinstance(over, dict) or not isinstance(raw, dict):
+            raise ValueError(f"{loc}: must be a mapping of config sections")
+        raw = _merge(raw, over)
+    return BfastConfig.model_validate(raw)
 
 
 def corporate_actions_csv(cfg: BfastConfig) -> Path | None:

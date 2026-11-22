@@ -66,8 +66,13 @@ def test_run_refuses_without_a_paper_account_or_chat(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="account_id"):
         main(["run", "--config", str(p)])
     raw["broker"]["account_id"] = "DU1234567"
+    raw["notify"] = {"channel": "telegram"}  # BF-D40: the chat list matters only for Telegram
     p.write_text(json.dumps(raw))
     with pytest.raises(SystemExit, match="allowed_chat_ids"):
+        main(["run", "--config", str(p)])
+    raw["notify"] = {"channel": "app"}  # app only: no chat needed; next stop is the secrets
+    p.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="SECRET CHECK FAILED"):
         main(["run", "--config", str(p)])
 
 

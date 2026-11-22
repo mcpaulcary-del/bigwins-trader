@@ -87,6 +87,7 @@ def settings_from(
             tuple(sorted(cfg.paper_dry_run.decisions.items())) if cfg.paper_dry_run else ()
         ),
         dry_run_until=cfg.paper_dry_run.until if cfg.paper_dry_run else None,
+        app_logins=frozenset(x.strip().lower() for x in cfg.app.allowed_logins if x.strip()),
     )
 
 

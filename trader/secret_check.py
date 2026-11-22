@@ -22,13 +22,31 @@ from pathlib import Path
 from trader.constants import SECRETS_DIR_DEFAULT
 from trader.secrets import KNOWN_SECRETS
 
-# deploy/docker-compose.yml: the eight files of the stack (the gateway's password
-# included), and the trader's own seven
-STACK_SECRETS: tuple[str, ...] = (
-    "tws_password", "db_password", "telegram_bot_token", "totp_seed", "eodhd_api_token",
+# deploy/docker-compose.yml: the files of the stack (the gateway's password included),
+# and the trader's own. Which ones depends on ``notify.channel`` (BF-D40): the phone app
+# needs ``vapid_private_key``, Telegram needs ``telegram_bot_token``.
+BASE_SECRETS: tuple[str, ...] = (
+    "tws_password", "db_password", "totp_seed", "eodhd_api_token",
     "healthchecks_url", "ibkr_flex_token", "ibkr_flex_query_id",
 )  # fmt: skip
-TRADER_SECRETS: tuple[str, ...] = tuple(n for n in STACK_SECRETS if n != "tws_password")
+
+
+def stack_secrets(channel: str = "app") -> tuple[str, ...]:
+    """Every secret file the stack needs for ``notify.channel`` = ``channel``."""
+    extra: list[str] = []
+    if channel in ("app", "both"):
+        extra.append("vapid_private_key")
+    if channel in ("telegram", "both"):
+        extra.append("telegram_bot_token")
+    return (*BASE_SECRETS, *extra)
+
+
+def trader_secrets(channel: str = "app") -> tuple[str, ...]:
+    return tuple(n for n in stack_secrets(channel) if n != "tws_password")
+
+
+STACK_SECRETS: tuple[str, ...] = stack_secrets("app")
+TRADER_SECRETS: tuple[str, ...] = trader_secrets("app")
 FIX = (
     "on the server: cd /srv/asx-trader/deploy && chmod 700 secrets && chmod 444 secrets/* "
     "(docs/GO_LIVE_GUIDE.md B6), then docker compose up -d"

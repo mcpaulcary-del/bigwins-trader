@@ -92,11 +92,29 @@ band_trend:                     # L15 (AMENDMENT_live_EMG2_18_BT.md; owner decis
   fund_half_spread: 0.0005      # simulated twin / random twins: the fund's spread a side (report 96)
 tax:                            # BF-D29: `trader-bf tax-report --fy 2026-27` (general information, not tax advice)
   parcel_method: FIFO           # FIFO (default) | min_tax = specific identification: only after the accountant confirms (O-8)
-  discount_days: 367            # 50% CGT discount marked from 367 days held (the record's safety margin over 12 months)
+  discount_rule: 12_months      # BF-D44 (owner): 50% CGT discount when sold later than 12 months after buying
+  discount_days: 367            #   (ATO test); "days" = from discount_days held (BF-D29's safety margin)
+  marginal_rate: null           # BF-D44: your marginal rate incl. Medicare (e.g. 0.345) for the app's tax
+                                #   estimate; set on the server only, never in the repository
   fund_codes: [A200]            # trust distributions (band_trend.fund is added anyway); AMIT figures entered by hand:
   amit_csv: null                #   fy,code,cost_base_increase,cost_base_decrease,note (from each annual tax statement)
-telegram:
-  allowed_chat_ids: []          # the owner's chat id, set at BF0
+notify:                        # BF-D40: where messages go and where your commands come from
+  channel: app                  # app (the phone app: inbox + alerts, actions in the app) |
+                                #   telegram (the old bot) | both
+telegram:                       # only used when notify.channel is telegram or both
+  allowed_chat_ids: []          # the owner's chat id (then also the telegram_bot_token secret)
+app:                            # BF-D39: actions in the phone app (approve, pause, kill...)
+  allowed_logins: []            # the Tailscale log-in(s) allowed to ACT; empty = actions off.
+                                #   Set on the server only (bigwins menu "Allow my phone to
+                                #   act"); keep it empty in the repository
+  control_port: 8081            # the trader's action server on its private network (not published)
+  control_url: http://trader:8081  # where the dashboard forwards /act/... requests
+strategy:                       # BF-D45: strategy updates from the app (Server > Strategy)
+  update_mode: immediate        # immediate (paper, early stage): applied once the ASX is closed and no
+                                #   order is working, then an out-of-cycle decision for your approval |
+                                #   next_decision: from the next month-end decision (24 h block before it)
+heartbeat:                      # BF-D41: dead-man ping to the healthchecks_url secret ("none" = off)
+  every_seconds: 300
 dashboard:                      # BF-D37: read-only phone page (`trader-bf dashboard`), Tailscale only
   allowed_logins: []            # Tailscale log-ins allowed (tailscale serve's Tailscale-User-Login
                                 #   header); empty = anyone on your own tailnet

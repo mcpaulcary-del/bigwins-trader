@@ -40,6 +40,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Table,
+    Text,
     UniqueConstraint,
     create_engine,
     event,
@@ -236,6 +237,60 @@ events = Table(
     Column("from_status", String(24)),
     Column("to_status", String(24)),
     Column("detail", JSON, nullable=False),
+)
+
+
+# The phone app (BF-D39..BF-D42): the owner's inbox (every message the trader sends to the
+# app; append-only), Web Push subscriptions of the owner's installed app, small app state
+# (alert settings, code lock-out, the host's status snapshot) and server jobs the owner
+# asked for in the app (a fixed list of names, run by the host worker).
+inbox = Table(
+    "bf_inbox",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", DateTime(timezone=True), nullable=False),
+    Column("kind", String(16), nullable=False),  # page | approval | report | info | action
+    Column("title", String(200), nullable=False),
+    Column("body", Text, nullable=False),
+    Column("link", String(200), nullable=False),
+    Column("source", String(64), nullable=False),  # trader | app:<login>
+    Column("push", String(64), nullable=False),  # what Web Push did with it
+)
+
+push_subs = Table(
+    "bf_push_subs",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("endpoint", String(512), nullable=False),
+    Column("p256dh", String(200), nullable=False),
+    Column("auth", String(64), nullable=False),
+    Column("login", String(200), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("active", Integer, nullable=False),
+    Column("last_error", String(200), nullable=False),
+    UniqueConstraint("endpoint", name="uq_bf_push_subs_endpoint"),
+)
+
+app_state = Table(
+    "bf_app_state",
+    md,
+    Column("key", String(64), primary_key=True),
+    Column("value", JSON, nullable=False),
+    Column("at", DateTime(timezone=True), nullable=False),
+)
+
+server_jobs = Table(
+    "bf_server_jobs",
+    md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("action", String(32), nullable=False),
+    Column("force", Integer, nullable=False),  # 1 = "do it anyway" while the ASX is open
+    Column("login", String(200), nullable=False),
+    Column("requested_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(16), nullable=False),  # PENDING | RUNNING | DONE | FAILED | REFUSED
+    Column("started_at", DateTime(timezone=True)),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("result", Text, nullable=False),
 )
 
 

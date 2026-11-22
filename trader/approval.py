@@ -42,7 +42,7 @@ import re
 import struct
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta
 from decimal import Decimal
@@ -74,8 +74,15 @@ class TotpVerifier:
         self._secret = secret
         self._window = window
         self._used: set[tuple[int, str]] = set()
+        self.failures = 0  # codes refused so far (the app's lock-out counts them, BF-D39)
 
     def verify(self, code: str, at: datetime) -> bool:
+        ok = self._verify(code, at)
+        if not ok:
+            self.failures += 1
+        return ok
+
+    def _verify(self, code: str, at: datetime) -> bool:
         if not (len(code) == 6 and code.isdigit()):
             return False
         base = int(at.timestamp()) // 30
@@ -104,9 +111,16 @@ class Incoming:
     user_id: int | None = None  # who tapped (Telegram ``from.id``)
     message_id: int | None = None  # the message that carries the button
     message_text: str = ""  # its text (to show the outcome when the batch is decided)
+    # BF-D39: an action from the phone app (``chat_id`` = APP_CHAT, ``login`` = the
+    # Tailscale log-in that the trader's control server checked against app.allowed_logins)
+    source: str = "telegram"
+    login: str = ""
 
 
 Markup = Mapping[str, Any]  # a Telegram ``reply_markup`` object
+
+
+APP_CHAT = 0  # BF-D39/D40: the phone app's "chat" (Telegram chat ids are never 0)
 
 
 class ChatTransport(Protocol):
@@ -368,6 +382,7 @@ class ApprovalBot:
     approval_deadline: str = "15:20"  # L8, config ``execution.approval_deadline``
     code_window_s: int = 180  # BF-D38: a code completes a tap within 3 minutes
     confirm_window_s: int = 60  # BF-D38: Kill / Stop need a second tap within 1 minute
+    allowed_logins: frozenset[str] = frozenset()  # BF-D39: app actions (Tailscale log-ins)
     _pending: dict[int, _Pending] = field(default_factory=dict, init=False, repr=False)
     _confirm: dict[int, tuple[str, datetime]] = field(default_factory=dict, init=False, repr=False)
 
@@ -379,6 +394,10 @@ class ApprovalBot:
         return n
 
     def handle(self, m: Incoming) -> str:
+        if m.source == "app":
+            return self._app(m)
+        if m.chat_id == APP_CHAT:
+            return "ignored"  # only the app's own control server uses the app chat
         if m.callback_id is not None:
             return self._tap(m)
         if m.chat_id not in self.allowed_chats:
@@ -392,6 +411,110 @@ class ApprovalBot:
         reply = self._with_code(m, text) if CODE_RE.fullmatch(text) else self._dispatch(m)
         self.transport.send(m.chat_id, reply)
         return reply
+
+    def _app(self, m: Incoming) -> str:
+        """BF-D39: an owner action from the phone app. The control server built the typed
+        command (code included) after its own checks; here the log-in is checked again
+        and the command goes through ``_dispatch`` like a typed Telegram command (same
+        TOTP verifier, single use, same deadline, same batch rules). The reply goes back
+        to the app, not to Telegram."""
+        login = m.login.strip().lower()
+        if m.chat_id != APP_CHAT or not login or login not in self.allowed_logins:
+            return "ignored"
+        if m.callback_id is not None or CODE_RE.fullmatch(m.text.strip()):
+            return "refused: the app sends whole commands"
+        return self._dispatch(m)
+
+    def preview(self, act: str, args: Sequence[str], at: datetime) -> tuple[str | None, str, str]:
+        """BF-D39: what an app (or button) action would do, checked before asking for the
+        code: ``(refusal or None, the typed command without its code, a description)``.
+        The same checks as a Telegram tap (unknown, refused, past-deadline or decided
+        batch; an order not waiting). Nothing is recorded; the command itself is
+        checked again in full by ``_dispatch`` when the code arrives."""
+        if act in ("ok", "ap", "rf", "veto"):
+            return self._batch_check(act, list(args), at)
+        fixed = {
+            "st": ("/status", "show the safety level"),
+            "pa": ("/pause", "PAUSE: buys stop, registered sells go on"),
+            "ki": ("/kill", "KILL: stop all new orders and cancel open orders at the broker"),
+            "so": ("/stop", "STOP (L11 d): buys stay paused with no automatic resume; sells go on"),
+            "re": ("/resume", "re-arm (resume buying)"),
+            "co": ("/continue", "confirm continuing (L11 stage 3)"),
+        }
+        if act in fixed:
+            return None, *fixed[act]
+        if act == "idmap" and len(args) in (2, 3):
+            ratio = f" {args[2]}" if len(args) == 3 else ""
+            old, new = args[0].upper(), args[1].upper()
+            return (
+                None,
+                f"/idmap {old} {new}{ratio}",
+                f"confirm the code change {old} -> {new}{ratio}",
+            )
+        if act == "idmap_reject" and len(args) == 1:
+            old = args[0].upper()
+            return None, f"/idmap_reject {old}", f"undo the code change of {old}"
+        return "unknown action", "", ""
+
+    def _batch_check(  # noqa: PLR0911, PLR0912 - one refusal per rule
+        self, act: str, args: list[str], at: datetime
+    ) -> tuple[str | None, str, str]:
+        if not args:
+            return "no batch given", "", ""
+        batch_id = args[0]
+        b = self.journal.batch(batch_id)
+        if b is None:
+            return f"unknown batch {batch_id}", "", ""
+        if b["execution_date"] is not None and at > deadline(
+            b["execution_date"], self.approval_deadline
+        ):
+            return (
+                f"refused: past the approval deadline ({self.approval_deadline}) of {batch_id}; "
+                "unapproved orders lapse",
+                "",
+                "",
+            )
+        if any(a["action"] == "REFUSE" for a in self.journal.approvals(batch_id)):
+            return f"refused: batch {batch_id} was already refused", "", ""
+        if act == "rf":
+            return None, f"/refuse {batch_id}", f"refuse batch {batch_id}: nothing will be sent"
+        if act == "ap":
+            if b["approval_mode"] != "batch":
+                return "this batch needs per-order approval", "", ""
+            return None, f"/approve {batch_id}", f"approve batch {batch_id}"
+        target = args[1] if len(args) > 1 else ""
+        done = approved_seqs(self.journal, batch_id)
+        intents = self.journal.intents_of(batch_id)
+        open_ = {it.seq: it for it, st in intents if st in OPEN_FOR_APPROVAL and it.seq not in done}
+        if b["approval_mode"] != "per_order":
+            return "this batch is approved as a whole", "", ""
+        if act == "veto":
+            it_ = {it.seq: (it, st) for it, st in intents}
+            if not target.isdigit() or int(target) not in it_:
+                return f"no order {target!r} in {batch_id}", "", ""
+            iv, st = it_[int(target)]
+            if iv.side is not Side.BUY:
+                return "refused: a sell cannot be vetoed alone (refuse the batch)", "", ""
+            if st not in OPEN_FOR_APPROVAL:
+                return f"order {target} is {st}; nothing to veto", "", ""
+            return (
+                None,
+                f"/veto {batch_id} {target}",
+                f"veto order {target} (BUY {iv.qty} {iv.entity}) of {batch_id}",
+            )
+        if not open_:
+            return f"nothing left to approve in {batch_id}", "", ""
+        if target == "all":
+            n = len(intents)
+            return None, f"/ok {batch_id} all", f"approve all {n} orders of {batch_id}"
+        if not target.isdigit() or int(target) not in open_:
+            return f"order {target} of {batch_id} is not waiting for approval", "", ""
+        it = open_[int(target)]
+        return (
+            None,
+            f"/ok {batch_id} {target}",
+            f"approve order {target} ({it.side.value} {it.qty} {it.entity}) of {batch_id}",
+        )
 
     # ------------------------------------------------------------ taps (BF-D38)
     def _say(self, chat_id: int, text: str, markup: Markup | None = None) -> None:
@@ -465,54 +588,18 @@ class ApprovalBot:
             return self._tap_batch(m, act, args)
         return "unknown button", "unknown button", None
 
-    def _tap_batch(  # noqa: PLR0911 - one refusal per rule
-        self, m: Incoming, act: str, args: list[str]
-    ) -> tuple[str, str, Markup | None]:
+    def _tap_batch(self, m: Incoming, act: str, args: list[str]) -> tuple[str, str, Markup | None]:
         """Approve / refuse buttons: the batch must exist, be open and before its deadline
-        now; the code message is checked again by the typed handler (same rules)."""
-        batch_id = args[0]
-        b = self.journal.batch(batch_id)
-        if b is None:
-            return f"unknown batch {batch_id}", "refused", None
-        if b["execution_date"] is not None and m.at > deadline(
-            b["execution_date"], self.approval_deadline
-        ):
-            return (
-                f"refused: past the approval deadline ({self.approval_deadline}) of {batch_id}; "
-                "unapproved orders lapse",
-                "refused: too late",
-                None,
-            )
-        if any(a["action"] == "REFUSE" for a in self.journal.approvals(batch_id)):
-            return f"refused: batch {batch_id} was already refused", "refused", None
-        if act == "rf":
-            return self._ask_code(m, f"/refuse {batch_id}", f"refuse batch {batch_id}")
-        if act == "ap":
-            if b["approval_mode"] != "batch":
-                return "this batch needs per-order approval", "refused", None
-            return self._ask_code(m, f"/approve {batch_id}", f"approve batch {batch_id}")
-        target = args[1] if len(args) > 1 else ""
-        done = approved_seqs(self.journal, batch_id)
-        open_ = {
-            it.seq: it
-            for it, st in self.journal.intents_of(batch_id)
-            if st in OPEN_FOR_APPROVAL and it.seq not in done
-        }
-        if b["approval_mode"] != "per_order":
-            return "this batch is approved as a whole", "refused", None
-        if not open_:
-            return f"nothing left to approve in {batch_id}", "nothing to approve", None
-        if target == "all":
-            n = len(self.journal.intents_of(batch_id))
-            return self._ask_code(m, f"/ok {batch_id} all", f"approve all {n} orders of {batch_id}")
-        if not target.isdigit() or int(target) not in open_:
-            return f"order {target} of {batch_id} is not waiting for approval", "refused", None
-        it = open_[int(target)]
-        return self._ask_code(
-            m,
-            f"/ok {batch_id} {target}",
-            f"approve order {target} ({it.side.value} {it.qty} {it.entity}) of {batch_id}",
-        )
+        now (``_batch_check``, shared with the app); the code message is checked again by
+        the typed handler (same rules)."""
+        why, command, what = self._batch_check(act, args, m.at)
+        if why is not None:
+            toast = (
+                "refused: too late" if "deadline" in why
+                else "nothing to approve" if why.startswith("nothing left") else "refused"
+            )  # fmt: skip
+            return why, toast, None
+        return self._ask_code(m, command, what)
 
     def _ask_code(self, m: Incoming, command: str, what: str) -> tuple[str, str, Markup | None]:
         self._pending[m.chat_id] = _Pending(command, what, m.at, m.message_id, m.message_text)
@@ -549,7 +636,7 @@ class ApprovalBot:
         if not parts:
             return "empty command"
         cmd, args = parts[0].lower().split("@")[0], parts[1:]
-        actor = f"telegram:{m.chat_id}"
+        actor = f"app:{m.login.strip().lower()}" if m.source == "app" else f"telegram:{m.chat_id}"
         if cmd == "/pause":
             self.journal.set_safety(SafetyLevel.PAUSED, "owner /pause", actor, m.at)
             return "PAUSED: buys stop, registered sells proceed. /resume <code> to re-arm."

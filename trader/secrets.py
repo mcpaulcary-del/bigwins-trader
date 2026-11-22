@@ -30,6 +30,7 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "rclone_config",  # off-site backup remote (section 19)
         "totp_seed",  # second factor (section 15)
         "tws_password",
+        "vapid_private_key",  # BF-D40: Web Push signing key of the phone app (PEM)
     }
 )
 

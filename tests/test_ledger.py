@@ -137,6 +137,7 @@ def test_history_is_not_rewritten() -> None:
         "j0003",
         "j0004",
         "j0005",
+        "j0006",
         "m0001",
         "m0002",
     ]

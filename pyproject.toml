@@ -16,6 +16,11 @@ dependencies = [
     "numpy==2.3.4",
     "exchange_calendars==4.11.2",  # OPS-05: XASX session-date cross-check only
     "ib_async==2.1.0",  # BF3: IBKR adapter (paper only in this build)
+    # BF-D40 Web Push to the phone app: RFC 8291 payload encryption (http-ece) and the
+    # RFC 8292 VAPID signature (py-vapid), both from the web-push-libs project
+    "cryptography==50.0.2",
+    "http-ece==1.2.1",
+    "py-vapid==1.9.6",
 ]
 
 [project.scripts]
@@ -59,6 +64,8 @@ ignore = [
 # Verbatim ports of report 85's T6 research code (golden references): keep its names.
 "tests/bf_support.py" = ["N806"]
 "trader/broker/mock_gateway.py" = ["N802", "N803"]  # mirrors ib_async method and argument names
+"trader/webui.py" = ["E501"]  # the app's inline JavaScript and CSS (BF-D43)
+"trader/{app_pages,tax_screen}.py" = ["E501", "RUF001"]  # the app's HTML templates (BF-D43, BF-D44)
 "scripts/golden/*" = ["N806", "N999", "E501"]
 
 [tool.ruff.format]
@@ -88,7 +95,7 @@ module = ["tests.*", "migrations.*"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["exchange_calendars", "exchange_calendars.*"]
+module = ["exchange_calendars", "exchange_calendars.*", "http_ece", "py_vapid", "py_vapid.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
