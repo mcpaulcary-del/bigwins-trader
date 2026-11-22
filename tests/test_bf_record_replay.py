@@ -139,7 +139,11 @@ def test_BF_dry_run_replays_30_oct_and_18_nov_record_data(rec: Rec) -> None:
     assert "KAN" in reports[-1] and "code change HGO -> KAN not confirmed" in reports[-1]
     # BF-D20 (class rule v2, LICs left out of the ranks): the start buys RG1 in place of AMI
     assert "RG1" in {it.entity for it in start_buys} and "AMI" not in summ.positions
-    assert reports[-1].count("Value A$10022.36") == 1
+    # A$10041.84 with IBKR tiered pricing (review M1); A$10022.36 with the fixed plan
+    import re as _re
+
+    vals = _re.findall(r"Value A\$(\d+\.\d\d)", reports[-1])
+    assert len(vals) == 1 and Decimal(vals[0]) == Decimal("10041.84")
     assert not any("no price" in t for t in reports)
     # BF-D18 golden: the 100 random twins on the record data (18 Nov 2026); re-pinned for
     # BF-D20 (the class fix changes band C, so the twins' draws and the twin's book move)
