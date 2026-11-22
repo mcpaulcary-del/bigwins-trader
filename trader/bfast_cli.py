@@ -30,7 +30,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +43,8 @@ from trader.journal import Journal
 from trader.risk import SafetyLevel
 
 if TYPE_CHECKING:
+    from trader.app_notify import AppNotifier, ChannelTransport
+    from trader.bf_app import BfApp
     from trader.flex_pull import FlexPuller
     from trader.store_refresh import StoreRefresher
 
@@ -214,8 +216,9 @@ def store_refresher(cfg: BfastConfig) -> StoreRefresher | None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """The long-running paper process: scheduler + Telegram + IBKR paper gateway."""
-    from trader.approval import TelegramTransport, TotpVerifier
+    """The long-running paper process: scheduler + the phone app's actions and alerts
+    (and/or Telegram, ``notify.channel``) + IBKR paper gateway + heartbeat."""
+    from trader.approval import TotpVerifier
     from trader.bf_app import BfApp
     from trader.bf_dryrun import ca_source_from, settings_from, store_providers
     from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
@@ -227,7 +230,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = load_bfast_config(args.config)
     if cfg.broker.account_id is None:
         raise SystemExit("broker.account_id (the IBKR paper DU... id) is not set in the config")
-    if not cfg.telegram.allowed_chat_ids:
+    if cfg.notify.telegram and not cfg.telegram.allowed_chat_ids:  # BF-D40
         raise SystemExit("telegram.allowed_chat_ids is empty: nobody could approve an order")
     dr = cfg.paper_dry_run
     if dr is not None:  # BF-D32: paper only (schema + DU guard), and never left on
@@ -246,9 +249,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             + ", ".join(f"{d} {s}" for d, s in sorted(dr.decisions.items())),
             file=sys.stderr,
         )
-    from trader.secret_check import check_secrets
+    from trader.secret_check import check_secrets, trader_secrets
 
-    bad = check_secrets()  # BF-D33: a clear error at start-up, not a failed job later
+    # BF-D33: a clear error at start-up, not a failed job later; BF-D40: which secrets
+    # depends on notify.channel (vapid_private_key for the app, the bot token for Telegram)
+    bad = check_secrets(trader_secrets(cfg.notify.channel))
     if bad:
         raise SystemExit("SECRET CHECK FAILED: " + "; ".join(bad))
     j = _journal_from_config(cfg.journal.url_env)
@@ -265,12 +270,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg, cfg.data.forward_store, sess, refresh_seconds=600
     )
     print(note, file=sys.stderr)
+    transport, notifier, chats = _channels(cfg, j)
     app = BfApp(
-        settings_from(cfg, frozenset(cfg.telegram.allowed_chat_ids), args.start, note),
+        settings_from(cfg, chats, args.start, note),
         j,
         broker,
         sim,
-        TelegramTransport(read_secret("telegram_bot_token")),
+        transport,
         TotpVerifier(read_secret("totp_seed")),
         sess,
         panel,
@@ -282,16 +288,107 @@ def cmd_run(args: argparse.Namespace) -> int:
         flex_pull=flex_puller(cfg),  # BF-D27
         store_refresh=store_refresher(cfg),  # BF-D31: daily EODHD bulk into the store
     )
-    run_forever(app)
+    hooks, sleep = _app_wiring(cfg, j, app, notifier, args.config)
+    run_forever(app, sleep=sleep, hooks=hooks)
     return 0
+
+
+def _channels(
+    cfg: BfastConfig, j: Journal
+) -> tuple[ChannelTransport, AppNotifier | None, frozenset[int]]:
+    """BF-D40: the trader's transport for ``notify.channel``: the phone app (inbox + Web
+    Push), Telegram, or both."""
+    from trader.app_notify import AppNotifier, ChannelTransport, WebPush
+    from trader.approval import APP_CHAT, TelegramTransport
+    from trader.secrets import read_secret
+
+    tg = None
+    if cfg.notify.telegram:  # a short long-poll when the app's actions share the loop
+        tg = TelegramTransport(
+            read_secret("telegram_bot_token"), timeout=2 if cfg.notify.app else 20
+        )
+    notifier = None
+    if cfg.notify.app:
+        push = WebPush(read_secret("vapid_private_key"), cfg.app.push_subject)
+        notifier = AppNotifier(j, push)
+    chats = frozenset(cfg.telegram.allowed_chat_ids if tg is not None else ())
+    if notifier is not None:
+        chats |= {APP_CHAT}
+    return ChannelTransport(tg, notifier), notifier, chats
+
+
+def _app_wiring(
+    cfg: BfastConfig, j: Journal, app: BfApp, notifier: AppNotifier | None, config: Path
+) -> tuple[list[Callable[[datetime], object]], Callable[[float], None]]:
+    """BF-D39 the app's control server (actions), BF-D41 the heartbeat, BF-D42 the
+    server-job results: hooks of the scheduler loop and its sleep."""
+    import time as _time
+
+    from trader.app_control import Control, serve_control
+    from trader.constants import BUILD_SHA_FILE
+    from trader.heartbeat import Heartbeat, ping_url
+    from trader.secrets import read_secret
+    from trader.strategy_runtime import StrategyRuntime
+    from trader.strategy_version import fingerprint
+
+    commit = BUILD_SHA_FILE.read_text().strip()[:40] if BUILD_SHA_FILE.is_file() else ""
+    fp = fingerprint(config, Path(__file__).resolve().parent.parent, commit)
+    rt = StrategyRuntime(app, fp, cfg.strategy.update_mode, app.say)  # BF-D45
+    print(f"strategy {fp.label} ({rt.start(datetime.now(ASX_TZ))})", file=sys.stderr)
+    hooks: list[Callable[[datetime], object]] = [rt.tick]
+    sleep: Callable[[float], None] = _time.sleep
+    if notifier is not None:
+        ctl = Control(
+            j, app.bot, frozenset(cfg.app.allowed_logins), book=cfg.book, notify=notifier.notify,
+            vapid_public=notifier.push.public_key if notifier.push else None,
+            refresh_prices=app.refresh_prices_now, update_mode=cfg.strategy.update_mode,
+            sessions=lambda: app.sessions,
+        )  # fmt: skip
+        serve_control(ctl, "0.0.0.0", cfg.app.control_port)  # noqa: S104 - the private control network only
+        print(
+            f"app actions on :{cfg.app.control_port} (control network); "
+            f"{len(ctl.allowed_logins)} log-in(s) allowed",
+            file=sys.stderr,
+        )
+        hooks.append(lambda now: ctl.process())
+        hooks.append(lambda now: tell_server_jobs(j, notifier))
+        sleep = ctl.wait
+    hb = Heartbeat(ping_url(read_secret("healthchecks_url")), j, app.say,
+                   every_s=cfg.heartbeat.every_seconds)  # fmt: skip
+    print(f"heartbeat: {'on' if hb.enabled else 'off (healthchecks_url is none)'}", file=sys.stderr)
+    hooks.append(hb.tick)
+    return hooks, sleep
+
+
+def tell_server_jobs(j: Journal, notifier: AppNotifier) -> int:
+    """BF-D42: push the result of each server job once (after a restart too)."""
+    from trader.app_store import get_state, server_job_rows, set_state
+
+    st = get_state(j, "server-jobs-told")
+    told = int(st[0]) if st and isinstance(st[0], int) else 0
+    n = 0
+    for r in sorted(server_job_rows(j, 20), key=lambda r: int(r["id"])):
+        if int(r["id"]) <= told or r["status"] in ("PENDING", "RUNNING"):
+            continue
+        result = str(r["result"]).strip().splitlines()[-1:] or [""]
+        kind = "info" if r["status"] == "DONE" else "page"
+        prefix = "" if r["status"] == "DONE" else "PAGE "
+        text = f"{prefix}Server job {r['id']} '{r['action']}': {r['status']}. {result[0][:300]}"
+        notifier.notify(text, kind, "/server")
+        set_state(j, "server-jobs-told", int(r["id"]), datetime.now(ASX_TZ))
+        n += 1
+    return n
 
 
 def cmd_check_secrets(args: argparse.Namespace) -> int:
     """BF-D33: the Docker secret files are there, non-empty and readable by this uid
-    (and by other users: 444 files in a 700 folder). Contents are never read."""
-    from trader.secret_check import STACK_SECRETS, TRADER_SECRETS, check_secrets
+    (and by other users: 444 files in a 700 folder). Contents are never read. BF-D40:
+    the list follows ``notify.channel`` of the config (app: vapid_private_key; telegram:
+    telegram_bot_token)."""
+    from trader.secret_check import check_secrets, stack_secrets, trader_secrets
 
-    names = STACK_SECRETS if args.all else TRADER_SECRETS
+    channel = load_bfast_config(args.config).notify.channel if args.config.is_file() else "app"
+    names = stack_secrets(channel) if args.all else trader_secrets(channel)
     bad = check_secrets(names, args.dir)
     for b in bad:
         print(f"SECRET CHECK FAILED: {b}", file=sys.stderr)
@@ -302,10 +399,124 @@ def cmd_check_secrets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_vapid_public(args: argparse.Namespace) -> int:
+    """BF-D40: print the public key of the VAPID private key (it never prints the key)."""
+    from trader.app_notify import public_key_of
+    from trader.secrets import SecretValue
+
+    print(public_key_of(SecretValue(args.key.read_text(encoding="utf-8"))))
+    return 0
+
+
+def cmd_server_jobs(args: argparse.Namespace) -> int:
+    """BF-D42: the host worker's side of the server-job queue (``deploy/bigwins.sh
+    worker``, root on the host, through ``docker compose exec trader``). ``claim``
+    prints the next job as JSON (``{}`` when none) and marks it RUNNING; ``finish``
+    records the result read from stdin; ``status`` stores the host's status snapshot
+    (JSON on stdin; log lines are cleaned of anything secret-looking); ``list`` prints
+    the latest jobs."""
+    from trader.app_store import (
+        FORCE_MARKET,
+        IMMEDIATE,
+        SERVER_ACTIONS,
+        STRATEGY,
+        claim_server_job,
+        finish_server_job,
+        server_job_rows,
+        set_state,
+    )
+    from trader.server_status import clean_status
+
+    j = cli_journal(args)
+    now = datetime.now(ASX_TZ)
+    if args.op == "claim":
+        r = claim_server_job(j, now, wait=lambda m: _job_wait(j, args, m, now))
+        if r is not None and r["action"] not in SERVER_ACTIONS:  # never: add_server_job checks
+            finish_server_job(j, int(r["id"]), "REFUSED", "unknown action", now)
+            r = None
+        print(json.dumps({} if r is None else {
+            "id": r["id"], "action": r["action"], "force": bool(r["force"] & FORCE_MARKET),
+            "strategy": bool(r["force"] & STRATEGY), "immediate": bool(r["force"] & IMMEDIATE),
+        }))  # fmt: skip
+        return 0
+    if args.op == "finish":
+        if args.id is None or args.status is None:
+            raise SystemExit("finish needs --id and --status")
+        text = clean_status({"log": sys.stdin.read()[-8000:].splitlines()})["log"]
+        ok = finish_server_job(j, args.id, args.status, "\n".join(text), now)
+        print("recorded" if ok else "not running (already finished?)")
+        return 0 if ok else 1
+    if args.op == "status":
+        raw = json.loads(sys.stdin.read() or "{}")
+        set_state(j, "host-status", clean_status(raw), now)
+        if isinstance(raw.get("update"), dict):  # BF-D45: what an incoming update changes
+            old = args.config.read_text(encoding="utf-8") if args.config.is_file() else None
+            set_state(j, "update-available", update_info(raw["update"], old), now)
+        print("status stored")
+        return 0
+    for r in server_job_rows(j, 10):
+        print(
+            f"{r['id']} {r['action']} {r['status']} {r['requested_at']} {str(r['result'])[-80:]!r}"
+        )
+    return 0
+
+
+def update_info(u: dict[str, object], old_config: str | None) -> dict[str, object]:
+    """BF-D45: the host worker's ``git fetch`` result, classified here (strategy or
+    app-only, with reasons) and with the incoming release notes; cleaned of anything
+    secret-looking."""
+    import re
+
+    from trader.server_status import clean_line
+    from trader.strategy_version import classify_update, load_changelog
+
+    sha = re.compile(r"^[0-9a-f]{7,40}$")
+
+    def h(x: object) -> str:
+        v = str(x or "")
+        return v if sha.fullmatch(v) else ""
+
+    files = [str(f)[:200] for f in u.get("files") or [] if isinstance(f, str)][:300]  # type: ignore[attr-defined]
+    new_cfg = u.get("new_config") if isinstance(u.get("new_config"), str) else None
+    cls = classify_update(files, old_config, new_cfg)  # type: ignore[arg-type]
+    notes = load_changelog(str(u.get("new_changelog") or ""))[:1]
+    try:
+        ahead = int(str(u.get("ahead") or 0))
+    except ValueError:
+        ahead = 0
+    return {
+        "ahead": ahead, "head": h(u.get("head")), "remote": h(u.get("remote")),
+        "previous": h(u.get("previous")), "strategy": cls["strategy"], "reasons": cls["reasons"],
+        "files": files[:40], "subject": clean_line(str(u.get("subject") or ""))[:200],
+        "notes": {k: clean_line(str(v))[:600] for k, v in notes[0].items()} if notes else {},
+    }  # fmt: skip
+
+
+def working_orders(j: Journal, book: str) -> int:
+    """Orders of ``book`` at the broker now (BF-D45: an update never interrupts them)."""
+    from trader.strategy_version import WORKING
+
+    return sum(1 for _, st in j.intents_of_book(book) if st in WORKING)
+
+
+def _job_wait(
+    j: Journal, args: argparse.Namespace, m: dict[str, object], now: datetime
+) -> str | None:
+    """BF-D45: a strategy update or a rollback waits for the close and for working orders."""
+    from trader.app_control import asx_open
+    from trader.app_store import STRATEGY
+    from trader.strategy_version import apply_wait
+
+    if m["action"] not in ("update", "rollback"):
+        return None
+    strat = m["action"] == "rollback" or bool(int(str(m["force"])) & STRATEGY)
+    book = load_bfast_config(args.config).book if args.config.is_file() else "EMG2_18_PAPER"
+    return apply_wait(strat, asx_open(now), working_orders(j, book))
+
+
 def cmd_tax_report(args: argparse.Namespace) -> int:
     """BF-D29: the financial year's CSV files and markdown summary for the accountant."""
     from trader.tax_report import (
-        TaxParams,
         build_report,
         flex_statements,
         load_amit_csv,
@@ -320,7 +531,7 @@ def cmd_tax_report(args: argparse.Namespace) -> int:
         statements = flex_statements(sorted(Path(flex_dir).glob("*.xml")))
     amit_path = args.amit if args.amit is not None else cfg.tax.amit_csv
     amit = load_amit_csv(Path(amit_path)) if amit_path and Path(amit_path).is_file() else []
-    params = TaxParams(cfg.tax.parcel_method, cfg.tax.discount_days, cfg.fund_codes())
+    params = cfg.tax.params(cfg.fund_codes())
     rep = build_report(
         j, args.book or cfg.book, args.fy, params, statements, amit, args.prior_losses,
         cfg.broker.account_id, paper=cfg.mode == "paper",
@@ -354,23 +565,39 @@ def _read_only_journal(cfg: BfastConfig, explicit: str | None) -> Journal:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    """BF-D37: serve the read-only phone dashboard (or write one page with --snapshot)."""
+    """BF-D37 / BF-D43: serve the phone app (or write the Home screen with --snapshot).
+    Its own screens are read-only; ``/act/...`` goes to the trader's control server
+    (BF-D39) or, with ``--demo``, to a simulated one that changes nothing."""
     import tempfile
 
-    from trader.dashboard import Dashboard, Limits, Sources, collect, render, serve, store_index
+    from trader.dashboard import (
+        ActionsFn,
+        Dashboard,
+        Limits,
+        Sources,
+        collect,
+        proxy_to,
+        render,
+        serve,
+        store_index,
+    )
     from trader.journal import read_only_engine
 
     cfg = load_bfast_config(args.config)
+    tax = cfg.tax.params(cfg.fund_codes())
+    actions: ActionsFn | None = None
     if args.demo:
-        from trader.dashboard_demo import build_demo
+        from trader.dashboard_demo import build_demo, demo_control
 
         demo = build_demo(Path(tempfile.mkdtemp()) / "demo_journal.sqlite")
         j = Journal.read_only(read_only_engine(f"sqlite+pysqlite:///{demo.journal_path}"))
         src = Sources(
             j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index (demo)",
-            sessions=lambda: demo.sessions, today=lambda: demo.last_day,
+            sessions=lambda: demo.sessions, today=lambda: demo.last_day, clock=lambda: demo.now,
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
+            tax_params=tax,
         )  # fmt: skip
+        actions = demo_control(j, demo).respond
     else:
         j = _read_only_journal(cfg, args.journal)
         store = Path(args.store) if args.store else cfg.data.forward_store
@@ -383,16 +610,71 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             index_label=idx, store_root=store if store.is_dir() else None,
             out_dir=Path(args.out) if args.out else None,
             sessions=lambda: _sessions(datetime.now(ASX_TZ).date()),
+            approval_deadline=cfg.execution.approval_deadline, tax_params=tax,
+            marginal_rate=cfg.tax.marginal_rate,
         )  # fmt: skip
+        if cfg.notify.app:
+            actions = proxy_to(cfg.app.control_url)
     if args.snapshot:
         Path(args.snapshot).write_text(render(collect(src)), encoding="utf-8")
         print(f"wrote {args.snapshot}")
         return 0
     logins = frozenset(x.strip().lower() for x in cfg.dashboard.allowed_logins)
-    httpd = serve(Dashboard(src, logins), args.host, args.port)
-    print(f"dashboard (read-only) on http://{args.host}:{args.port}", file=sys.stderr)
+    acting = frozenset({"demo"}) if args.demo else frozenset(
+        x.strip().lower() for x in cfg.app.allowed_logins if x.strip()
+    )  # fmt: skip
+    from trader.strategy_version import CHANGELOG, load_changelog
+
+    cl = args.config.parent / Path(CHANGELOG).name
+
+    def changelog() -> list[dict[str, object]]:
+        return load_changelog(cl.read_text(encoding="utf-8")) if cl.is_file() else []
+
+    app = Dashboard(
+        src, logins, actions, acting, cfg.notify.channel, _version(), lambda: _checklist(cfg, j),
+        cfg.strategy.update_mode, changelog,
+    )  # fmt: skip
+    httpd = serve(app, args.host, args.port)
+    print(f"phone app on http://{args.host}:{args.port}", file=sys.stderr)
     httpd.serve_forever()
     return 0
+
+
+def _version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("asx-trader")
+    except PackageNotFoundError:
+        return "dev"
+
+
+def _checklist(cfg: BfastConfig, j: Journal) -> list[tuple[str, bool | None]]:
+    """The go-live checklist items the app can see (GO_LIVE_GUIDE part E); the rest is
+    the owner's own sign-off."""
+    from trader.broker.base import LIVE_TRADING_ENABLED
+
+    started = bool(j.job_records(f"value:{cfg.book}:")) if _has_tables(j) else False
+    return [
+        (
+            "Paper mode (mode: paper, allow_live false)",
+            cfg.mode == "paper" and not cfg.broker.allow_live,
+        ),
+        ("Live trading switched off in the code", not LIVE_TRADING_ENABLED),
+        ("Paper account id set", cfg.broker.account_id is not None),
+        ("Trader has run at least one trading day", started),
+        ("Phone app can act (allowed log-in set)", bool(cfg.app.allowed_logins)),
+        ("Go-live checklist signed (part E)", None),
+    ]
+
+
+def _has_tables(j: Journal) -> bool:
+    from sqlalchemy import inspect
+
+    try:
+        return "bf_events" in inspect(j.engine).get_table_names()
+    except Exception:
+        return False
 
 
 def _tax_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -467,12 +749,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--store")
     p.add_argument("--out", default="out")
-    p = sub.add_parser("run", help="scheduler + Telegram + IBKR paper gateway (paper only)")
+    p = sub.add_parser("run", help="scheduler + app/Telegram + IBKR paper gateway (paper only)")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--start", type=date.fromisoformat, help="L6 start decision date (canary)")
     p = sub.add_parser("check-secrets", help="the Docker secret files are readable (BF-D33)")
     p.add_argument("--all", action="store_true", help="every file of the stack (secrets-check)")
     p.add_argument("--dir", type=Path, default=Path("/run/secrets"))
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p = sub.add_parser("vapid-public", help="the phone app's Web Push public key (BF-D40)")
+    p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
+    p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
+    p.add_argument("op", choices=["claim", "finish", "status", "list"])
+    p.add_argument("--id", type=int)
+    p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])
+    _journal_args(p)
     p = sub.add_parser("deposit", help="record a deposit into a book's journal (paper set-up)")
     p.add_argument("--book", required=True)
     p.add_argument("--amount", type=Decimal, required=True)
@@ -498,6 +788,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "tax-report": cmd_tax_report,
         "check-secrets": cmd_check_secrets,
         "dashboard": cmd_dashboard,
+        "vapid-public": cmd_vapid_public,
+        "server-jobs": cmd_server_jobs,
     }
     if a.cmd in commands:
         return commands[a.cmd](a)

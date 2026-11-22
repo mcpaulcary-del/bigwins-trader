@@ -138,6 +138,35 @@ class TaxParams:
     method: Method = "FIFO"
     discount_days: int = 367
     fund_codes: frozenset[str] = frozenset()
+    # BF-D44: "12_months" = the ATO test as the owner set it (disposal date later than the
+    # acquisition date plus 12 calendar months); "days" = held ``discount_days`` or more
+    # (BF-D29's 367-day safety margin)
+    discount_rule: Literal["days", "12_months"] = "days"
+
+    def eligible(self, acquired: date, disposed: date) -> bool:
+        """Discount eligible (individuals: 50%) for a disposal on ``disposed``."""
+        if self.discount_rule == "12_months":
+            return disposed > plus_12_months(acquired)
+        return (disposed - acquired).days >= self.discount_days
+
+    def eligible_from(self, acquired: date) -> date:
+        """The first disposal date that is discount eligible."""
+        if self.discount_rule == "12_months":
+            return plus_12_months(acquired) + timedelta(days=1)
+        return acquired + timedelta(days=self.discount_days)
+
+    def rule_text(self) -> str:
+        if self.discount_rule == "12_months":
+            return "sold later than 12 months after the purchase date (ATO test)"
+        return f"held {self.discount_days} days or more (safety margin over 12 months)"
+
+
+def plus_12_months(d: date) -> date:
+    """The same day a year later (29 February -> 28 February)."""
+    try:
+        return d.replace(year=d.year + 1)
+    except ValueError:
+        return d.replace(year=d.year + 1, day=28)
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +305,12 @@ class TaxEngine:
         note: str = "",
     ) -> None:
         days = (d - p.acquired).days if p is not None else None
-        long = days is not None and days >= self.params.discount_days
-        near = days is not None and NEAR_LINE_DAYS <= days < self.params.discount_days
+        long = p is not None and self.params.eligible(p.acquired, d)
+        near = (
+            days is not None
+            and not long
+            and NEAR_LINE_DAYS <= days < max(self.params.discount_days, 367)
+        )
         self.cgt.append(
             CgtRow(
                 fy_of(d),
@@ -306,7 +339,7 @@ class TaxEngine:
             unit = p.cost / p.qty
             if unit > per_share:
                 return (0, -unit)  # losses first, the biggest first
-            if (d - p.acquired).days >= self.params.discount_days:
+            if self.params.eligible(p.acquired, d):
                 return (1, -unit)  # then discount-eligible gains
             return (2, -unit)  # then the highest-cost short-term parcel
 
@@ -1346,10 +1379,17 @@ def render_summary(r: TaxReport, files: Sequence[str] = ()) -> str:
         "(config `tax.parcel_method`).",
         "- Cost base = price x quantity + purchase brokerage; proceeds = price x quantity "
         "less sale brokerage. Dates are Sydney trade (contract) dates, not settlement dates.",
-        f"- 12-month discount: a parcel held **{r.params.discount_days} days or more** is marked "
-        'discount eligible. The ATO test is "at least 12 months" (not counting the days of '
-        f"purchase and sale); the record uses {r.params.discount_days} days as a safety "
-        "margin, so a parcel held 365-366 days is marked short-term and flagged for a check.",
+        (
+            "- 12-month discount: a parcel sold **later than 12 months after its purchase "
+            "date** is marked discount eligible (the ATO test; BF-D44). A sale within 2 days "
+            "of the line is flagged for a check."
+            if r.params.discount_rule == "12_months"
+            else f"- 12-month discount: a parcel held **{r.params.discount_days} days or more** "
+            'is marked discount eligible. The ATO test is "at least 12 months" (not counting '
+            f"the days of purchase and sale); the record uses {r.params.discount_days} days as "
+            "a safety margin, so a parcel held 365-366 days is marked short-term and flagged "
+            "for a check."
+        ),
         "- Losses are taken off short-term gains first, then off discount-eligible gains; "
         "the 50% discount (individuals) applies to what is left of the latter.",
         "- Capital returns lower the parcel's cost base (above it: a capital gain, CGT event "
@@ -1361,7 +1401,7 @@ def render_summary(r: TaxReport, files: Sequence[str] = ()) -> str:
         "",
         "| Item | A$ |",
         "| --- | ---: |",
-        f"| Short-term gains (held < {r.params.discount_days} days) | {m2(s.short_gains)} |",
+        f"| Short-term gains (not discount eligible) | {m2(s.short_gains)} |",
         f"| Discount-eligible gains (before discount) | {m2(s.long_gains)} |",
         f"| Capital losses this year | {m2(s.losses)} |",
         f"| Losses carried in (earlier years of this book + entered) | {m2(s.carried_in)} |",

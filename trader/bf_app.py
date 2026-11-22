@@ -39,6 +39,7 @@ journal, never only in memory.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -189,6 +190,8 @@ class AppSettings:
     # or left to the rule ("REAL"); paper broker only; ignored after ``dry_run_until``
     forced_states: tuple[tuple[date, str], ...] = ()
     dry_run_until: date | None = None
+    # BF-D39: Tailscale log-ins allowed to act from the phone app (app.allowed_logins)
+    app_logins: frozenset[str] = frozenset()
 
     def forced(self, d: date) -> str | None:
         """The paper dry run's state for a decision on ``d`` (None: no dry-run decision)."""
@@ -237,6 +240,23 @@ def _decision_record(dec: Emg2_20Decision, tv20: Mapping[str, Decimal]) -> dict[
             [b.entity, b.t_rank, str(b.value_aud), str(b.ref_close), b.reason] for b in dec.buys
         ],
         "tv20": {b.entity: str(tv20[b.entity]) for b in dec.buys if b.entity in tv20},
+    }
+
+
+def _list_record(lst: Emg2List) -> dict[str, Any]:
+    """Band C of the day's EMG2 list with the rule-3 inputs, best first (BF-D43)."""
+
+    def f(x: float) -> float | None:  # JSON has no NaN (PostgreSQL refuses it)
+        return round(float(x), 5) if math.isfinite(x) else None
+
+    rows = sorted(lst.band_c, key=lambda r: -(f(r.score) or 0.0))
+
+    return {
+        "as_of": lst.as_of,
+        "targets": list(lst.targets),
+        "band_c": [
+            [r.entity, f(r.s1), f(r.s2), f(r.s3), f(r.score_pct), k] for k, r in enumerate(rows, 1)
+        ],
     }
 
 
@@ -341,14 +361,16 @@ class BfApp:
             twin_rank = self.twin_percentile
         self.twin_rank = twin_rank or (lambda d: None)
         self.bot = ApprovalBot(
-            journal, transport, verifier, s.chats, self._kill, s.approval_deadline
-        )
+            journal, transport, verifier, s.chats, self._kill, s.approval_deadline,
+            allowed_logins=s.app_logins,
+        )  # fmt: skip
         if s.forced_states and not getattr(broker, "is_paper", False):  # BF-D32
             raise LiveTradingRefusedError("the forced-state dry run is for a paper broker only")
         if s.approval_mode not in ("per_order", "batch"):  # L8: the broker book never
             raise ValueError(f"approval_mode {s.approval_mode!r}: owner approval required")
         self.log: list[str] = []
         self._month_ends: frozenset[date] | None = None  # BF-D35: cached calendar month-ends
+        self.strategy: dict[str, str] | None = None  # BF-D45: the running strategy version
 
     # ------------------------------------------------------------ calendar helpers
     def is_session(self, d: date) -> bool:
@@ -535,7 +557,7 @@ class BfApp:
         }
         x = self.next_session(day)
         acted: dict[str, set[tuple[str, str]]] = {}
-        lst = emg2_list(panel) if ready else None  # one list for every book
+        lst = self._record_list(day, now, emg2_list(panel)) if ready else None  # one list
         trend = self._band_trend(panel, day, now, lst)  # L15: one state for every book
         seeds = {name: seed for name, seed, _, _ in self.rnd}
         for book, ex, broker, mode in self._books():
@@ -594,6 +616,16 @@ class BfApp:
         if acted:
             self._note_decision_difference(day, now, acted)
         return True
+
+    def _record_list(self, day: date, now: datetime, lst: Emg2List) -> Emg2List:
+        """BF-D43: why each name was chosen (the app's holding screen); a record only,
+        the decision never reads it back. Returns ``lst`` unchanged."""
+        if not self.j.job_done(f"emg2list:{day}"):
+            self.j.mark_job(f"emg2list:{day}", _list_record(lst), now)
+        if self.strategy is not None and not self.j.job_done(f"strategy:{day}"):
+            # BF-D45: the strategy version that makes this day's decisions (and batches)
+            self.j.mark_job(f"strategy:{day}", dict(self.strategy), now)
+        return lst
 
     # ------------------------------------------------------------ BF-D34 fund sweep
     def _book_state(self, book: str, day: date) -> str | None:
@@ -1116,6 +1148,26 @@ class BfApp:
                 "day's closes. Check the EODHD key (Docker secret eodhd_api_token), the "
                 "call budget, or EODHD's status; the refresh can be re-run by hand."
             )
+
+    def refresh_prices_now(self, now: datetime) -> str:
+        """BF-D42: the owner's "Refresh prices now" from the app: the same once-a-day
+        ``store_refresh`` job, run early, only after the day's first refresh slot (the
+        bulk file is not out before) and only if it has not succeeded today."""
+        day = now.astimezone(ASX_TZ).date()
+        if self.store_refresh is None:
+            return "no price refresh is configured (data.store_refresh)"
+        if not self.is_session(day):
+            return f"{day} is not an ASX trading day: nothing to refresh"
+        first = STORE_REFRESH_SLOTS[0]
+        if now < at(day, first):
+            return f"refused: the day's prices are published after {first} Sydney"
+        if self.j.job_done(f"store-refresh:{day}"):
+            return f"the price store already has {day}"
+        self.job_store_refresh(day, now)
+        ok = self.j.job_done(f"store-refresh:{day}")
+        return (
+            f"price store refreshed for {day}" if ok else "refresh tried: not there yet (see Inbox)"
+        )
 
     def job_reconcile(self, day: date, now: datetime) -> None:
         self._ingest_flex(day, now)

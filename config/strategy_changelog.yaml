@@ -1,0 +1,18 @@
+# Strategy release notes (BF-D45), newest first. The app's Strategy screen shows them, and
+# an incoming update shows its newest entry before you approve it. Plain English.
+# Add an entry with every change to the strategy (config/bfast.yaml strategy settings,
+# trader/lines/, trader/universe.py, trader/features.py, trader/panel.py, the LIC list).
+versions:
+  - version: "EMG2-18 C6 v1.0"
+    date: 2026-11-22
+    what: >-
+      EMG2-18 book: 18 names at about A$550, buys from the EMG2 list T, sells under rule C6
+      (only after 6 or more month-ends held AND outside the top 40% of band C), the L15
+      trend shield into the A200 fund, the L11 staged loss rule. Random twins draw from the
+      real book's buyable set (BF-D36).
+    why: >-
+      The registered paper line as amended up to 22 Nov 2026 (BF-D35 C6, BF-D36 twins).
+    tested: >-
+      Full test suite; record replay 30 Oct - 18 Nov 2026 and the T6 golden tests with the
+      record mounted; the live EMG2 list of 30 Oct and 18 Nov equals the paper list.
+    takes_effect: "Already running."
