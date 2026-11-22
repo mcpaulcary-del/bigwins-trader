@@ -38,7 +38,7 @@ import urllib.request
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -767,7 +767,7 @@ class Dashboard:
 
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
                "/strategy", "/setup", "/backups", "/accounts", "/shares",
-               "/forecast-method")  # fmt: skip
+               "/forecast-method", "/calendar", "/compare", "/search.json")  # fmt: skip
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
@@ -803,6 +803,8 @@ class Dashboard:
             out = app_pages.holding_detail(v, x, j, code, sess, self.share_ctx(v)) \
                 if _has_journal(j) else None  # fmt: skip
             return None if out is None else (html_t, out.encode())
+        if path in ("/calendar", "/compare", "/search.json") or path.startswith("/replay/"):
+            return self._more(path, qs, v, x, sess)
         if path in ("/shares", "/forecast-method") or path.startswith("/shares/"):
             from trader import share_pages
 
@@ -854,6 +856,67 @@ class Dashboard:
             return html_t, tax_screen.screen(v, x, src, qs).encode()
         return None
 
+    def _more(  # noqa: PLR0911 - one return per screen
+        self, path: str, qs: Mapping[str, str], v: View, x: Extras,
+              sess: Sequence[date]) -> tuple[str, bytes] | None:  # fmt: skip
+        """BF-D68: calendar, compare, month replay and the search index (GET, read-only)."""
+        from trader import app_more
+
+        src = self.sources
+        j = src.journal
+        html_t = "text/html; charset=utf-8"
+        ok = _has_journal(j)
+        today = v.now.astimezone(ASX_TZ).date()
+        if path == "/calendar":
+            try:
+                m = date.fromisoformat(qs.get("m", "")[:7] + "-01")
+            except ValueError:
+                m = today.replace(day=1)
+            a = m - timedelta(days=7)
+            b = m + timedelta(days=45)
+            codes = [h.code for h in v.holdings]
+            empty: dict[str, list[tuple[date, date | None, float]]] = {}
+            divs = app_pages.safe(lambda: app_more.store_divs(src.store_root, codes), empty)
+            sc = self.share_ctx(v) if ok else None
+            none: list[app_more.Ev] = []
+            evs = app_pages.safe(lambda: app_more.calendar_events(
+                v, j if ok else None, sess, sc, divs, a, b), none)  # fmt: skip
+            seg = ('<div class="seg"><a href="/orders" data-nav>Decisions</a><a class="on" '
+                   'href="/calendar" data-nav>Calendar</a></div>')  # fmt: skip
+            body = seg + app_more.calendar(v, m, evs, today)
+            return html_t, app_pages.shell(v, x, "Calendar", body, "orders").encode()
+        if path == "/compare":
+            if not ok:
+                return None
+            codes = [h.code for h in v.holdings]
+            body = ('<p><a href="/holdings" data-nav>\u2039 Holdings</a></p><h1>Compare</h1>'
+                    + app_more.compare(v, self.share_ctx(v), codes))  # fmt: skip
+            return html_t, app_pages.shell(v, x, "Compare", body, "holdings").encode()
+        if path.startswith("/replay/"):
+            if not ok:
+                return None
+            try:
+                d = date.fromisoformat(path.split("/", 2)[2])
+            except ValueError:
+                return None
+            out = app_more.replay(v, j, d)
+            return None if out is None else (
+                html_t, app_pages.shell(v, x, "Replay", out, "orders").encode())  # fmt: skip
+        if path == "/search.json":
+            rows: list[Any] = []
+            if ok:
+                from trader import tax_screen
+
+                for y in tax_screen.years(src, today)[-2:]:
+                    try:
+                        rows += list(tax_screen.report(src, y).cgt)
+                    except Exception:  # noqa: S112 - the search works without the tax rows
+                        continue
+            idx = app_more.search_index(v, j if ok else None, self.share_ctx(v) if ok else None,
+                                        x, rows)  # fmt: skip
+            return "application/json", json.dumps(idx, default=str).encode()
+        return None
+
     def respond(
         self,
         method: str,
@@ -887,7 +950,11 @@ class Dashboard:
             ctype, out = route()
         else:
             qs = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
-            known = p in self.SCREENS or p.startswith(("/holdings/", "/orders/", "/shares/"))
+            known = p in self.SCREENS or p.startswith(
+                ("/holdings/", "/orders/", "/shares/", "/replay/")
+            )
+            if p == "/search.json":
+                hdrs["Cache-Control"] = "no-store"
             res = self._screen(p, qs, who) if known else None
             if res is None:
                 return 404, hdrs, b"not found\n"

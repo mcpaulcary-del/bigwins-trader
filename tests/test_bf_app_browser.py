@@ -80,5 +80,11 @@ def test_BF_D55_D62_real_browser_buttons_chart_tabs_a11y(tmp_path: Path) -> None
     assert out["range"] == "true"
     assert out["tab"] == ["holdings", "/holdings", "holdings"]
     assert out["sorted"] is True and out["donut"] >= 1
+    # BF-D68: swipe between tabs, treemap tap -> detail sheet, what-if slider, calendar day
+    assert out["swipe"] == ["/holdings", "holdings"]
+    assert out["tmToggle"] == "true" and out["treemap"][0] == out["treemap"][1]
+    before, after, move, words = out["whatif"]
+    assert move == "\u221220%" and before != after and "A$" in after and words
+    assert out["calendar"][1] is True and out["calendar"][0] == out["calendar"][2]
     # accessibility: every control has a name, every chart a label, text contrast >= 4.5
     assert out["a11y"] == [], out["a11y"]

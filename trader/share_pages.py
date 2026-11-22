@@ -690,7 +690,9 @@ def next_section(ctx: ShareCtx, info: Info, f: Facts, lists: Sequence[tuple[date
                          + (" (applies now)" if left <= 0 else f" ({left} days)")
                          + "; estimate, not tax advice.</li>")  # fmt: skip
     elif f.exit_day is not None:
-        why = f.exit_reason or "not recorded"
+        from trader.app_more import reason_words
+
+        why = reason_words(f.exit_reason) if f.exit_reason else "reason not recorded"
         items.append(f"<li><b>Sold</b> on {f.exit_day:%d %b %Y}: {e(why)}.</li>")
         if f.realised is not None:
             items.append(f"<li><b>Realised result:</b> {_pc(f.realised)} on the price (before "

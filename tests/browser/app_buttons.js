@@ -7,6 +7,7 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const base = process.argv[2];
   const browser = await pw.chromium.launch();
   const page = await browser.newPage();
+  await page.addInitScript(() => { try { localStorage.setItem('bw.tour', '1'); } catch (e) {} });  // BF-D68: no first-run tour here
   const posts = [];
   page.on('request', r => { if (r.method() === 'POST') posts.push({url: r.url(), origin: r.headers()['origin'] || null, site: r.headers()['sec-fetch-site'] || null}); });
   const out = {};
@@ -48,11 +49,44 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   out.sorted = await page.evaluate(() => { const c = Array.from(document.querySelectorAll('#hlist li[data-code]')).map(l => l.dataset.code); return c.join(',') === c.slice().sort().join(','); });
   await page.dispatchEvent('.ds[data-code]', 'click');  // (a tap lands on the ring, not its hole)
   out.donut = await page.evaluate(() => document.querySelectorAll('#hlist li.hl').length);
+  // BF-D68: swipe between tabs, the treemap tap, the what-if slider, the calendar
+  await page.goto(base + '/');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    const m = document.getElementById('main');
+    const t0 = new Touch({ identifier: 1, target: m, clientX: 320, clientY: 400 });
+    const t1 = new Touch({ identifier: 1, target: m, clientX: 120, clientY: 410 });
+    m.dispatchEvent(new TouchEvent('touchstart', { touches: [t0], changedTouches: [t0], bubbles: true }));
+    m.dispatchEvent(new TouchEvent('touchend', { touches: [], changedTouches: [t1], bubbles: true }));
+  });
+  await page.waitForFunction(() => location.pathname === '/holdings' && document.querySelector('[data-tmap]'));
+  out.swipe = await page.evaluate(() => [location.pathname, document.body.dataset.tab]);
+  const tm = await page.$('[data-tmap] .tm');
+  const code = await tm.evaluate(a => a.getAttribute('href').split('/').pop());
+  await page.click('[data-tm="t"]');
+  out.tmToggle = await page.evaluate(() => document.querySelector('[data-tm="t"]').getAttribute('aria-pressed'));
+  await tm.click();
+  await page.waitForSelector('.sheet h1');
+  out.treemap = [code, await page.innerText('.sheet h1')];
+  await page.click('.sheetx');
+  await page.goto(base + '/');
+  await page.waitForSelector('[data-whatif]');
+  const before = await page.innerText('[data-wi-v]');
+  await page.$eval('#wi-r', r => { r.value = '-20'; r.dispatchEvent(new Event('input', { bubbles: true })); });
+  out.whatif = [before, await page.innerText('[data-wi-v]'), await page.innerText('[data-wi-m]'), await page.innerText('[data-wi-s]')];
+  await page.goto(base + '/calendar');
+  await page.waitForSelector('[data-cal]');
+  const day = await page.$eval('.cday.has:not(.out)', b => b.dataset.cday);
+  await page.click('.cday.has:not(.out)');
+  out.calendar = await page.evaluate(d => {
+    const shown = Array.from(document.querySelectorAll('[data-cev]')).filter(li => !li.hidden).map(li => li.dataset.cev);
+    return [d, shown.length > 0 && shown.every(x => x === d), document.querySelector('.cday.sel').dataset.cday];
+  }, day);
   // accessibility: names and contrast (light and dark)
   const a11y = [];
   for (const scheme of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme: scheme });
-    for (const p of ['/', '/holdings', '/orders', '/inbox', '/server', '/act']) {
+    for (const p of ['/', '/holdings', '/orders', '/inbox', '/server', '/act', '/calendar', '/shares']) {
       await page.goto(base + p);
       await page.waitForTimeout(150);
       const bad = await page.evaluate(() => {

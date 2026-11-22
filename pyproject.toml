@@ -66,7 +66,7 @@ ignore = [
 "trader/broker/mock_gateway.py" = ["N802", "N803"]  # mirrors ib_async method and argument names
 "trader/webui.py" = ["E501", "RUF001"]
 "deploy/backup.py" = ["S603", "S607"]  # runs the fixed tools age / rclone / pg_dump (BF-D64)  # the app's inline JavaScript and CSS (BF-D43)
-"trader/{app_pages,tax_screen,app_viz,share_pages}.py" = ["E501", "RUF001", "RUF002"]  # the app's HTML templates (BF-D43, BF-D44)
+"trader/{app_pages,tax_screen,app_viz,share_pages,app_more}.py" = ["E501", "RUF001", "RUF002"]  # the app's HTML templates (BF-D43, BF-D44)
 "scripts/golden/*" = ["N806", "N999", "E501"]
 
 [tool.ruff.format]

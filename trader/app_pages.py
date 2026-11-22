@@ -498,6 +498,9 @@ def home(v: Any, x: Extras) -> str:
             if vs is not None else "")  # fmt: skip
     since_pill = (f'<span class="vs {tone(since)}">{arrow(since)}{aud(since, True, dp=0)} since start'
                   "</span>" if since is not None else "")  # fmt: skip
+    from trader import app_more
+
+    since_pill += app_more.month_milestone(v)  # BF-D68: subtle, and only this one
     body = section("", hero(val, f"Account value · {v.series[-1][0]:%d %b}" if v.series else
                             "Account value", chg, tone(ct),
                             f'<div class="pills">{pill}{since_pill}</div>'
@@ -506,12 +509,19 @@ def home(v: Any, x: Extras) -> str:
     body += waiting_card(x, v.demo, v.now)
     body += section("Performance", f'<div class="tiles">{tiles}</div>'
                     + perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
-                    + '<p class="small muted">Drawdown from peak</p>' + dd_chart(dd))  # fmt: skip
-    body += twins_card(v, x)
+                    + '<p class="small muted">Drawdown from peak</p>' + dd_chart(dd),
+                    card="perf")  # fmt: skip
+    body += _card(twins_card(v, x), "twins")
     nd = (f"Next decision <b>{v.next_decision:%a %d %b %Y}</b>, 22:20 Sydney"
           if v.next_decision else "Next decision: -")  # fmt: skip
-    body += section("Next", f"<p>{nd}.</p>")
-    body += safety_card(v) + loss_card(v) + inbox_peek(x)
+    body += section("Next", f"<p>{nd}.</p>", card="next")
+    body += _card(safety_card(v), "safety") + _card(loss_card(v), "loss")
+    body += _card(app_more.whatif(v, getattr(v, "journal", None)), "whatif")
+    body += _card(inbox_peek(x), "inbox")
+    body += (
+        '<p class="small muted homehint">Tip: press and hold a card title to move or hide '
+        "cards (this phone only).</p>"
+    )
     body += (
         '<div class="btns"><a class="btn sec" href="/act">⚙️ Controls</a>'
         '<a class="btn sec" href="/holdings" data-nav>📈 Holdings</a></div>'
@@ -522,6 +532,11 @@ def home(v: Any, x: Extras) -> str:
         )
     )
     return shell(v, x, "Home", body, "home")
+
+
+def _card(html: str, name: str) -> str:
+    """Name a home card (BF-D68: reorder / hide on the phone)."""
+    return html.replace("<section ", f'<section data-card="{name}" ', 1) if html else ""
 
 
 def twins_card(v: Any, x: Extras) -> str:
@@ -731,6 +746,10 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
             f'</div><ul class="list hold" id="hlist">{"".join(rows)}</ul>{note}',
         )
     )
+    from trader import app_more
+
+    body += app_more.treemap(v.holdings, hist)
+    body += '<a class="btn sec wide" href="/compare" data-nav>Compare holdings ›</a>'
     return shell(v, x, "Holdings", body, "holdings")
 
 
@@ -912,8 +931,25 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
         if items
         else '<p class="muted">No orders yet.</p>'
     )
+    days = sorted(set(groups) | set(_list_days(j)), reverse=True)[:12]
+    rp = "".join(f'<a class="chip" href="/replay/{d}" data-nav>▶ {d:%b %Y}</a>' for d in days)
     body += section("Decisions", nd + hist)
-    return shell(v, x, "Orders", body, "orders")
+    if rp:
+        body += section("Replay a decision", '<div class="seg">' + rp + "</div><p class='small "
+                        "muted'>Step through a month-end: ranked, picked, filtered, ordered.</p>")  # fmt: skip
+    seg = ('<div class="seg"><a class="on" href="/orders" data-nav>Decisions</a>'
+           '<a href="/calendar" data-nav>Calendar</a></div>')  # fmt: skip
+    return shell(v, x, "Orders", seg + body, "orders")
+
+
+def _list_days(j: Journal) -> list[date]:
+    out = []
+    for k, _ in jobs(j, "emg2list:"):
+        try:
+            out.append(date.fromisoformat(k.split(":", 1)[1]))
+        except ValueError:
+            continue
+    return out
 
 
 def _timeline(j: Journal, coid: str, it: Any, st: str) -> str:
@@ -1026,6 +1062,8 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
             + "</li>"
         )
     body = head + top + section("Orders", f'<ul class="list">{"".join(cards)}</ul>')
+    body += (f'<a class="btn sec wide" href="/replay/{b["decision_date"]}" data-nav>▶ Replay this '
+             "decision</a>")  # fmt: skip
     if who:
         body += section("Approvals", f'<ul class="list small">{who}</ul>')
     return shell(v, x, "Batch", body, "orders")
@@ -1332,6 +1370,13 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
                   "going live is a separate, reviewed owner step.</p>")
         + section("Setup", '<a class="btn sec wide" href="/setup" data-nav>Setup &amp; IBKR '
                   "checklist ›</a>")
+        + section("This phone", (
+            '<p>Card density</p><div class="seg" role="group" aria-label="Density">'
+            '<button type="button" class="chip" data-density="comfortable">Comfortable</button>'
+            '<button type="button" class="chip" data-density="compact">Compact</button></div>'
+            '<div class="btns"><button type="button" class="btn sec" data-tour-replay>Replay the '
+            'tour</button><button type="button" class="btn sec" data-home-reset>Reset Home cards'
+            "</button></div><p class='small muted'>Kept on this phone only.</p>"))
         + section("About", f"<p>App version <b>{e(version)}</b></p>")
     )  # fmt: skip
     return shell(v, x, "Settings", body, "")

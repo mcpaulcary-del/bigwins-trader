@@ -322,6 +322,18 @@ server (GO_LIVE_GUIDE C8/C9); Accounts & services hub with safe tests. Owner, on
 `sudo bigwins install-worker`, `bigwins onedrive`, then in the app Backups > Show recovery
 key (save it), Back up now, Restore test.
 
+## Shares, expected vs actual, wide screens, interactive pass (22 Nov 2026; BF-D66..BF-D68)
+
+Shares list (held, sold, proposed, passed over) and a sheet per share: rank history,
+the historical range of similar picks from `config/forecast_bands*.csv` (ASX 200 by
+default, band C toggle, mean marked apart from the median, "not a price prediction"),
+price history with the 52-week high, what happens next. Two-column layout on the Fold's
+inner screen; the unread badge counts unread messages. Second pass: swipe between tabs,
+shared-element sheet, pull-to-refresh spinner, holdings heatmap, what-if slider, calendar,
+compare, month replay, customisable Home, global search, first-run tour. All read-only
+GET screens; preferences stay on the phone. Nothing for the owner to do on the server
+beyond the usual update.
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of
