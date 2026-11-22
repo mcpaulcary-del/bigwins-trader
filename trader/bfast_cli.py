@@ -5,6 +5,8 @@
     trader-bf deposit --book B --amount A$ [--config ...] [--journal URL]
     trader-bf kill|pause [--config ...] [--journal URL]   # one step, no second factor
     trader-bf status [--config ...] [--journal URL]
+    trader-bf dashboard [--host 127.0.0.1] [--port 8080] [--demo] [--snapshot FILE]
+                         # BF-D37: the read-only phone page (Tailscale only)
     trader-bf tax-report --fy 2026-27 [--book B] [--journal URL] [--flex DIR] [--amit CSV]
                          [--prior-losses A$] [--out DIR]     # BF-D29, not tax advice
 
@@ -335,6 +337,64 @@ def cmd_tax_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_only_journal(cfg: BfastConfig, explicit: str | None) -> Journal:
+    """BF-D37: the running app's journal (or ``--journal URL``) on a read-only engine."""
+    from sqlalchemy.engine import make_url
+
+    from trader.journal import read_only_engine
+    from trader.secrets import read_secret
+
+    raw = explicit or os.environ.get(cfg.journal.url_env)
+    if not raw:
+        raise SystemExit(f"{cfg.journal.url_env} is not set (a password-free database URL)")
+    url = make_url(raw)
+    if url.drivername.startswith("postgresql") and url.password is None:
+        url = url.set(password=read_secret("db_password").reveal())
+    return Journal.read_only(read_only_engine(url))
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """BF-D37: serve the read-only phone dashboard (or write one page with --snapshot)."""
+    import tempfile
+
+    from trader.dashboard import Dashboard, Limits, Sources, collect, render, serve, store_index
+    from trader.journal import read_only_engine
+
+    cfg = load_bfast_config(args.config)
+    if args.demo:
+        from trader.dashboard_demo import build_demo
+
+        demo = build_demo(Path(tempfile.mkdtemp()) / "demo_journal.sqlite")
+        j = Journal.read_only(read_only_engine(f"sqlite+pysqlite:///{demo.journal_path}"))
+        src = Sources(
+            j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index (demo)",
+            sessions=lambda: demo.sessions, today=lambda: demo.last_day,
+            out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
+        )  # fmt: skip
+    else:
+        j = _read_only_journal(cfg, args.journal)
+        store = Path(args.store) if args.store else cfg.data.forward_store
+        idx = cfg.dashboard.index_code
+        src = Sources(
+            j, cfg.book, cfg.data.sim_book,
+            Limits(cfg.risk.value_review_aud, cfg.risk.value_halt_buys_aud,
+                   cfg.risk.value_line_halt_aud),
+            index=store_index(store, idx) if (store / "manifest.tsv").is_file() else None,
+            index_label=idx, store_root=store if store.is_dir() else None,
+            out_dir=Path(args.out) if args.out else None,
+            sessions=lambda: _sessions(datetime.now(ASX_TZ).date()),
+        )  # fmt: skip
+    if args.snapshot:
+        Path(args.snapshot).write_text(render(collect(src)), encoding="utf-8")
+        print(f"wrote {args.snapshot}")
+        return 0
+    logins = frozenset(x.strip().lower() for x in cfg.dashboard.allowed_logins)
+    httpd = serve(Dashboard(src, logins), args.host, args.port)
+    print(f"dashboard (read-only) on http://{args.host}:{args.port}", file=sys.stderr)
+    httpd.serve_forever()
+    return 0
+
+
 def _tax_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p = sub.add_parser("tax-report", help="financial-year tax report (BF-D29; not tax advice)")
     p.add_argument("--fy", required=True, help="financial year, e.g. 2026-27")
@@ -418,6 +478,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--amount", type=Decimal, required=True)
     _journal_args(p)
     _tax_parser(sub)
+    p = sub.add_parser("dashboard", help="read-only phone page of the paper book (BF-D37)")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("--host", default="127.0.0.1", help="bind address (container: 0.0.0.0)")
+    p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--journal", help="journal URL, explicit (tests/dev; opened read-only)")
+    p.add_argument("--store", help="price store (default: the config's data.forward_store)")
+    p.add_argument("--out", default="/app/out", help="the trader's output folder (disk free)")
+    p.add_argument("--demo", action="store_true", help="synthetic demo data (screenshots)")
+    p.add_argument("--snapshot", help="write the page to this file and exit")
     for name in ("kill", "pause", "status"):
         _journal_args(sub.add_parser(name))
     a = ap.parse_args(argv)
@@ -428,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run": cmd_run,
         "tax-report": cmd_tax_report,
         "check-secrets": cmd_check_secrets,
+        "dashboard": cmd_dashboard,
     }
     if a.cmd in commands:
         return commands[a.cmd](a)

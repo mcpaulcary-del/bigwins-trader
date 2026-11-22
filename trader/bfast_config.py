@@ -226,6 +226,16 @@ class JournalCfg(_M):
     url_env: str
 
 
+class DashboardCfg(_M):
+    """BF-D37: the read-only phone dashboard (``trader-bf dashboard``). Reached only
+    through Tailscale (``tailscale serve`` on the host's loopback port)."""
+
+    # Tailscale log-ins (the ``Tailscale-User-Login`` header that ``tailscale serve``
+    # adds) allowed to see the page; empty = everyone on the owner's tailnet
+    allowed_logins: list[str] = Field(default_factory=list)
+    index_code: str = "A200"  # the comparison line: the ASX 200 fund of the L15 switch
+
+
 class BfastConfig(_M):
     version: Literal[1]
     book: str
@@ -242,6 +252,7 @@ class BfastConfig(_M):
     tax: TaxCfg = Field(default_factory=TaxCfg)  # BF-D29 tax report
     # BF-D32: paper dry run with forced L15 states (None in normal running)
     paper_dry_run: PaperDryRunCfg | None = None
+    dashboard: DashboardCfg = Field(default_factory=DashboardCfg)  # BF-D37
 
     @model_validator(mode="after")
     def _dry_run_paper_only(self) -> BfastConfig:

@@ -97,6 +97,10 @@ tax:                            # BF-D29: `trader-bf tax-report --fy 2026-27` (g
   amit_csv: null                #   fy,code,cost_base_increase,cost_base_decrease,note (from each annual tax statement)
 telegram:
   allowed_chat_ids: []          # the owner's chat id, set at BF0
+dashboard:                      # BF-D37: read-only phone page (`trader-bf dashboard`), Tailscale only
+  allowed_logins: []            # Tailscale log-ins allowed (tailscale serve's Tailscale-User-Login
+                                #   header); empty = anyone on your own tailnet
+  index_code: A200              # the comparison line (the ASX 200 fund, from the price store)
 journal:
   url_env: TRADER_BF_JOURNAL_URL  # name of the env var holding a password-free URL; the
                                   # password comes from the db_password Docker secret

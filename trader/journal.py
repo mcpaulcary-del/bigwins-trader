@@ -42,11 +42,13 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     create_engine,
+    event,
     func,
     insert,
     select,
     update,
 )
+from sqlalchemy.engine import URL, make_url
 
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
@@ -308,6 +310,25 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def read_only_engine(url: str | URL) -> Engine:
+    """An engine whose sessions are read-only in the database (BF-D37): PostgreSQL
+    ``default_transaction_read_only = on`` for every connection; SQLite
+    ``PRAGMA query_only = ON``. A write then fails in the database, whatever the code."""
+    u = make_url(url)
+    if u.drivername.startswith("postgresql"):
+        return create_engine(u, connect_args={"options": "-c default_transaction_read_only=on"})
+    eng = create_engine(u)
+    if u.drivername.startswith("sqlite"):
+
+        @event.listens_for(eng, "connect")
+        def _query_only(dbapi_conn: Any, _rec: Any) -> None:
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA query_only = ON")
+            cur.close()
+
+    return eng
+
+
 @dataclass(frozen=True)
 class FillRecord:
     exec_id: str
@@ -329,6 +350,15 @@ class Journal:
     @classmethod
     def sqlite(cls, path: str = ":memory:") -> Journal:
         return cls(create_engine(f"sqlite+pysqlite:///{path}"))
+
+    @classmethod
+    def read_only(cls, engine: Engine) -> Journal:
+        """A reader's view (the dashboard, BF-D37): no ``create_all`` (no DDL); the
+        engine should come from ``read_only_engine`` so that every write is refused by
+        the database itself."""
+        j = cls.__new__(cls)
+        j.engine = engine
+        return j
 
     # ------------------------------------------------------------ events
     def _event(
