@@ -83,6 +83,7 @@ def test_BF_D55_D62_real_browser_buttons_chart_tabs_a11y(tmp_path: Path) -> None
     assert out["heroFollows"] != out["heroBack"] and out["heroBack"].startswith("$")
     assert out["tab"] == ["holdings", "/holdings", "holdings"]
     assert out["sorted"] is True and out["donut"] >= 1
+    assert out["heatView"] is True and out["pane"] == [True, True] and out["markAll"] == 0
     # BF-D68: swipe between tabs, treemap tap -> detail sheet, what-if slider, calendar day
     assert out["swipe"] == ["/holdings", "holdings"]
     assert out["tmToggle"] == "true" and out["treemap"][0] == out["treemap"][1]

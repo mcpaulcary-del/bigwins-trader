@@ -840,7 +840,7 @@ def shares_list(ctx: ShareCtx, held: Sequence[str]) -> str:
             "</a></li>"
         )
     body = (
-        f'<div class="seg" role="group" aria-label="Filter">{chips}</div>'
+        f'<div class="chips" role="group" aria-label="Filter">{chips}</div>'
         + (f'<ul class="list">{"".join(rows)}</ul>' if rows else
            "<p class='muted'>No shares yet: the list fills from the first decision.</p>")
         + "<p class='small muted'>Every share the strategy held, sold, proposed (buy list T) or "

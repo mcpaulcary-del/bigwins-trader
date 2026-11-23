@@ -104,7 +104,8 @@ def squarify(values: Sequence[float], x: float, y: float, w: float, h: float
 
 
 def _tone(g: float | None) -> str:
-    """Colour step (colour-blind safe blue / orange); the label always has ▲ / ▼ too."""
+    """Colour step on the up / down ramp (BF-D73); losses are hatched and every label
+    carries its sign, so colour is never the only signal."""
     if g is None or abs(g) < 0.005:
         return "tm0"
     k = 1 if abs(g) < 0.05 else (2 if abs(g) < 0.20 else 3)
@@ -131,13 +132,13 @@ def treemap(holdings: Sequence[Any], hist: Mapping[str, Sequence[float]]) -> str
             f'{e(_pc(today))} today"><span class="tmi {_tone(since)}"><b>{e(h.code)}</b>'
             f'{"" if small else "<br>"}<span class="tml">{e(_pc(since))}</span></span></a>'
         )
-    chips = ('<div class="seg" role="group" aria-label="Colour by" data-tmseg>'
+    chips = ('<div class="chips" role="group" aria-label="Colour by" data-tmseg>'
              '<button type="button" class="chip on" data-tm="s" aria-pressed="true">Since bought'
              '</button><button type="button" class="chip" data-tm="t" aria-pressed="false">Today'
              "</button></div>")  # fmt: skip
-    return section("Heatmap", chips + f'<div class="tmap" data-tmap>{"".join(tiles)}</div>'
-                   '<p class="legend">Size = value · colour = gain (blue ▲ up, orange ▼ down; '
-                   "darker = bigger). Tap a tile for the holding.</p>", "wide")  # fmt: skip
+    return (f'<div class="tmwrap">{chips}<div class="tmap" data-tmap>{"".join(tiles)}</div>'
+            '<p class="legend">Size = value. Colour = gain: green up, hatched red down, darker = '
+            "bigger. Tap a tile for the holding.</p></div>")  # fmt: skip
 
 
 # ---------------------------------------------------------------- what-if
@@ -390,7 +391,7 @@ def compare(v: Any, share: Any, codes: Sequence[str]) -> str:
     return section("Compare", (
         "<p class='small muted'>Pick up to 3 holdings (and the index). Lines start at 100 on "
         "the first common day; drag across the chart to read each line.</p>"
-        f'<div class="seg" role="group" aria-label="Lines to compare">{chips}</div>'
+        f'<div class="chips" role="group" aria-label="Lines to compare">{chips}</div>'
         '<div class="chartbox" data-compare><svg viewBox="0 0 340 200" class="chart" role="img" '
         'aria-label="Compare: rebased lines"></svg><div class="ctip cmpout" aria-live="polite">'
         "</div></div>"

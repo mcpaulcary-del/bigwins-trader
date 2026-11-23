@@ -91,7 +91,7 @@ def test_BF_D37_renders_a_run_of_the_real_app(demo: Demo) -> None:
     assert status == 200 and "<svg" in page and "DEMO" in page and "perf-data" in page
     assert "Twin vs 5 random twins" in page and "Waiting for the first" not in page
     status, page = _get(Dashboard(src), "/holdings")
-    assert status == 200 and "Holdings (" in page
+    assert status == 200 and "Holdings · " in page
 
 
 def test_BF_D37_stale_mark_is_flagged(tmp_path: Path) -> None:

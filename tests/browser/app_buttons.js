@@ -6,7 +6,7 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 (async () => {
   const base = process.argv[2];
   const browser = await pw.chromium.launch();
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });  // BF-D73: a phone
   await page.addInitScript(() => { try { localStorage.setItem('bw.tour', '1'); } catch (e) {} });  // BF-D68: no first-run tour here
   const posts = [];
   page.on('request', r => { if (r.method() === 'POST') posts.push({url: r.url(), origin: r.headers()['origin'] || null, site: r.headers()['sec-fetch-site'] || null}); });
@@ -52,7 +52,7 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   await page.click('.tab[data-tab="holdings"]');
   await page.waitForFunction(() => document.body.dataset.tab === 'holdings' && location.pathname === '/holdings');
   out.tab = await page.evaluate(() => [document.body.dataset.tab, location.pathname, document.querySelector('.tab.on').dataset.tab]);
-  await page.click('[data-sort="name"]');
+  await page.selectOption('[data-sortsel]', 'name');   // BF-D73: sort is a select
   out.sorted = await page.evaluate(() => { const c = Array.from(document.querySelectorAll('#hlist li[data-code]')).map(l => l.dataset.code); return c.join(',') === c.slice().sort().join(','); });
   await page.dispatchEvent('.ds[data-code]', 'click');  // (a tap lands on the ring, not its hole)
   out.donut = await page.evaluate(() => document.querySelectorAll('#hlist li.hl').length);
@@ -68,6 +68,8 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   });
   await page.waitForFunction(() => location.pathname === '/holdings' && document.querySelector('[data-tmap]'));
   out.swipe = await page.evaluate(() => [location.pathname, document.body.dataset.tab]);
+  await page.click('[data-view="hv-heat"]');          // BF-D73: the heatmap is the second view
+  out.heatView = await page.evaluate(() => document.getElementById('hv-heat').classList.contains('on') && !document.getElementById('hv-list').classList.contains('on'));
   const tm = await page.$('[data-tmap] .tm');
   const code = await tm.evaluate(a => a.getAttribute('href').split('/').pop());
   await page.click('[data-tm="t"]');
@@ -76,6 +78,19 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   await page.waitForSelector('.sheet h1');
   out.treemap = [code, await page.innerText('.sheet h1')];
   await page.click('.sheetx');
+  // BF-D73: on the Fold's inner screen a holding opens in the right-hand pane, not a sheet
+  await page.setViewportSize({ width: 904, height: 1000 });
+  await page.goto(base + '/holdings');
+  await page.click('[data-view="hv-list"]');
+  await page.click('#hlist a[data-sheet]');
+  await page.waitForSelector('#pane h1');
+  out.pane = await page.evaluate(() => [document.querySelector('#pane h1').innerText.trim().length > 0, document.querySelector('.sheet') === null]);
+  // the inbox: one unread signal, Mark all read (JS only)
+  await page.goto(base + '/inbox');
+  await page.waitForSelector('[data-markall]:not([hidden])');
+  await page.click('[data-markall]');
+  out.markAll = await page.evaluate(() => document.querySelectorAll('.msg.unread').length);
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(base + '/');
   await page.click('details.srow:has([data-whatif]) > summary');   // BF-D73: a status row opens it
   await page.waitForSelector('[data-whatif]');

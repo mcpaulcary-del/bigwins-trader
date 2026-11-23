@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -26,7 +27,7 @@ from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
 from trader.orders import Side
-from trader.webui import backlink, chev, e, icon, page, plural, section, stat, tile
+from trader.webui import backlink, chev, e, icon, page, plural, section, stat
 
 CENT = Decimal("0.01")
 MINUS = "−"
@@ -82,6 +83,9 @@ def px(x: Decimal | float | None) -> str:
         return "–"
     q = Decimal(str(x))
     return f"${q.quantize(CENT if abs(q) >= 2 else Decimal('0.001')):,}"
+
+
+fmt_px = px  # for screens with a local ``px`` series
 
 
 def pct(x: float | None, sign: bool = True) -> str:
@@ -680,7 +684,7 @@ def home(v: Any, x: Extras) -> str:
     col_b = (
         (f'<div class="o4">{wait}</div>' if wait and not urgent else "")
         + f'<div class="o6">{status}</div>'
-        + f'<div class="o7">{inbox_peek(x)}</div>'
+        + f'<div class="o7">{inbox_peek(x, v.book)}</div>'
     )
     body = (
         f'<div class="home"><div class="col-a">{col_a}</div><div class="col-b">{col_b}</div></div>'
@@ -800,18 +804,52 @@ def _trade_days(v: Any) -> list[tuple[date, str]]:
     return sorted(out)
 
 
-def inbox_peek(x: Extras) -> str:
-    rows = x.inbox[:3]
+_ISO = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+
+def msg_summary(title: str, kind: str, book: str = "") -> str:
+    """The message's one-line summary (BF-D73, presentation only): the stored title without
+    the book id, ISO dates and a leading kind word the row already shows."""
+    t = str(title)
+    for pre in (KIND_WORDS.get(kind, ""), "Daily report", "Approval needed"):
+        if pre and t.lower().startswith(pre.lower()):
+            t = t[len(pre) :]
+    if book:
+        t = t.replace(book, "")
+    t = _ISO.sub("", t)
+    t = re.sub(r"\s*-\s*(-\s*)+", " - ", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" -:·;,")
+    return (t[:1].upper() + t[1:]) if t else str(title)
+
+
+def _msg_head(r: Mapping[str, Any], book: str, href: str = "") -> str:
+    k = str(r["kind"])
+    at = r["at"]
+    tm = at.astimezone(ASX_TZ).strftime("%H:%M") if at is not None else ""
+    mic = (
+        f'<span class="mic" aria-label="Alert">{icon("alert-triangle")}</span>'
+        if k == "page"
+        else ""
+    )
+    return (
+        f'{mic}<div class="mh"><span class="mk">{e(KIND_WORDS.get(k, k))}</span>'
+        f'<span class="mt">{e(tm)}</span></div>'
+        f'<div class="t">{e(msg_summary(str(r["title"]), k, book))}</div>'
+    )
+
+
+def inbox_peek(x: Extras, book: str = "") -> str:
+    rows = x.inbox[:2]
     if not rows:
         return ""
     items = "".join(
         f'<li class="msg {e(r["kind"])}" data-inbox-id="{int(r["id"])}"><a class="rowlink" '
-        f'href="/inbox#m{int(r["id"])}" data-nav><span class="grow"><span class="t">'
-        f'{e(r["title"])}</span><div class="sub">{when(r["at"])}</div></span>'
+        f'href="/inbox#m{int(r["id"])}" data-nav><span class="grow">{_msg_head(r, book)}</span>'
         f"{chev()}</a></li>"
         for r in rows
     )
-    return section("Latest messages", f'<ul class="list">{items}</ul>')
+    return section("Latest", f'<ul class="list">{items}</ul>',
+                   aside='<span class="sp"></span><a href="/inbox" data-nav>All messages</a>')  # fmt: skip
 
 
 # ---------------------------------------------------------------- Holdings
@@ -837,74 +875,83 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     if not v.holdings:
         body = seg + section("Holdings", '<p class="muted">No shares held (all cash).</p>')
         return shell(v, x, "Holdings", body, "holdings")
+    from trader import app_more
+
     total = sum((h.value or Decimal(0) for h in v.holdings), Decimal(0))
     gain = sum((h.gain or Decimal(0) for h in v.holdings), Decimal(0))
+    cost = total - gain
     hist = _mark_history(j)
     ordered = sorted(v.holdings, key=lambda h: -(h.value or 0))
-    parts = [(h.code, float(h.value or 0)) for h in ordered]  # every holding its own slice
-    colours = slice_colours(len(parts))
-    legend = "".join(
-        f'<li><i style="background:{colours[i]}"></i>{e(c)}<span class="sp"></span>'
-        f"{float(val) / float(total or 1) * 100:.1f}%</li>"
-        for i, (c, val) in enumerate(parts)
-    )
-    max_gain = max((abs(float(h.gain_pct or 0)) for h in v.holdings), default=0) or 1.0
     rows = []
     for h in ordered:
-        flag = ' <span class="pill amber">Old price</span>' if h.stale else ""
-        mark = f"{h.mark}" if h.mark is not None else "no price"
         g = float(h.gain_pct or 0)
         w_ = float(h.value or 0) / float(total or 1) * 100
+        nm = x.names.get(h.code, "")
+        line2 = " · ".join(p for p in (nm, f"{h.qty:,} sh") if p)
+        old = ' <span class="pill amber">Old price</span>' if h.stale else ""
         rows.append(
             f'<li data-code="{e(h.code)}" data-gain="{g:.6f}" data-value="{float(h.value or 0):.2f}" '
-            f'data-days="{h.days_held or 0}"><a class="rowlink" href="/holdings/{quote(h.code)}" '
-            f'data-nav data-sheet="1">'
-            f'<span class="grow"><b>{e(h.code)}</b>{flag}'
-            + (f'<div class="sub nm">{e(x.names[h.code])}</div>' if h.code in x.names else "")
-            + f'<div class="sub">{h.qty} @ {e(mark)}'
-            + (f" ({e(h.mark_day)})" if h.stale and h.mark_day else "")
-            + f" · {h.days_held if h.days_held is not None else '-'} days</div>"
-            f'<div class="bars"><span class="gb {tone(h.gain)}" title="gain"><b style="width:'
-            f'{min(100.0, abs(g) / max_gain * 100):.0f}%"></b></span><span class="wb" '
-            f'title="weight"><b style="width:{min(100.0, w_ * 4):.0f}%"></b></span></div></span>'
-            + spark(hist.get(h.code, [])[-30:], 64, 24, "spk", f"{h.code} price")
-            + f'<span class="r num">{aud(h.value)}<div class="sub {tone(h.gain)}">'
-            f"{arrow(h.gain)}{aud(h.gain, True)} {pct(h.gain_pct)}</div><div class='sub'>"
-            f'{w_:.1f}% of shares</div></span><span class="chev" aria-hidden="true">›</span></a></li>'
+            f'data-days="{h.days_held or 0}" data-weight="{w_:.3f}"><a class="rowlink" '
+            f'href="/holdings/{quote(h.code)}" data-nav data-sheet="1"><span class="hrow">'
+            f'<span class="hc1">{e(h.code)}{old}</span>'
+            + spark(hist.get(h.code, [])[-30:], 56, 20, "spk", f"{h.code} price, last 30 days")
+            + f'<span class="hr1 num">{aud(h.value)}</span>'
+            f'<span class="hc2">{e(line2)}</span>'
+            f'<span class="hr2 {tone(h.gain)}">{arrow(h.gain)}{aud(h.gain, True)} '
+            f"{pct(h.gain_pct)}</span></span></a></li>"
         )
     stale = sum(1 for h in v.holdings if h.stale)
     note = (f'<p class="note">{plural(stale, "share")} had no price on the last report day; '
-            "valued at their last price.</p>" if stale else "")  # fmt: skip
-    tiles = (tile("Shares", aud(total), f"{len(v.holdings)} holdings")
-             + tile("Unrealised", aud(gain, True), "", tone(gain)))  # fmt: skip
-    sorts = "".join(
-        f'<button type="button" class="chip{" on" if k_ == "value" else ""}" data-sort="{k_}">'
-        f"{lab}</button>"
-        for k_, lab in (
-            ("value", "Value"),
-            ("gain", "Gain"),
-            ("days", "Days held"),
-            ("name", "Name"),
-        )
+            "valued at the last price.</p>" if stale else "")  # fmt: skip
+    cash = float(v.cash or 0)
+    invested = float(total) / (float(total) + cash) * 100 if float(total) + cash > 0 else 0.0
+    summary = (
+        '<dl class="stats two">'
+        + stat("Shares value", aud(total))
+        + stat("Unrealised", aud(gain, True), pct(float(gain / cost) if cost else None), tone(gain))
+        + "</dl>"
+        f'<div class="investbar" role="img" aria-label="{invested:.0f}% invested, the rest cash">'
+        f'<b style="width:{invested:.1f}%"></b></div>'
+        f'<p class="caption">{plural(len(v.holdings), "holding")} · {invested:.0f}% invested · '
+        f"{aud(v.cash, dp=0)} cash</p>"
     )
+    opts = "".join(f'<option value="{k_}">{lab}</option>'
+                   for k_, lab in (("value", "Value"), ("gain", "Gain"), ("weight", "Weight"),
+                                   ("days", "Days held"), ("name", "Name")))  # fmt: skip
+    tools = (
+        '<div class="tools"><label class="selwrap">Sort <select class="sel" data-sortsel '
+        f'aria-label="Sort holdings">{opts}</select></label>'
+        '<div class="viewsw" role="group" aria-label="View">'
+        '<a href="#hv-list" class="on" data-view="hv-list" aria-pressed="true">List</a>'
+        '<a href="#hv-heat" data-view="hv-heat" aria-pressed="false">Heatmap</a></div></div>'
+    )
+    parts = [(h.code, float(h.value or 0)) for h in ordered]
+    colours = slice_colours(len(parts))
+    legend = "".join(
+        f'<li><i style="background:{colours[i]}"></i>{e(c)}<span class="sp"></span>'
+        f"{val / float(total or 1) * 100:.1f}%</li>"
+        for i, (c, val) in enumerate(parts)
+    )
+    heat = (
+        app_more.treemap(v.holdings, hist)
+        + '<details class="about"><summary>Allocation donut</summary>'
+        f'<div class="donutrow">{donut(parts, aud(total, dp=0), "in shares", colours)}'
+        f'<ul class="legend2">{legend}</ul></div><p class="caption">Tap a slice to find the '
+        "holding in the list.</p></details>"
+    )
+    card = section(
+        f"Holdings · {len(v.holdings)}",
+        summary + tools
+        + f'<div class="hview on" id="hv-list"><ul class="list hold" id="hlist">{"".join(rows)}</ul>'
+        f"{note}</div>"
+        + f'<div class="hview" id="hv-heat">{heat}</div>',
+        aside='<span class="sp"></span><a href="/compare" data-nav>Compare</a>',
+    )  # fmt: skip
     body = (
-        seg
-        + section(
-            "Allocation",
-            f'<div class="donutrow">{donut(parts, aud(total, dp=0), "in shares", colours)}'
-            f'<ul class="legend2">{legend}</ul></div><p class="small muted">Tap a slice to find the '
-            "holding.</p>",
-        )
-        + section(
-            f"Holdings ({len(v.holdings)})",
-            f'<div class="tiles">{tiles}</div><div class="seg" role="group" aria-label="Sort">{sorts}'
-            f'</div><ul class="list hold" id="hlist">{"".join(rows)}</ul>{note}',
-        )
+        seg + '<div class="twopane"><div class="plist">' + card + "</div>"
+        '<aside class="pane" id="pane" aria-label="Selected holding"><p class="panehint">'
+        "Select a holding to see it here.</p></aside></div>"
     )
-    from trader import app_more
-
-    body += app_more.treemap(v.holdings, hist)
-    body += '<a class="btn sec wide" href="/compare" data-nav>Compare holdings</a>'
     return shell(v, x, "Holdings", body, "holdings")
 
 
@@ -946,15 +993,23 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         + f"<h1>{e(code)}</h1>"
         + (f'<p class="coname">{e(x.names[code])}</p>' if code in x.names else "")
     ]
-    if h is not None:
-        tiles = (
-            tile("Value", aud(h.value), f"{h.qty} @ {h.mark}")
-            + tile("Gain / loss", aud(h.gain, True), pct(h.gain_pct), tone(h.gain))
-            + tile("Cost", aud(h.cost), "incl. brokerage")
-            + tile("Held", f"{h.days_held if h.days_held is not None else '-'} days",
-                   f"since {first:%d %b %Y}" if first else "")
+    stats_html = ""
+    if h is not None:  # BF-D73: the price first, then four unboxed figures
+        parts.append(
+            f'<p class="hpx"><b class="num">{fmt_px(h.mark)}</b> <span class="{tone(h.gain)}">'
+            f"{arrow(h.gain)}{pct(h.gain_pct)} since bought"
+            + (f" ({first:%-d %b})" if first else "") + "</span>"
+            + (' <span class="pill amber">Old price</span>' if h.stale else "") + "</p>"
         )  # fmt: skip
-        parts.append(f'<div class="tiles">{tiles}</div>')
+        stats_html = (
+            '<dl class="stats four">'
+            + stat("Value", aud(h.value), f"{h.qty:,} sh")
+            + stat("Gain", aud(h.gain, True), pct(h.gain_pct), tone(h.gain))
+            + stat("Cost", aud(h.cost), "incl. fees")
+            + stat("Held", f"{h.days_held if h.days_held is not None else '–'} days",
+                   f"since {first:%-d %b %Y}" if first else "")
+            + "</dl>"
+        )  # fmt: skip
     buy_px = float(buys[0].price) if buys else None
     parts.append(section("Price since bought",
                          line_chart(px, "s1", marks=marks, ref=buy_px,
@@ -962,7 +1017,8 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
                                     label=f"{code} price since bought, buys and sells marked")
                          + '<p class="legend"><span><span class="key kb"></span>'
                          "Buy</span> <span><span class=\"key ks\"></span>"
-                         "Sell</span><span>Dashed line: first buy price</span></p>"))  # fmt: skip
+                         "Sell</span><span>Dashed line: first buy price</span></p>"
+                         + stats_html))  # fmt: skip
     # why it was chosen: the day's EMG2 list (rule 3 inputs) at its buy decision
     lists = jobs(j, "emg2list:")
     dec_day: date | None = None
@@ -995,7 +1051,6 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
             )
         else:
             why = f"<p class='muted'>Not in band C of {e(dec_day)} (bought for another reason, e.g. the fund).</p>"
-    parts.append(section("Why it was chosen", why))
     # sell rule C6: age >= 6 month-ends AND outside the keep zone (top 40% of band C)
     age = (
         month_ends_between(sessions, dec_day, v.now.astimezone(ASX_TZ).date()) if dec_day else None
@@ -1016,9 +1071,6 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         + "<p class='small muted'>C6 sells only when both: 6 or more month-ends held and "
         "outside the keep zone.</p>"
     )  # fmt: skip
-    c6 = ring((age or 0) / 6, f"{age if age is not None else '-'}/6", "months",
-              f"Sell rule C6: {age if age is not None else 0} of 6 month-ends held",
-              "good" if age is not None and age >= 6 else "acc")  # fmt: skip
     kz_badge = ("" if latest is None else
                 f'<span class="pill {"ok" if kz else "amber"}">{"In" if kz else "Not in"} the '
                 "top 40% of band C</span>")  # fmt: skip
@@ -1030,17 +1082,21 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         today = v.now.astimezone(ASX_TZ).date()
         total_d = max((due - first).days, 1)
         left = (due - today).days
-        cgt = ring(1 - max(left, 0) / total_d, "now" if left <= 0 else f"{left} d",
-                   "to discount" if left > 0 else "discount",
-                   f"50% CGT discount {'applies now' if left <= 0 else 'from ' + format(due, '%d %b %Y')}",
-                   "good" if left <= 0 else "warnr")  # fmt: skip
+        cgt = (
+            f'<p><span class="pill {"ok" if left <= 0 else "amber"}">'
+            + ("Discount applies now" if left <= 0 else f"{left} days to the discount")
+            + f'</span></p><div class="meter"><b style="width:'
+            f'{(1 - max(left, 0) / total_d) * 100:.0f}%"></b></div>'
+        )
         cgt += (
             f'<p class="small muted">First parcel bought {first:%d %b %Y}; sold after '
             f"{due:%d %b %Y} it gets the 50% discount (estimate, not tax advice).</p>"
         )
-    parts.append(section("Sell rule (C6)", f'<div class="rings">{c6}{kz_badge}</div>' + rule))
+    parts.append(section("Sell rule (C6)", rule, aside='<span class="sp"></span>' + kz_badge))
     if cgt:
-        parts.append(section("Capital gains discount", f'<div class="rings">{cgt}</div>'))
+        parts.append(section("Capital gains discount", cgt))
+    parts.append(section("", f'<details class="about"><summary>Why it was chosen</summary>{why}'
+                         "</details>"))  # fmt: skip
     if share is not None:  # BF-D66: rank history, expected vs actual, price, what next
         from trader import share_pages
 
@@ -1074,17 +1130,13 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
     for d, bs in groups.items():
         for b in bs:
             its = j.intents_of(b["batch_id"])
-            counts: dict[str, int] = {}
-            for _, st in its:
-                w = STATUS_WORDS.get(st, st.lower())
-                counts[w] = counts.get(w, 0) + 1
-            summ = ", ".join(f"{n} {w}" for w, n in sorted(counts.items()))
+            chip = _batch_chip(b["batch_id"], its, x)
             items.append(
                 f'<li><a class="rowlink" href="/orders/{quote(b["batch_id"])}" data-nav>'
-                f'<span class="grow"><b>{d:%d %b %Y}</b> · {len(its)} order(s)'
-                f'<div class="sub">{e(b["batch_id"])}</div><div class="sub">{e(summ)}</div>'
-                + (f'<div class="sub">strategy {e(ver[d])}</div>' if d in ver else "")
-                + f"</span>{chev()}</a></li>"
+                f'<span class="grow"><b>{d:%-d %b %Y}</b><div class="sub">'
+                f"{plural(len(its), 'order')} · {e(b['approval_mode'])}"
+                + (f" · strategy {e(ver[d])}" if d in ver else "")
+                + f"</div></span>{chip}{chev()}</a></li>"
             )
     hist = (
         f'<ul class="list">{"".join(items)}</ul>'
@@ -1092,14 +1144,39 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
         else '<p class="muted">No orders yet.</p>'
     )
     days = sorted(set(groups) | set(_list_days(j)), reverse=True)[:12]
-    rp = "".join(f'<a class="chip" href="/replay/{d}" data-nav>{d:%b %Y}</a>' for d in days)
+    rp = "".join(
+        f'<a class="chip" href="/replay/{d}" data-nav aria-label="Replay {d:%B %Y}">{d:%b %Y}</a>'
+        for d in days
+    )
     body += section("Decisions", nd + hist)
     if rp:
-        body += section("Replay a decision", '<div class="seg">' + rp + "</div><p class='small "
-                        "muted'>Step through a month-end: ranked, picked, filtered, ordered.</p>")  # fmt: skip
+        body += section("", '<details class="about"><summary>Replay a decision</summary>'
+                        '<div class="chips">' + rp + "</div><p class='caption'>Step through a "
+                        "month-end: ranked, picked, filtered, ordered.</p></details>")  # fmt: skip
     seg = ('<div class="seg"><a class="on" href="/orders" data-nav>Decisions</a>'
            '<a href="/calendar" data-nav>Calendar</a></div>')  # fmt: skip
     return shell(v, x, "Orders", seg + body, "orders")
+
+
+def _batch_chip(batch_id: str, its: Sequence[tuple[Any, str]], x: Extras) -> str:
+    """One status chip for a batch row (BF-D73): Waiting / Filled / n of m filled / ..."""
+    if any(w.batch_id == batch_id for w in x.waiting):
+        return '<span class="pill amber">Waiting</span>'
+    n = len(its)
+    filled = sum(1 for _, st in its if st == Status.FILLED)
+    bad = sum(1 for _, st in its if st in BAD_END)
+    if n and filled == n:
+        return '<span class="pill ok">Filled</span>'
+    if filled:
+        return f'<span class="pill ok">{filled} of {n} filled</span>'
+    if n and bad == n:
+        word = "Refused" if all(st == Status.VETOED for _, st in its) else "Not sent"
+        if all(st == Status.EXPIRED for _, st in its):
+            word = "Expired"
+        return f'<span class="pill bad">{word}</span>'
+    if n and all(st in OPEN_FOR_APPROVAL for _, st in its):
+        return '<span class="pill">Proposed</span>'
+    return '<span class="pill">In progress</span>'
 
 
 def _list_days(j: Journal) -> list[date]:
@@ -1177,53 +1254,58 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
     its = j.intents_of(batch_id)
     ok = approved_seqs(j, batch_id)
     w = next((w for w in x.waiting if w.batch_id == batch_id), None)
-    now_iso = v.now.isoformat()
     apps = j.approvals(batch_id)
     who = "".join(
         f"<li>{e(a['action'])} {'all' if a['seq'] is None else a['seq']} · "
         f"{e(str(a['actor']).split(':')[0])} · {when(_aware(a['at']))}</li>"
         for a in apps
     )
+    total = sum((Decimal(str(it.value_at_ref)) for it, _ in its), Decimal(0))
     head = (
-        backlink("/orders", "Orders") + f"<h1>{b['decision_date']:%d %b %Y}</h1>"
-        f'<p class="muted small">{e(batch_id)} · {e(b["approval_mode"])} · execution '
-        f"{b['execution_date'] or '-'}</p>"
+        backlink("/orders", "Orders") + f"<h1>{b['decision_date']:%-d %b %Y}</h1>"
+        f'<p class="summary">{plural(len(its), "order")} · ≈ {aud(total, dp=0)} '
+        f"{_batch_chip(batch_id, its, x)}</p>"
+        f'<p class="caption">{e(b["approval_mode"])} · execution '
+        f'{b["execution_date"] or "–"}</p><p class="mono">{e(batch_id)}</p>'
     )
     top = ""
     if w is not None:
-        top = section("Waiting for you", (
-            f'<p class="summary">{w.n} order(s) · ≈ {aud(w.total, dp=0)}</p>'
-            '<div class="btns">'
-            f'<a class="btn" href="{act_link(a="ok", b=batch_id, n="all")}">Approve all</a>'
-            f'<a class="btn sec" href="{act_link(a="rf", b=batch_id)}">Refuse</a></div>'
-            f'<p class="small muted">Deadline {w.by:%a %d %b %H:%M}.</p>'
-            f'<p class="cd">{icon("clock")}<span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until {w.by:%H:%M}</span></p>'
-            + actions_note(x, v.demo)), "waitcard")  # fmt: skip
+        from dataclasses import replace
+
+        top = waiting_card(replace(x, waiting=[w]), v.demo, v.now)
     cards = []
     for it, st in its:
         waiting = w is not None and st in OPEN_FOR_APPROVAL and it.seq not in ok
         word = ("approved" if st in OPEN_FOR_APPROVAL and it.seq in ok
                 else STATUS_WORDS.get(st, st.lower()))  # fmt: skip
+        if w is not None and st in OPEN_FOR_APPROVAL and it.seq not in ok:
+            word = "waiting"
         btn = ""
         if waiting:
-            btn = (f'<div class="btns"><a class="btn sec" href="{act_link(a="ok", b=batch_id, n=str(it.seq))}">'
-                   f"Approve {it.seq}</a>"
-                   + (f'<a class="btn sec" href="{act_link(a="veto", b=batch_id, n=str(it.seq))}">Veto</a>'
+            btn = (f'<div class="btns"><a class="btn sec sm" href="{act_link(a="ok", b=batch_id, n=str(it.seq))}">'
+                   f"Approve order {it.seq}</a>"
+                   + (f'<a class="btn sec sm" href="{act_link(a="veto", b=batch_id, n=str(it.seq))}">Veto</a>'
                       if it.side is Side.BUY else "") + "</div>")  # fmt: skip
+        chip = (
+            "amber" if waiting else "ok" if st == Status.FILLED else "bad" if st in BAD_END else ""
+        )
         cards.append(
-            f"<li><b class='{'buy' if it.side is Side.BUY else 'sell'}'>{it.seq}. "
-            f"{e(it.side.value)}</b> <b>{it.qty} {e(it.entity)}</b> "
-            f'<span class="pill {"amber" if waiting else "ok" if st == Status.FILLED else ""}">{e(word)}</span>'
-            f'<div class="sub">{e(it.order_type.value)} limit {it.limit_price} (ref {it.ref_price}, '
-            f"≈ {aud(Decimal(str(it.value_at_ref)), dp=0)}) · {e(it.reason)}</div>"
+            f'<li><details class="ord"><summary><span class="grow"><span class="side">'
+            f"{e(it.side.value.capitalize())}</span> <b>{it.qty:,} {e(it.entity)}</b>"
+            f'<div class="sub">limit {px(it.limit_price)} · ≈ '
+            f"{aud(Decimal(str(it.value_at_ref)), dp=0)}</div></span>"
+            f'<span class="pill {chip}">{e(word)}</span>{chev()}</summary>'
+            f'<p class="caption">#{it.seq} · {e(it.order_type.value)} · reference '
+            f"{px(it.ref_price)} · {e(it.reason)}</p>"
             + _steps(st, it.seq in ok)
             + _timeline(j, it.client_order_id, it, st)
+            + "</details>"
             + btn
             + "</li>"
         )
     body = head + top + section("Orders", f'<ul class="list">{"".join(cards)}</ul>')
-    body += (f'<a class="btn sec wide" href="/replay/{b["decision_date"]}" data-nav>Replay this '
-             "decision</a>")  # fmt: skip
+    body += (f'<p><a class="btn ter" href="/replay/{b["decision_date"]}" data-nav>Replay this '
+             "decision</a></p>")  # fmt: skip
     if who:
         body += section("Approvals", f'<ul class="list small">{who}</ul>')
     return shell(v, x, "Batch", body, "orders")
@@ -1243,31 +1325,33 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
     )
     rows = []
     last_day = None
+    today = v.now.astimezone(ASX_TZ).date()
     for r in x.inbox:
         k = str(r["kind"])
         day = r["at"].astimezone(ASX_TZ).date() if r["at"] is not None else None
         if day != last_day:
-            rows.append(f'<li class="day">{day:%A %d %B}</li>' if day else '<li class="day">-</li>')
+            lab = ("Today" if day == today else f"{day:%A %d %B}") if day else "-"
+            rows.append(f'<li class="day">{lab}</li>')
             last_day = day
         hide = kind != "all" and not (k == kind or (kind == "alerts" and k == "page"))
         link = str(r["link"] or "")
-        go = (f' <a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""}>Open</a>'
+        go = (f'<a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""} aria-label="Open">Open</a>'
               if link and link != "/inbox" else "")  # fmt: skip
+        meta = f"{when(r['at'])} · from {e(r['source'])}" + (
+            f" · phone alert: {e(r['push'])}" if r["push"] and r["push"] != "off" else ""
+        )
         rows.append(
             f'<li class="msg {e(k)}" id="m{int(r["id"])}" data-inbox-id="{int(r["id"])}" '
-            f'data-kind="{e(k)}"{" hidden" if hide else ""}>'
-            f'<span class="pill {"bad" if k == "page" else "amber" if k == "approval" else ""}">'
-            f'{e(KIND_WORDS.get(k, k))}</span> <span class="t">{e(r["title"])}</span>'
-            f'<div class="sub">{when(r["at"])} · {e(r["source"])}'
-            + (f" · push {e(r['push'])}" if r["push"] and r["push"] != "off" else "")
-            + f"{go}</div>"
+            f'data-kind="{e(k)}"{" hidden" if hide else ""}>{_msg_head(r, v.book)}'
             f"<details><summary class='small'>Show message</summary><pre>{e(r['body'])}</pre>"
-            "</details></li>"
+            f'<p class="meta">{meta}{" · " + go if go else ""}</p></details></li>'
         )
-    body = (f'<div class="seg">{chips}</div>'
-            + section(f"Inbox ({len(x.inbox)})", f'<ul class="list">{"".join(rows)}</ul>' if rows
+    body = (f'<div class="chips">{chips}</div>'
+            + section(f"Inbox · {len(x.inbox)}", f'<ul class="list">{"".join(rows)}</ul>' if rows
                       else '<p class="muted">No messages yet. Daily reports, approval requests '
-                      "and alerts appear here (and as phone alerts once you turn them on).</p>")
+                      "and alerts appear here (and as phone alerts once you turn them on).</p>",
+                      aside='<span class="sp"></span><button type="button" class="btn ter sm" '
+                      "data-markall hidden>Mark all read</button>")
             + '<p class="small"><a href="/act/alerts">Alerts on this phone</a></p>')  # fmt: skip
     return shell(v, x, "Inbox", body, "inbox")
 
