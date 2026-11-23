@@ -18,6 +18,7 @@ TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini", "CLAUDE.md")  # + .
 UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
+    "trader/app_ops.py",  # BF-D75..BF-D80: screens only
 )  # fmt: skip
 APP_ONLY_DIRS = ("docs/", "tests/")
 

@@ -127,6 +127,15 @@ strategy:                       # BF-D45: strategy updates from the app (Server 
                                 #   next_decision: from the next month-end decision (24 h block before it)
 costs:                          # BF-D72: fixed costs (server, price data) in the L14 cost statement
   fixed_aud_per_year: 600       #   and against "the same money in A200" (owner: H2/H4 decisions open)
+running_costs:                  # BF-D76: fixed running costs a year by kind (app only; the owner can
+  server: 0                     #   also edit them in the app: Server > Costs). All 0 = use
+  data: 0                       #   costs.fixed_aud_per_year above as one total
+  other: 0
+info_archive:                   # BF-D78: private announcements archive (owner decision 24 Nov 2026; the
+  archive_enabled: false        #   ONLY automated asx.com.au access; personal use, never shared). Switch on
+  app_dir: /data/info           #   in config/bfast.local.yaml after the record moves to the server (after 30 Nov)
+research:                       # BF-D75: the record's scorecard for the app's research section (read-only)
+  scorecard_csv: /data/forward/record/paper/scorecard_latest.csv
 heartbeat:                      # BF-D41: dead-man ping to the healthchecks_url secret ("none" = off)
   every_seconds: 300
 dashboard:                      # BF-D37: read-only phone page (`trader-bf dashboard`), Tailscale only

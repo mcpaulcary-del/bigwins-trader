@@ -340,6 +340,36 @@ class CostsCfg(_M):
     fixed_aud_per_year: Decimal = Field(default=Decimal(600), ge=0)
 
 
+class RunningCostsCfg(_M):
+    """BF-D76: the fixed running costs a year, by kind, for the app's Costs screen and the
+    honest scoreboard (app-only, not a trading setting). All zero = use
+    ``costs.fixed_aud_per_year`` as one total. The owner can also edit them in the app
+    (Server > Costs), which wins over these."""
+
+    server: Decimal = Field(default=Decimal(0), ge=0, le=100000)
+    data: Decimal = Field(default=Decimal(0), ge=0, le=100000)
+    other: Decimal = Field(default=Decimal(0), ge=0, le=100000)
+
+
+class InfoArchiveCfg(_M):
+    """BF-D78: the private info archive (owner decision 24 Nov 2026: the ONLY automated
+    access to the ASX website; personal, non-commercial, never shared; feeds no line). A host
+    job (``deploy/info_archive.py``); off until the owner switches the research record to
+    the server after 30 Nov 2026. ``archive_enabled`` is read by the host worker;
+    ``app_dir`` is where the app sees the data folder (mounted read-only from the host
+    path ``INFO_ARCHIVE_DIR`` in deploy/.env)."""
+
+    archive_enabled: bool = False
+    app_dir: Path = Path("/data/info")
+
+
+class ResearchCfg(_M):
+    """BF-D75: the research record's scorecard (read-only), for the app's unranked
+    "Research (information only)" section."""
+
+    scorecard_csv: Path | None = Path("/data/forward/record/paper/scorecard_latest.csv")
+
+
 class HeartbeatCfg(_M):
     """BF-D41: ping the ``healthchecks_url`` secret every ``every_seconds`` (``none``: off)."""
 
@@ -386,6 +416,9 @@ class BfastConfig(_M):
     heartbeat: HeartbeatCfg = Field(default_factory=HeartbeatCfg)  # BF-D41
     strategy: StrategyCfg = Field(default_factory=StrategyCfg)  # BF-D45
     costs: CostsCfg = Field(default_factory=CostsCfg)  # BF-D72
+    running_costs: RunningCostsCfg = Field(default_factory=RunningCostsCfg)  # BF-D76
+    info_archive: InfoArchiveCfg = Field(default_factory=InfoArchiveCfg)  # BF-D78
+    research: ResearchCfg = Field(default_factory=ResearchCfg)  # BF-D75
 
     @model_validator(mode="after")
     def _immediate_only_on_paper(self) -> BfastConfig:
