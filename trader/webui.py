@@ -548,6 +548,19 @@ border-radius:5px;background:var(--surface-2);border:2px solid var(--line-strong
 .ord>summary{list-style:none;cursor:pointer;display:flex;gap:10px;align-items:center}
 .ord>summary::-webkit-details-marker{display:none}.ord>summary .grow{flex:1;min-width:0}
 .ord[open]>summary .chev{transform:rotate(90deg)}
+/* BF-D75..BF-D80: scoreboard, research, health, costs, announcements */
+.scorecard{border-left:3px solid var(--line-strong)}
+.verdict{display:flex;align-items:center;gap:8px;font:600 18px/24px var(--font);margin:0 0 12px}
+.verdict .ic{width:20px;height:20px;flex:none}.verdict.up{color:var(--up)}.verdict.down{color:var(--down)}
+.verdict2{font:400 15px/22px var(--font);margin:4px 0 12px}
+.gaprow{display:flex;align-items:center;gap:12px;margin:12px 0 0}.gaprow .spk{flex:1;height:28px}
+.notelink{display:flex;gap:8px;align-items:center;text-decoration:none}.notelink .ic{width:18px;height:18px;flex:none;color:var(--down)}
+.rline,.frow{display:flex;align-items:center;gap:12px}.rline .grow,.frow .grow{flex:1;min-width:0}
+.rline b,.frow b{display:block;font-weight:600}.rline .sub,.frow .sub{display:block}
+.rr{text-align:right;white-space:nowrap}.rr .rv{display:block;font:600 15px/20px var(--font)}
+.rsec{margin-top:8px}.rsec>summary{cursor:pointer;font:500 14px/20px var(--font);color:var(--ink-2);padding:8px 0}
+.ann .pills{margin-top:4px}.ann div{font:400 15px/21px var(--font)}
+.home .o0{order:0}
 /* server */
 .htiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.ht{border:0;padding:0;background:none;min-width:0}
 .ht .tl{display:flex;justify-content:space-between}.ht .tv{font-size:18px}

@@ -225,6 +225,16 @@ class Sources:
     prices: Callable[[str], Sequence[tuple[date, float]]] | None = None  # BF-D66: closes
     tr_prices: Callable[[str], Sequence[tuple[date, float]]] | None = None  # BF-D72: TR level
     forecast_dir: Path | None = None  # BF-D66: where config/forecast_bands*.csv live
+    # BF-D75..BF-D80: scoreboard, costs, research, Health, digest, announcements
+    fixed_items: dict[str, Decimal] | None = None  # running_costs (server, data, other)
+    fixed_total: Decimal = Decimal(600)  # costs.fixed_aud_per_year
+    half_spread: Decimal = Decimal("0.005")  # data.sim_half_spread (the modelled spread)
+    fund_half_spread: Decimal = Decimal("0.0005")  # band_trend.fund_half_spread
+    commission: Callable[[Decimal], Decimal] | None = None  # the IBKR plan (A200's one buy)
+    scorecard: Path | None = None  # the research record's scorecard_latest.csv (read-only)
+    info_dir: Path | None = None  # the private info archive (read-only)
+    info_enabled: bool = False
+    eodhd_budget: int = 100000
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -756,7 +766,8 @@ class Dashboard:
 
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
                "/strategy", "/setup", "/backups", "/accounts", "/shares",
-               "/forecast-method", "/calendar", "/compare", "/search.json")  # fmt: skip
+               "/forecast-method", "/calendar", "/compare", "/search.json",
+               "/health", "/costs", "/digest")  # fmt: skip
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
@@ -768,7 +779,7 @@ class Dashboard:
             src.prices, src.index, src.index_label,  # type: ignore[arg-type]
             {k: forecast.load_bands(src.forecast_dir, k) for k in forecast.BENCH}, src.demo,
             src.tr_prices,  # type: ignore[arg-type]
-            self.names(v),
+            self.names(v), src.info_dir,
         )  # fmt: skip
 
     def names(self, v: View) -> dict[str, str]:
@@ -802,7 +813,7 @@ class Dashboard:
         cache[key] = (now, res)
         return res
 
-    def _screen(  # noqa: PLR0911, PLR0912 - one return per screen
+    def _screen(  # noqa: PLR0911, PLR0912, PLR0915 - one return per screen
         self, path: str, qs: Mapping[str, str], viewer: str
     ) -> tuple[str, bytes] | None:
         src = self.sources
@@ -817,6 +828,16 @@ class Dashboard:
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
         sess: Sequence[date] = src.sessions() if src.sessions else []
+        if path in ("/", "/health", "/costs", "/digest", "/server", "/strategy"):
+            from trader import app_ops
+
+            x.ops = app_ops.collect(src, v, _has_journal(j))
+            if path == "/health":
+                return html_t, app_ops.health(v, x, x.ops, self.version).encode()
+            if path == "/costs":
+                return html_t, app_ops.costs(v, x, x.ops).encode()
+            if path == "/digest":
+                return html_t, app_ops.digest_page(src, v, x, x.ops, dict(qs)).encode()
         if path == "/":
             return html_t, app_pages.home(v, x).encode()
         if path == "/holdings":

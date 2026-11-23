@@ -73,6 +73,8 @@ class Demo:
     index: Callable[[], list[tuple[date, float]]]
     prices: Callable[[str], list[tuple[date, float]]] | None = None  # BF-D66 (synthetic)
     now: datetime = datetime(2024, 1, 1, tzinfo=ASX_TZ)  # the demo's "now": the morning after
+    scorecard: Path | None = None  # BF-D75: a made-up research scorecard
+    info_dir: Path | None = None  # BF-D78: a made-up announcements archive
 
 
 class _InboxTransport(FakeTransport):
@@ -170,6 +172,11 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
                   "record replay (example).", "takes_effect": "Tonight's out-of-cycle decision "
                   "(immediate mode), orders for your approval."},
     }, now - timedelta(minutes=5))  # fmt: skip
+    held = sorted(c for c, q in j.positions(s.book).items() if q)
+    vals = [(k.rsplit(":", 1)[1], str(r["value"])) for k, r in j.job_records(f"value:{s.book}:")]
+    info_dir = path.parent / "demo_info"
+    scorecard = path.parent / "demo_scorecard.csv"
+    demo_ops(j, info_dir, scorecard, held, panel.dates, nxt, now, vals)
     j.engine.dispose()
     k0 = panel.dates.index(run[0])
     mean = np.nanmean(panel.close / panel.close[k0], axis=1)  # an equal-weight demo index
@@ -184,7 +191,117 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
                                                panel.close[:, k], strict=False)
                 if np.isfinite(c) and c > 0]  # fmt: skip
 
-    return Demo(path, panel.dates, run[-1], lambda: lvl, prices, now)
+    return Demo(path, panel.dates, run[-1], lambda: lvl, prices, now, scorecard, info_dir)
+
+
+DEMO_HEADS = (  # made-up headlines (no real company); flags: raise, halt, takeover, director
+    ("Quarterly Activities Report", 1),
+    ("Change of Director's Interest Notice", 0),
+    ("Trading Halt", 1),
+    ("Proposed issue of securities - placement", 1),
+    ("Investor Presentation", 0),
+    ("Receipt of unsolicited proposal - non-binding indicative offer", 1),
+    ("Change of Director's Interest Notice", 0),
+    ("Annual General Meeting results", 0),
+)
+DEMO_3Y = (  # made-up Appendix 3Y texts in the layout pdftotext gives (synthetic)
+    """                        Appendix 3Y
+                        Change of Director's Interest Notice
+                        Part 1 - Change of director's relevant interests in securities
+                         Date of change                                     {d}
+                         Class                                              Fully paid ordinary shares
+                         Number acquired                                    {n:,}
+                         Number disposed                                    Nil
+                         Value/Consideration                                ${v:,.2f}
+                         Nature of change                                   On-market trade
+                         Example: on-market trade, off-market trade, exercise of options
+                        Part 2 - Change of director's interests in contracts
+""",
+    """                        Appendix 3Y
+                        Change of Director's Interest Notice
+                        Part 1 - Change of director's relevant interests in securities
+                         Date of change                                     {d}
+                         Class                                              Performance Rights
+                         Number acquired                                    {n:,}
+                         Number disposed                                    Nil
+                         Value/Consideration                                Nil
+                         Nature of change                                   Issue of performance rights under the
+                         Example: on-market trade, off-market trade,        employee incentive plan
+                        Part 2 - Change of director's interests in contracts
+""",
+)
+
+
+DEMO_BOOKS = {"REF": "EMG2_18_REF", "EMG2": "EMG2_10k", "H82": "H82_10k", "MOM": "MOM_10k",
+              "BLIND3": "BLIND3_10k", "SWEEP": "EMG2_18_SIM_BT_C6_SWEEP",
+              "WIDE": "EMG2_18_SIM_BT_C6_WIDE", "FIP": "EMG2_18_SIM_BT_C6_FIP",
+              "MOON_TOP5": "EMG2_MOON_TOP5", "MOON_NOLOT5": "EMG2_MOON_NOLOT5",
+              "MOON_LEG2": "MOON_LEG2"}  # fmt: skip
+
+
+def demo_ops(j: Journal, info_dir: Path, scorecard: Path, held: list[str],
+             sessions: tuple[date, ...], nxt: date, now: datetime,
+             vals: list[tuple[str, str]]) -> None:  # fmt: skip
+    """BF-D75..BF-D80 demo data, all made up: a research scorecard, an announcements
+    archive for the held codes (headlines, two Appendix 3Y texts, ASIC short positions),
+    the archive's last run (one day late, so the alarm shows) and a previous-version twin."""
+    import csv
+    import gzip
+
+    from trader.ops_view import KEPT_LINES
+
+    rng = np.random.default_rng(11)
+    with scorecard.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["asof", "book", "kind", "capital", "nav", "return_since_start", "vs_a200"])
+        for lid, _, _ in KEPT_LINES:
+            r = float(rng.normal(0.01, 0.04))
+            w.writerow([str(nxt), DEMO_BOOKS.get(lid, lid), "demo", 10000, round(10000 * (1 + r), 2),
+                        round(r, 5), round(r - 0.012, 5)])  # fmt: skip
+    k = sessions.index(nxt)
+    days = list(sessions[max(0, k - 60) : k])
+    for i, d in enumerate(days[:-1]):  # the last session is "not collected yet" (late)
+        dd = info_dir / "asx_notices" / str(d)
+        (dd / "pdf").mkdir(parents=True, exist_ok=True)
+        rows = []
+        for c_i, code in enumerate(held[:6]):
+            if (i + c_i) % 7:
+                continue
+            head, ps = DEMO_HEADS[(i + c_i) % len(DEMO_HEADS)]
+            ids = f"{9_000_000 + i * 100 + c_i:08d}"
+            rows.append([code, f"{d:%d/%m/%Y}", f"{8 + c_i}:{15 + i % 40:02d} am", ps, head, ids,
+                         int("Interest" in head or "issue" in head)])  # fmt: skip
+            if "Interest" in head:
+                t = DEMO_3Y[(i + c_i) % 2].format(
+                    d=f"{d:%d %B %Y}", n=10000 + 500 * i, v=5250.0 + i
+                )
+                (dd / "pdf" / f"{code}_{ids}.txt").write_text(t)
+        rows += [[f"Z{n:02d}", f"{d:%d/%m/%Y}", "9:00 am", 0, "Daily fund update", f"{n:08d}", 0]
+                 for n in range(3)]  # fmt: skip
+        with (dd / "list.csv").open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["code", "date", "time", "price_sensitive", "headline", "ids_id", "kept"])
+            w.writerows(rows)
+        (dd / "DONE").write_text("{}")
+    sd = info_dir / "asic_short"
+    sd.mkdir(parents=True, exist_ok=True)
+    for d in (days[-35], days[-5]):
+        body = "Product,Product Code,Reported Short Positions,Total Product in Issue," \
+               "% of Total Product in Issue Reported as Short Positions\n" + "".join(
+                   f"DEMO COMPANY {c},{c},{1000 * (n + 1)},{10**7},{(n + 1) * 0.37 + (d.day % 3) * 0.1:.4f}\n"
+                   for n, c in enumerate(held))  # fmt: skip
+        with gzip.open(sd / f"RR{d:%Y%m%d}-001-SSDailyAggShortPos.csv.gz", "wt") as f:
+            f.write(body)
+    set_state(j, "info-archive-last", {"ok": True, "day": str(days[-2]), "rows": 690, "pdfs": 118},
+              now - timedelta(hours=26))  # fmt: skip
+    if len(vals) > 5:
+        since = vals[0][0]
+        new = [[d, float(v)] for d, v in vals]
+        prev = [[d, round(float(v) * (1 - 0.0004 * i), 2)] for i, (d, v) in enumerate(vals)]
+        set_state(j, "prev-twin", {"ok": True, "since": since, "to": vals[-1][0], "capital": 10000,
+                                   "new": new, "prev": prev, "new_label": "EMG2-18 C6 v1.1 (demo)",
+                                   "prev_label": "EMG2-18 C6 v1.0 (demo)"},
+                  now - timedelta(hours=9))  # fmt: skip
 
 
 def demo_control(j: Journal, demo: Demo) -> Control:

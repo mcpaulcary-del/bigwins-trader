@@ -179,6 +179,7 @@ class Extras:
     restore_test: tuple[dict[str, Any], datetime] | None = None
     backup_history: list[dict[str, Any]] = field(default_factory=list)
     names: dict[str, str] = field(default_factory=dict)  # code -> company name (price store)
+    ops: Any = None  # BF-D75..BF-D80: trader.app_ops.Ops (scoreboard, jobs, costs, research)
 
     @property
     def latest_inbox(self) -> int:
@@ -616,7 +617,7 @@ def _srow(label: str, value: str, body: str = "", href: str = "", tone: str = ""
 # ---------------------------------------------------------------- Home
 
 
-def home(v: Any, x: Extras) -> str:
+def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one place
     if not v.started:
         nd = (f"<p>Next decision: <b>{v.next_decision:%A %d %B %Y}</b> (22:20).</p>"
               if v.next_decision else "")  # fmt: skip
@@ -627,6 +628,11 @@ def home(v: Any, x: Extras) -> str:
             "(the daily report at 22:45 Sydney).</p>" + nd,
         )
         body += safety_card(v) + inbox_peek(x) + health_card(v, x)
+        if x.ops is not None:  # BF-D75 / BF-D77
+            from trader import app_ops
+
+            body = (app_ops.fresh_note(x.ops) + body
+                    + app_ops.research_section(x.ops, v.now.astimezone(ASX_TZ).date()))  # fmt: skip
         return shell(v, x, "Home", body, "home")
     from trader import app_more
 
@@ -684,11 +690,24 @@ def home(v: Any, x: Extras) -> str:
     wi = app_more.whatif(v, getattr(v, "journal", None))
     if wi:
         rows.append(_srow("What if", "the market moves?", wi))
+    ops = x.ops
+    score = jobs_note = research = ""
+    if ops is not None:  # BF-D75 / BF-D77: the honest scoreboard first, late jobs flagged
+        from trader import app_ops
+
+        score = app_ops.score_card(ops, v)
+        jobs_note = app_ops.fresh_note(ops)
+        fr = app_ops.fresh_row(ops)
+        if fr:
+            rows.append(fr)
+        research = app_ops.research_section(ops, v.now.astimezone(ASX_TZ).date(), compact=True)
     rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
-    status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>')
+    status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>' + research)
     foot = "<footer>Not shown to beat the index.</footer>"
     col_a = (
-        f'<div class="hero-wrap o1">{hero_html}</div>'
+        jobs_note
+        + (f'<div class="o0">{score}</div>' if score else "")
+        + f'<div class="hero-wrap o1">{hero_html}</div>'
         + (f'<div class="o2">{wait}</div>' if urgent else "")
         + f'<div class="o3 perf" data-card="perf">{chart}</div>'
         + f'<div class="o5 homestats">{stats}</div>'
@@ -1459,6 +1478,8 @@ SRV_MENU = (  # BF-D73: (job, icon, short label, one-line description, destructi
     ("srv:restore_test", "beaker", "Restore test", "Unpack the latest backup and check it", False),
     ("srv:backup_key", "key", "Show recovery key", "Once, needs your code", False),
     ("srv:hc_ping", "activity", "Test healthchecks ping", "healthchecks.io", False),
+    ("srv:info_archive", "download", "Collect announcements", "Private archive, if on", False),
+    ("srv:prev_twin", "beaker", "Previous-version twin", "After a strategy update", False),
     ("srv:claude_remote", "terminal", "Claude remote: start", "tmux session 'remote'", False),
     ("srv:claude_stop", "terminal", "Claude remote: stop", "Ends the session", False),
 )
@@ -1489,6 +1510,7 @@ def server(v: Any, x: Extras) -> str:
                                     value="update available" if int(x.update.get("ahead") or 0) > 0
                                     else "", nav=True)
                          + menu_row("/accounts", "key", "Accounts & services", nav=True)
+                         + (_ops_rows(x) if x.ops is not None else "")
                          + "</ul>"))  # fmt: skip
     if x.host is None:
         parts.append(section("Server", (
@@ -1585,6 +1607,12 @@ def server(v: Any, x: Extras) -> str:
         f"Open Claude {icon('external')}</a><p class='small muted'>First time only: sign in once on the server "
         "(Termius: <code>tmux attach -t remote</code>).</p>")))  # fmt: skip
     return shell(v, x, "Server", "".join(parts), "server")
+
+
+def _ops_rows(x: Extras) -> str:
+    from trader import app_ops
+
+    return app_ops.server_rows(x.ops)
 
 
 def _ci_line(u: Mapping[str, Any]) -> str:
@@ -1692,6 +1720,11 @@ def strategy(v: Any, x: Extras) -> str:
                              f"<th class='r'>Book</th><th class='r'>Index</th></tr></thead><tbody>{rows2}"
                              "</tbody></table><p class='small muted'>Each decision is stamped with the "
                              "version that made it.</p>"))  # fmt: skip
+    if x.ops is not None:  # BF-D80 / BF-D75
+        from trader import app_ops
+
+        parts.append(app_ops.prev_twin_section(x.ops.prev_twin))
+        parts.append(app_ops.research_section(x.ops, v.now.astimezone(ASX_TZ).date()))
     notes = "".join(
         f"<li class='rel'><p class='summary'>{e(c.get('version'))}</p>"
         f"<p class='caption'>{e(day(c.get('date', '')))}</p><dl class='reld'>"

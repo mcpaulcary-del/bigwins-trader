@@ -82,7 +82,7 @@ RISK_REDUCING = frozenset({"pa", "ki", "so"})
 # BF-D64 / BF-D65: low-risk server jobs: a confirm screen, no code (they change nothing the
 # trader trades with); still signed for the worker, still only for allowed log-ins
 NO_CODE_SERVER = frozenset(
-    {"backup_now", "restore_test", "fetch", "hc_ping"}
+    {"backup_now", "restore_test", "fetch", "hc_ping", "info_archive", "prev_twin"}
 )  # allowed even when the app's address changed
 ONE_TAP = frozenset({"pa", "st"})
 CONFIRM_TITLE = {
@@ -124,6 +124,8 @@ SRV_TITLE = {
     "backup_now": ("Back up now", "Back up now"), "restore_test": ("Restore test", "Run the test"),
     "backup_key": ("Recovery key", "Ask for the key"), "fetch": ("Check for updates", "Check now"),
     "hc_ping": ("Healthchecks ping", "Send the ping"),
+    "info_archive": ("Collect announcements", "Collect now"),
+    "prev_twin": ("Previous-version twin", "Run it now"),
 }  # fmt: skip
 _ACT: contextvars.ContextVar[str] = contextvars.ContextVar("bw_act", default="")
 MAX_FAILS = 3
@@ -331,6 +333,11 @@ class Control:
             add_inbox(self.journal, self.clock(), "action", "You (app): alert settings changed",
                       json.dumps(r.data), "/settings", src, "off")  # fmt: skip
             return "alert settings saved"
+        if r.kind == "costs":  # BF-D76: display only (the scoreboard and Costs screens)
+            set_state(self.journal, "running-costs", dict(r.data), r.at)
+            add_inbox(self.journal, self.clock(), "action", "You (app): running costs changed",
+                      json.dumps(r.data), "/costs", src, "off")  # fmt: skip
+            return "running costs saved"
         if r.kind == "server_nocode":
             act = str(r.data["action"])
             if act not in NO_CODE_SERVER:
@@ -486,6 +493,8 @@ class Control:
             return self._do(form, login, hdrs)
         if p == "/act/alerts":
             return self._alerts_post(form, login, hdrs)
+        if p == "/act/costs":
+            return self._costs_post(form, login, hdrs)
         if p == "/act/backup-key":  # BF-D64: one view of the sealed recovery key
             if self.demo:
                 return self._result(hdrs, "DEMO: there is no key to show.", True)
@@ -619,6 +628,8 @@ class Control:
             return self._html(200, hdrs, title, body, confirm=True)
         if p == "/act/alerts":
             return self._html(200, hdrs, "Alerts", self._alerts_page(token), "server")
+        if p == "/act/costs":  # BF-D76: the fixed running costs (no code: adds no risk)
+            return self._html(200, hdrs, "Running costs", self._costs_page(token), "server")
         if p == "/act/backup-key":
             return self._html(200, hdrs, "Recovery key", self._key_intro(token), "server")
         if p == "/act/backup-key/view":
@@ -1261,6 +1272,57 @@ class Control:
             + "</div>"
         )  # fmt: skip
         return self._html(200, hdrs, "Result", body)
+
+    def _costs_page(self, token: str) -> str:
+        """BF-D76: edit the fixed running costs a year (server, price data, other). They
+        only change what the Costs screen and the scoreboard show; nothing trades on them."""
+        from trader.ops_view import COST_KEYS
+
+        st = get_state(self.journal, "running-costs") if not self.demo else None
+        cur = st[0] if st and isinstance(st[0], dict) else {}
+        fields = "".join(
+            f'<label class="flabel" for="c-{k}">{e(lab)} ($ a year)</label>'
+            f'<input class="field" id="c-{k}" name="{k}" inputmode="decimal" '
+            f'pattern="[0-9]{{1,6}}([.][0-9]{{1,2}})?" value="{e(cur.get(k, ""))}" placeholder="0">'
+            for k, lab in COST_KEYS
+        )
+        return (
+            '<a class="back" href="/costs" data-nav>' + icon("chevron-left") + "Costs</a>"
+            "<h1>Running costs</h1>"
+            + section("Fixed costs a year", (
+                "<p class='small'>What you pay each year to run Big Wins, whatever it trades. "
+                "The scoreboard takes these off the account value. They change no trading "
+                "rule, so no code is needed.</p>"
+                f'<form method="post" action="/act/costs"><input type="hidden" name="csrf" '
+                f'value="{e(token)}">{fields}<button class="btn wide" style="margin-top:16px">'
+                "Save</button></form>"
+                "<p class='caption'>Leave all three empty or 0 to use the server's yearly total "
+                "(costs.fixed_aud_per_year).</p>"))
+        )  # fmt: skip
+
+    def _costs_post(
+        self, form: Mapping[str, str], login: str, hdrs: dict[str, str]
+    ) -> tuple[int, dict[str, str], bytes]:
+        from decimal import InvalidOperation
+
+        from trader.ops_view import COST_KEYS
+
+        vals: dict[str, str] = {}
+        for k, lab in COST_KEYS:
+            raw = (form.get(k) or "0").strip().replace(",", "").replace("$", "") or "0"
+            try:
+                d = Decimal(raw)
+            except InvalidOperation:
+                return self._result(hdrs, f"Not saved: {lab} is not a number.", False)
+            if not d.is_finite() or d < 0 or d > 100000:
+                return self._result(hdrs, f"Not saved: {lab} must be between 0 and 100,000.", False)
+            vals[k] = str(d.quantize(Decimal("0.01")))
+        if self.demo:
+            return self._result(hdrs, "DEMO: running costs not saved.", True)
+        if all(Decimal(v) == 0 for v in vals.values()):
+            vals = {}
+        r = self._submit(_Req("costs", login, self.clock(), vals))
+        return self._result(hdrs, r or "queued", True)
 
     def _alerts_post(
         self, form: Mapping[str, str], login: str, hdrs: dict[str, str]

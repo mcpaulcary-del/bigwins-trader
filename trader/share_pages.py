@@ -49,6 +49,7 @@ class ShareCtx:
     # neutral); None = the closes (then dividends are missing from the actual line)
     tr: Callable[[str], Series] | None = None
     names: dict[str, str] = field(default_factory=dict)  # code -> company name
+    info_dir: Path | None = None  # BF-D78: the private info archive (read-only)
 
     @property
     def today(self) -> date:
@@ -810,7 +811,18 @@ def detail_sections(ctx: ShareCtx, code: str, info: Info | None = None) -> str:
         + expected_section(ctx, info, f, px, idx)
         + price_section(info, f, px)
         + next_section(ctx, info, f, lists, px, idx)
+        + _announcements(ctx, code)
     )
+
+
+def _announcements(ctx: ShareCtx, code: str) -> str:
+    """BF-D78: headlines, director trades and the short position (information only)."""
+    from trader.app_ops import announcements
+
+    try:
+        return announcements(ctx.info_dir, code, ctx.today)
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------- screens
