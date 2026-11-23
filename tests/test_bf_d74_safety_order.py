@@ -4,15 +4,15 @@ Only /resume with a valid one-time code lowers the level (owner-approved fix, 23
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from tests.test_bf_buttons import _setup
 from tests.test_bf_execution import CHAT, SEED, T_APPROVE
-from trader.approval import Incoming, totp
+from trader.approval import ApprovalBot, Incoming, totp
 from trader.risk import SafetyLevel
 
 
-def _cmd(bot, text, at=T_APPROVE):  # type: ignore[no-untyped-def]
+def _cmd(bot: ApprovalBot, text: str, at: datetime = T_APPROVE) -> str:
     return bot.handle(Incoming(CHAT, text, at))
 
 
