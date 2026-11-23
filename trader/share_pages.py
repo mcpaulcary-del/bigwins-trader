@@ -48,6 +48,7 @@ class ShareCtx:
     # BF-D72 (strategy review L2): a share's total-return level (dividends in, splits
     # neutral); None = the closes (then dividends are missing from the actual line)
     tr: Callable[[str], Series] | None = None
+    names: dict[str, str] = field(default_factory=dict)  # code -> company name
 
     @property
     def today(self) -> date:
@@ -858,6 +859,7 @@ def share_detail(ctx: ShareCtx, code: str) -> str | None:
     return (
         f'<p><a href="/shares" data-nav>‹ Shares</a></p><h1>{e(code)} '
         f'<span class="pill st-{info.status}">{STATUS_LABEL[info.status]}</span></h1>'
+        + (f'<p class="coname">{e(ctx.names[code])}</p>' if code in ctx.names else "")
         + detail_sections(ctx, code, info)
     )
 

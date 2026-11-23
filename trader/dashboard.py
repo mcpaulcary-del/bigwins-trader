@@ -768,7 +768,16 @@ class Dashboard:
             src.prices, src.index, src.index_label,  # type: ignore[arg-type]
             {k: forecast.load_bands(src.forecast_dir, k) for k in forecast.BENCH}, src.demo,
             src.tr_prices,  # type: ignore[arg-type]
+            self.names(v),
         )  # fmt: skip
+
+    def names(self, v: View) -> dict[str, str]:
+        """Company names: the price store's symbols.csv; in the demo, labelled made-up names."""
+        src = self.sources
+        if src.demo:
+            codes = [h.code for h in v.holdings] + [f"S{i:03d}" for i in range(1000)]
+            return app_pages.demo_names(codes)
+        return app_pages.safe(lambda: app_pages.company_names(src.store_root), {})
 
     HEAVY = ("/search.json", "/compare", "/shares")  # security review L6: cached 60 s
     CACHE_S = 60.0
@@ -804,7 +813,7 @@ class Dashboard:
         ) if _has_journal(j) else Extras(viewer=viewer, action_logins=self.action_logins,
                                          channel=self.channel)  # fmt: skip
         x.update_mode = self.update_mode
-        x.names = app_pages.safe(lambda: app_pages.company_names(src.store_root), {})
+        x.names = self.names(v)
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
         sess: Sequence[date] = src.sessions() if src.sessions else []

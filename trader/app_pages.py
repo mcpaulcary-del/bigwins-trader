@@ -207,6 +207,13 @@ def company_names(store_root: Path | None) -> dict[str, str]:
     return out
 
 
+def demo_names(codes: Sequence[str]) -> dict[str, str]:
+    """Made-up company names for the demo's synthetic codes (S001 ... ), clearly labelled."""
+    return {
+        c: f"Demo Company {c[1:]} Ltd (made up)" for c in codes if c[:1] == "S" and c[1:].isdigit()
+    }
+
+
 def collect_extras(
     j: Journal,
     book: str,
@@ -830,7 +837,10 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
               "buyd" if f.side is Side.BUY else "selld") for f in fills]  # fmt: skip
     if px:
         marks = [m for m in marks if m[0] >= px[0][0]]
-    parts = [f'<p><a href="/holdings" data-nav>‹ Holdings</a></p><h1>{e(code)}</h1>']
+    parts = [
+        f'<p><a href="/holdings" data-nav>‹ Holdings</a></p><h1>{e(code)}</h1>'
+        + (f'<p class="coname">{e(x.names[code])}</p>' if code in x.names else "")
+    ]
     if h is not None:
         tiles = (
             tile("Value", aud(h.value), f"{h.qty} @ {h.mark}")
