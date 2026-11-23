@@ -296,25 +296,44 @@ def _epoch(d: date) -> int:
     return (d - EPOCH).days
 
 
+def _ticks_pct(lo: float, hi: float) -> list[float]:
+    """Three round gridline values between ``lo`` and ``hi`` (percent)."""
+    span = max(hi - lo, 0.5)
+    step = next(st for st in (0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200) if span / st <= 3.5)
+    first = math.ceil(lo / step) * step
+    out = []
+    v = first
+    while v <= hi + 1e-9:
+        out.append(round(v, 6))
+        v += step
+    return out[:4]
+
+
+def _sp(v: float, dp: int = 0) -> str:
+    return ("+" if v > 0 else MINUS if v < 0 else "") + f"{abs(v):.{dp}f}%"
+
+
 def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[date, float]],
                label: str, note: str, trades: Sequence[tuple[date, str]] = ()) -> str:  # fmt: skip
-    """The interactive performance chart: a static SVG (all history) that the script
-    redraws for 1M / 3M / 6M / All with a tap-and-drag read-out."""
+    """The performance chart (BF-D73 chart dialect): % change from the start of the range
+    for the book and the index, labels inside the right edge, 3-4 date ticks, a read-out
+    row above and the range control below. The static SVG is the whole history (works
+    without JavaScript); the script redraws for 1M / 3M / 6M / 1Y / All with a crosshair."""
     if len(series) < 2:
         return '<p class="muted">The chart starts after the second trading day.</p>'
     data = {
         "book": [[_epoch(d), float(v)] for d, v in series],
         "index": [[_epoch(d), float(v)] for d, v in index],
         "label": label,
-        "trades": [[_epoch(d), k] for d, k in trades],  # buy / sell days (dots)
+        "trades": [[_epoch(d), k] for d, k in trades],  # buy / sell days (markers)
     }
-    w, h, pl, pr, pt, pb = 340, 190, 34, 8, 10, 22
+    w, h, pl, pr, pt, pb = 340, 190, 4, 4, 12, 22
     base = float(series[0][1])
-    book = [(d, float(v) / base * 100) for d, v in series]
-    idx = [(d, v / index[0][1] * 100) for d, v in index] if index else []
-    allv = [y for _, y in book + idx]
+    book = [(d, (float(v) / base - 1) * 100) for d, v in series]
+    idx = [(d, (v / index[0][1] - 1) * 100) for d, v in index] if index else []
+    allv = [y for _, y in book + idx] + [0.0]
     lo, hi = min(allv), max(allv)
-    pad = max((hi - lo) * 0.1, 0.5)
+    pad = max((hi - lo) * 0.12, 0.4)
     lo, hi = lo - pad, hi + pad
     d0, d1 = book[0][0], book[-1][0]
     span = max((d1 - d0).days, 1)
@@ -329,39 +348,71 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         return " ".join(f"{'M' if i == 0 else 'L'}{xx(d):.1f},{yy(v):.1f}"
                         for i, (d, v) in enumerate(pts))  # fmt: skip
 
+    ticks = _ticks_pct(lo, hi)
+    dp = 1 if max(abs(t - round(t)) for t in ticks) > 0 else 0
     grid = "".join(
         f'<line x1="{pl}" x2="{w - pr}" y1="{yy(v):.1f}" y2="{yy(v):.1f}" class="grid"/>'
-        f'<text x="{pl - 4}" y="{yy(v) + 3:.1f}" class="ax" text-anchor="end">{v:.0f}</text>'
-        for v in (lo + (hi - lo) * (k + 0.5) / 4 for k in range(4))
+        f'<text x="{w - pr}" y="{yy(v) - 4:.1f}" class="ax" text-anchor="end">{_sp(v, dp)}</text>'
+        for v in ticks
+        if abs(v) > 1e-9
+    )
+    xt = "".join(
+        f'<text x="{xx(d):.1f}" y="{h - 6}" class="ax" text-anchor="{anc}">{d:%-d %b}</text>'
+        for d, anc in (
+            (d0, "start"),
+            (d0 + timedelta(days=span // 3), "middle"),
+            (d0 + timedelta(days=2 * span // 3), "middle"),
+            (d1, "end"),
+        )
+    )
+    marks = ""
+    for td, k in trades:
+        near = min(book, key=lambda p: abs((p[0] - td).days))
+        if d0 <= td <= d1:
+            marks += (f'<circle cx="{xx(near[0]):.1f}" cy="{yy(near[1]):.1f}" r="3.5" '
+                      f'class="{"buyd" if k == "b" else "selld"}"/>')  # fmt: skip
+    b_end = book[-1][1]
+    i_end = idx[-1][1] if idx else None
+    tone_ = "tdown" if b_end < 0 else "tup"
+    take = f"Book {_sp(b_end, 1)} since {d0:%-d %b %Y}" + (
+        f"; {label} {_sp(i_end, 1)}" if i_end is not None else ""
     )
     svg = (
-        f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" '
-        f'aria-label="Paper book vs {e(label)}, both 100 at the start">{grid}'
-        f'<line x1="{pl}" x2="{w - pr}" y1="{yy(100):.1f}" y2="{yy(100):.1f}" class="base"/>'
+        f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" aria-label="{e(take)}">{grid}'
+        f'<line x1="{pl}" x2="{w - pr}" y1="{yy(0):.1f}" y2="{yy(0):.1f}" class="base"/>'
         + '<defs><linearGradient id="gA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" '
         'class="gA0"/><stop offset="1" class="gA1"/></linearGradient></defs>'
         + f'<path d="{path(book)} L{xx(book[-1][0]):.1f},{h - pb} L{xx(d0):.1f},{h - pb} Z" '
         'class="area"/>'
         + (f'<path d="{path(idx)}" class="s2"/>' if idx else "")
-        + f'<path d="{path(book)}" class="s1"/>'
-        f'<circle cx="{xx(book[-1][0]):.1f}" cy="{yy(book[-1][1]):.1f}" r="4" class="d1"/>'
-        f'<text x="{pl}" y="{h - 6}" class="ax">{d0:%d %b %y}</text>'
-        f'<text x="{w - pr}" y="{h - 6}" class="ax" text-anchor="end">{d1:%d %b %y}</text></svg>'
+        + f'<path d="{path(book)}" class="s1"/>{marks}'
+        f'<circle cx="{xx(book[-1][0]):.1f}" cy="{yy(b_end):.1f}" r="3.5" class="d1"/>{xt}</svg>'
     )
     ranges = "".join(
         f'<button type="button" data-range="{n}"{" class=on" if n == 0 else ""} '
         f'aria-pressed="{"true" if n == 0 else "false"}">{lab}</button>'
-        for lab, n in (("1M", 31), ("3M", 92), ("6M", 183), ("All", 0))
+        for lab, n in (("1M", 31), ("3M", 92), ("6M", 183), ("1Y", 365), ("All", 0))
     )
-    legend = '<span class="key k1"></span>Paper book'
-    if idx:
-        legend += f' <span class="key k2"></span>{e(label)} ({e(note)})'
+    legend = f'<span><span class="key k1"></span>Book <b>{_sp(b_end, 1)}</b></span>'
+    if i_end is not None:
+        gap = b_end - i_end
+        legend += (f'<span><span class="key k2"></span>{e(label)} <b>{_sp(i_end, 1)}</b></span>'
+                   f"<span>{'Ahead' if gap >= 0 else 'Behind'} by {abs(gap):.1f} pts</span>")  # fmt: skip
     blob = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
+    rows = "".join(
+        f"<tr><td>{d:%d %b %Y}</td><td class='r'>{aud(v)}</td><td class='r'>{_sp(b, 1)}</td></tr>"
+        for (d, v), (_, b) in list(zip(series, book, strict=True))[-12:]
+    )
     return (
-        f'<div data-chart="perf-data" class="chartbox"><div class="seg" role="group" '
-        f'aria-label="Range">{ranges}</div>{svg}<div class="ctip" aria-hidden="true"></div></div>'
+        f'<div data-chart="perf-data" class="chartbox {tone_}">'
+        f'<div class="readout" aria-live="polite"><span>{d0:%-d %b} to {d1:%-d %b %Y}</span>'
+        f"<span>Book <b>{_sp(b_end, 1)}</b></span></div>{svg}"
+        f'<div class="seg sm" role="group" aria-label="Range">{ranges}</div></div>'
         f'<script type="application/json" id="perf-data">{blob}</script>'
-        f'<p class="legend">{legend} · tap or drag the chart to read a day</p>'
+        f'<p class="legend">{legend}</p>'
+        f'<details class="about"><summary>Data table</summary><table><thead><tr><th>Day</th>'
+        f'<th class="r">Value</th><th class="r">Since start</th></tr></thead><tbody>{rows}'
+        f"</tbody></table><p class='caption'>{e(label)}: {e(note)}. Last 12 days.</p></details>"
     )
 
 
@@ -404,7 +455,7 @@ def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | N
                ) -> str:  # fmt: skip
     if len(pts) < 2:
         return '<p class="muted small">Not enough days for a line yet.</p>'
-    w, h, pl, pr, pt, pb = 340, 150, 40, 8, 10, 20
+    w, h, pl, pr, pt, pb = 340, 150, 4, 4, 16, 20
     vals = [v for _, v in pts] + [v for _, v, _ in marks]
     lo = min(vals) if lo is None else lo
     hi = max(vals) if hi is None else hi
@@ -421,8 +472,9 @@ def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | N
 
     path = " ".join(f"{'M' if i == 0 else 'L'}{xx(d):.1f},{yy(v):.1f}"
                     for i, (d, v) in enumerate(pts))  # fmt: skip
+    tdn = " down" if cls == "s1" and pts[-1][1] < pts[0][1] else ""
     dots = "".join(
-        f'<circle cx="{xx(d):.1f}" cy="{yy(v):.1f}" r="5" class="{c}"/>' for d, v, c in marks
+        f'<circle cx="{xx(d):.1f}" cy="{yy(v):.1f}" r="4" class="{c}"/>' for d, v, c in marks
     )
     refl = (
         f'<line x1="{pl}" x2="{w - pr}" y1="{yy(ref):.1f}" y2="{yy(ref):.1f}" class="base"/>'
@@ -430,9 +482,11 @@ def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | N
     )  # fmt: skip
     return (
         f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" aria-label="{e(label)}">'
-        f'<text x="{pl - 4}" y="{yy(hi) + 8:.1f}" class="ax" text-anchor="end">{fmt.format(hi)}</text>'
-        f'<text x="{pl - 4}" y="{yy(lo):.1f}" class="ax" text-anchor="end">{fmt.format(lo)}</text>'
-        f'{refl}<path d="{path}" class="{cls}"/>{dots}'
+        f'<line x1="{pl}" x2="{w - pr}" y1="{yy(hi):.1f}" y2="{yy(hi):.1f}" class="grid"/>'
+        f'<line x1="{pl}" x2="{w - pr}" y1="{yy(lo):.1f}" y2="{yy(lo):.1f}" class="grid"/>'
+        f'<text x="{w - pr}" y="{yy(hi) - 4:.1f}" class="ax" text-anchor="end">{fmt.format(hi)}</text>'
+        f'<text x="{w - pr}" y="{yy(lo) - 4:.1f}" class="ax" text-anchor="end">{fmt.format(lo)}</text>'
+        f'{refl}<path d="{path}" class="{cls}{tdn}"/>{dots}'
         f'<text x="{pl}" y="{h - 4}" class="ax">{d0:%d %b}</text>'
         f'<text x="{w - pr}" y="{h - 4}" class="ax" text-anchor="end">{d1:%d %b}</text></svg>'
     )
@@ -903,11 +957,12 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         parts.append(f'<div class="tiles">{tiles}</div>')
     buy_px = float(buys[0].price) if buys else None
     parts.append(section("Price since bought",
-                         line_chart(px, "s1", marks=marks, ref=buy_px, fmt="{:.3f}",
+                         line_chart(px, "s1", marks=marks, ref=buy_px,
+                                    fmt="${:.2f}" if px and px[-1][1] >= 2 else "${:.3f}",
                                     label=f"{code} price since bought, buys and sells marked")
-                         + '<p class="legend"><span class="key" style="background:var(--up)">'
-                         "</span>buy <span class=\"key\" style=\"background:var(--down)\"></span>"
-                         "sell · dashed line: first buy price</p>"))  # fmt: skip
+                         + '<p class="legend"><span><span class="key kb"></span>'
+                         "Buy</span> <span><span class=\"key ks\"></span>"
+                         "Sell</span><span>Dashed line: first buy price</span></p>"))  # fmt: skip
     # why it was chosen: the day's EMG2 list (rule 3 inputs) at its buy decision
     lists = jobs(j, "emg2list:")
     dec_day: date | None = None

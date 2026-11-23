@@ -39,7 +39,12 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const bb = await svg.boundingBox();
   await page.mouse.move(bb.x + bb.width * 0.6, bb.y + bb.height / 2);
   await page.waitForTimeout(200);
-  out.tooltip = await page.evaluate(() => { const t = document.querySelector('.ctip.on'); return t ? t.innerText : null; });
+  // BF-D73: the read-out row above the chart, and the hero number follows the crosshair
+  out.tooltip = await page.evaluate(() => { const t = document.querySelector('[data-chart] .readout'); return t ? t.innerText : null; });
+  out.heroFollows = await page.evaluate(() => document.querySelector('.hero .hv').textContent);
+  await page.mouse.move(bb.x + bb.width * 0.6, bb.y - 200);
+  await page.waitForTimeout(100);
+  out.heroBack = await page.evaluate(() => document.querySelector('.hero .hv').textContent);
   await page.click('[data-range="31"]');
   await page.waitForTimeout(500);
   out.range = await page.getAttribute('[data-range="31"]', 'aria-pressed');

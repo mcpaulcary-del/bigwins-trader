@@ -693,8 +693,7 @@ def price_section(info: Info, f: Facts, px: Series) -> str:
         return ""
     return section("Price history", chart + (
         '<p class="legend"><span class="key k1"></span>price <span class="key khi"></span>52-week '
-        'high <span class="key" style="background:var(--up)"></span>buy <span class="key" '
-        'style="background:var(--down)"></span>sell'
+        'high <span class="key kb"></span>buy <span class="key ks"></span>sell'
         + (' <span class="key" style="background:var(--s3)"></span>would-be entry'
            if f.hypothetical else "") + " · from 12 months before entry</p>"))  # fmt: skip
 

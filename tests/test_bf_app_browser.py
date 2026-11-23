@@ -80,6 +80,7 @@ def test_BF_D55_D62_real_browser_buttons_chart_tabs_a11y(tmp_path: Path) -> None
     # BF-D62: the chart read-out, range buttons, tab switching, holdings interactions
     assert out["tooltip"] and "$" in out["tooltip"] and "gap" in out["tooltip"]
     assert out["range"] == "true"
+    assert out["heroFollows"] != out["heroBack"] and out["heroBack"].startswith("$")
     assert out["tab"] == ["holdings", "/holdings", "holdings"]
     assert out["sorted"] is True and out["donut"] >= 1
     # BF-D68: swipe between tabs, treemap tap -> detail sheet, what-if slider, calendar day
