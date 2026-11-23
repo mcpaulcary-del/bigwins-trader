@@ -45,6 +45,8 @@ UI_ONLY = (
     "trader/dashboard.py", "trader/webui.py", "trader/app_pages.py", "trader/app_notify.py",
     "trader/tax_screen.py", "trader/server_status.py", "trader/dashboard_demo.py",
     "trader/app_ops.py",  # BF-D75..BF-D80: screens only
+    # BF-D81 (review M1): display and alert code; nothing here decides or trades
+    "trader/ops_view.py", "trader/info_view.py", "trader/ops_hooks.py",
 )  # fmt: skip
 APP_ONLY_DIRS = ("docs/", "tests/")
 # keys of config/bfast.yaml that are not trading settings (the fingerprint ignores them)

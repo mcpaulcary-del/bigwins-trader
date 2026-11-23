@@ -51,32 +51,35 @@ class Ops:
     prev_twin: dict[str, Any] | None = None
     tax_note: str = ""
     store_days: list[date] = field(default_factory=list)
+    shared: ov.Score | None = None  # the one scoreboard the digest uses too (BF-D81 M4)
 
 
-_TAX: dict[str, tuple[float, Decimal | None]] = {}
+_TAX: dict[str, tuple[float, tuple[Decimal | None, str]]] = {}
 
 
 def _tax_estimate(src: Any, v: Any) -> tuple[Decimal | None, str]:
-    """Tax already modelled (BF-D44): the estimated tax on the book's realised net
-    capital gains since the start, at ``tax.marginal_rate``; none without the rate."""
-    rate = getattr(src, "marginal_rate", None)
-    if rate is None:
-        return None, "Tax: not included (your tax rate is not set on the server)."
+    """``ov.tax_estimate``, cached 10 minutes (the tax report is not cheap)."""
+    if getattr(src, "marginal_rate", None) is None:
+        return ov.tax_estimate(src, v.now.astimezone(ASX_TZ).date())
     key = f"{v.book}:{len(v.series)}"
     hit = _TAX.get(key)
     if hit and _time.monotonic() - hit[0] < 600:
-        return hit[1], "Tax: estimated on gains already realised, at your tax rate."
-    from trader import tax_screen
-
-    total = Decimal(0)
-    today = v.now.astimezone(ASX_TZ).date()
-    for y in tax_screen.years(src, today):
-        r = tax_screen.report(src, y)
-        total += max(Decimal(0), r.summary.net_gain) * Decimal(str(rate))
-    est = total.quantize(Decimal("0.01"))
+        return hit[1]
+    res = ov.tax_estimate(src, v.now.astimezone(ASX_TZ).date())
     _TAX.clear()
-    _TAX[key] = (_time.monotonic(), est)
-    return est, "Tax: estimated on gains already realised, at your tax rate."
+    _TAX[key] = (_time.monotonic(), res)
+    return res
+
+
+def shared_score(src: Any, v: Any) -> ov.Score:
+    """The scoreboard of Home, Costs and the digest (``ov.build_score``)."""
+    j = src.journal
+    fc = ov.fixed_costs(j, getattr(src, "fixed_items", None),
+                        Decimal(str(getattr(src, "fixed_total", 600))))  # fmt: skip
+    no_tax: tuple[Decimal | None, str] = (None, "Tax: not available.")
+    tax = safe(lambda: _tax_estimate(src, v), no_tax)
+    return ov.build_score(j, src.book, v.series, v.index, fc, getattr(src, "commission", None),
+                          Decimal(str(getattr(src, "fund_half_spread", "0.0005"))), tax)  # fmt: skip
 
 
 def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
@@ -90,7 +93,7 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
     o.fixed = ov.fixed_costs(j if journal_ok else None, getattr(src, "fixed_items", None),
                              Decimal(str(getattr(src, "fixed_total", 600))))  # fmt: skip
     o.research = safe(lambda: ov.research_lines(getattr(src, "scorecard", None), today), None)
-    o.archive = safe(lambda: iv.status(o.info_dir, sess, today), iv.ArchiveStatus())
+    o.archive = safe(lambda: iv.status(o.info_dir, sess, today, v.now), iv.ArchiveStatus())
     if src.store_root is not None:
         files: list[Path] = safe(
             lambda: list((src.store_root / "raw" / "bulk_eod").glob("AU_*.json.gz")), []
@@ -99,24 +102,10 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
     if not journal_ok:
         return o
     o.fresh = safe(lambda: ov.freshness(j, src.book, sess, v.now, o.info_enabled), [])
-    no_tax: tuple[Decimal | None, str] = (None, "Tax: not available.")
-    tax, o.tax_note = safe(lambda: _tax_estimate(src, v), no_tax)
-    a200_cost = Decimal(0)
-    comm = getattr(src, "commission", None)
-    if v.capital_in and comm is not None:
-        a200_cost = safe(lambda: Decimal(str(comm(v.capital_in))), Decimal(0))
-    a200_cost += (v.capital_in * Decimal(str(getattr(src, "fund_half_spread", "0.0005")))
-                  ).quantize(Decimal("0.01"))  # fmt: skip
-    o.score = ov.scoreboard(v.series, v.index, v.capital_in, o.fixed.per_year, a200_cost, tax)
-    if o.score is not None and len(v.index) > 1:
-        d0 = v.series[0][0]
-        ix = dict(v.index)
-        base = v.index[0][1]
-        for d, val in v.series:
-            if d in ix:
-                fixed = float(o.fixed.per_year) * ((d - d0).days + 1) / 365
-                a = float(v.capital_in - a200_cost) * ix[d] / base
-                o.after_series.append((d, float(val) - fixed - a))
+    sc = safe(lambda: shared_score(src, v), None)
+    if sc is not None:
+        o.shared, o.score, o.after_series, o.fixed, o.tax_note = (
+            sc, sc.board, sc.gap_series, sc.fixed, sc.tax_note)  # fmt: skip
     o.costs = safe(lambda: ov.cost_report(j.fills(src.book), v.series, today, o.fixed,  # type: ignore[arg-type]
                                           Decimal(str(getattr(src, "half_spread", "0.005")))),
                    None)  # fmt: skip
@@ -143,7 +132,8 @@ def _bulk_day(name: str) -> date | None:
 
 
 def score_card(o: Ops, v: Any) -> str:
-    """The Home headline (BF-D75): the main line after every cost against A200."""
+    """The Home headline (BF-D75): the main line after costs against A200. Without a
+    tax rate it says "after running costs, before tax" (BF-D81, review M2)."""
     s = o.score
     if s is None:
         return ""
@@ -151,45 +141,59 @@ def score_card(o: Ops, v: Any) -> str:
     t = tone(g) if g is not None else ""
     head = (f'<p class="verdict {t}">{icon("arrow-up-right" if (g or 0) > 0 else "arrow-down-right")}'
             f"{e(s.sentence)}</p>") if g is not None else f'<p class="verdict">{e(s.sentence)}</p>'  # fmt: skip
+    mine = "Big Wins, " + s.basis
     stats = (
         '<dl class="stats two">'
-        + stat("Big Wins, after all costs", aud(s.after_costs, dp=0), pct(s.mine_pct) + " since start",
-               tone(s.mine_pct))
+        + stat(mine[:1].upper() + mine[1:], aud(s.after_costs, dp=0),
+               pct(s.mine_pct) + " on the money put in", tone(s.mine_pct))
         + stat("Same money in A200", aud(s.a200, dp=0) if s.a200 is not None else "–",
-               (pct(s.a200_pct) + " since start") if s.a200 is not None else "no fund prices yet",
-               tone(s.a200_pct))
+               (pct(s.a200_pct) + " on the money put in") if s.a200 is not None
+               else "no fund prices yet", tone(s.a200_pct))
         + "</dl>"
     )  # fmt: skip
     gap = ""
     if len(o.after_series) > 1:
         gap = ('<div class="gaprow"><span class="caption">Gap over time</span>'
                + spark([x for _, x in o.after_series], 160, 28, "spk",
-                       "Big Wins after costs minus A200, over time", stretch=True)
+                       "Big Wins after running costs minus A200, over time", stretch=True)
                + "</div>")  # fmt: skip
+    fc = o.fixed
     fixed_lab = {"app": "set in the app", "config": "from the server settings",
-                 "total": "one yearly total"}.get(o.fixed.source if o.fixed else "", "")  # fmt: skip
+                 "total": "one yearly total"}.get(fc.source if fc else "", "")  # fmt: skip
+    if fc is not None and fc.since is not None and fc.source == "app":
+        fixed_lab += f" from {fc.since:%d %b %Y}"
+    flows = [f for f in s.flows if f[0] > s.start or f[1] < 0]
+    flow_row = (f"<tr><td>Later deposits and withdrawals <span class='sub'>each one goes "
+                f"into or out of A200 on its own day</span></td><td class='r'>"
+                f"{plural(len(flows), 'move')}</td></tr>" if flows else "")  # fmt: skip
     rows = (
         f"<tr><td>Account value <span class='sub'>brokerage and the spread are already in it"
         f"</span></td><td class='r'>{aud(s.value)}</td></tr>"
         f"<tr><td>Fixed running costs since {s.start:%d %b} <span class='sub'>"
-        f"{aud(o.fixed.per_year if o.fixed else 0, dp=0)} a year, {e(fixed_lab)}</span></td>"
+        f"{aud(fc.per_year if fc else 0, dp=0)} a year, {e(fixed_lab)}</span></td>"
         f"<td class='r'>{aud(-s.fixed)}</td></tr>"
         + (f"<tr><td>Estimated tax on realised gains</td><td class='r'>{aud(-s.tax)}</td></tr>"
-           if s.tax is not None else "")
-        + f"<tr><td><b>After all costs</b></td><td class='r'><b>{aud(s.after_costs)}</b></td></tr>"
-        + (f"<tr><td>A200: {aud(s.capital, dp=0)} on {s.start:%d %b}, less its one buy "
+           if s.tax is not None else
+           "<tr><td>Tax <span class='sub'>not included: your tax rate is not set</span></td>"
+           "<td class='r'>–</td></tr>")
+        + f"<tr><td><b>{e(s.basis[:1].upper() + s.basis[1:])}</b></td><td class='r'><b>"
+        f"{aud(s.after_costs)}</b></td></tr>"
+        + (f"<tr><td>A200: {aud(s.capital, dp=0)} put in, less its buys "
            f"({aud(s.a200_cost)}), held with dividends</td><td class='r'>{aud(s.a200)}</td></tr>"
            if s.a200 is not None else "")
+        + flow_row
     )  # fmt: skip
     detail = (
         '<details class="about"><summary>What is counted</summary>'
         f"<table><tbody>{rows}</tbody></table>"
         f"<p class='caption'>{e(o.tax_note)} The fund also pays tax on its distributions; "
         "both sides are before your personal tax on dividends.</p>"
+        f"<p class='caption'>{e(ov.EXIT_NOTE)}</p>"
         f"<p class='caption'>{e(ov.BACKTEST_NOTE)}</p>"
-        '<p class="caption"><a href="/costs" data-nav aria-label="Running costs in detail">Running costs in detail</a></p></details>'
+        '<p class="caption"><a href="/costs" data-nav aria-label="Running costs in detail">'
+        "Running costs in detail</a></p></details>"
     )  # fmt: skip
-    return section("Scoreboard · after all costs", head + stats + gap + detail, "scorecard")
+    return section("Scoreboard · " + s.basis, head + stats + gap + detail, "scorecard")
 
 
 def fresh_note(o: Ops) -> str:
@@ -226,9 +230,12 @@ def research_section(o: Ops, today: date, compact: bool = False) -> str:
             else:
                 right = (f'<span class="rv">{pct(ln.ret)}</span><span class="sub">'
                          f"{pct(ln.vs_a200)} v A200</span>")  # fmt: skip
+            cap = f"{aud(ln.capital, dp=0)} book" if ln.capital else ""
+            st = f"from {day(ln.start)}" if ln.start else ""
+            meta = " · ".join(x for x in (ln.id, cap, st) if x)
             items.append(
                 f'<li class="rline"><span class="grow"><b>{e(ln.name)}</b>'
-                f'<span class="sub">{e(ln.id)} · {e(ov.LUCK)}</span></span>'
+                f'<span class="sub">{e(meta)}</span><span class="sub">{e(ov.LUCK)}</span></span>'
                 f'<span class="rr">{right}</span></li>'
             )
         body = f'<ul class="list">{"".join(items)}</ul>'
@@ -247,7 +254,9 @@ def research_section(o: Ops, today: date, compact: bool = False) -> str:
 # ---------------------------------------------------------------- Health (BF-D77)
 
 STATUS_PILL = {"ok": ("ok", "on time"), "late": ("bad", "late"), "failed": ("bad", "failed"),
-               "off": ("", "off")}  # fmt: skip
+               "off": ("", "off"), "new": ("", "not yet")}  # fmt: skip
+TIMER_WORDS = {"worker": "server worker", "backup": "nightly backup", "weekly": "weekly checks",
+               "info": "announcements archive", "twin": "previous-version twin"}  # fmt: skip
 
 
 def health(v: Any, x: Extras, o: Ops, version: str) -> str:
@@ -318,7 +327,9 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
         arch = "<p class='muted'>Not collected yet: the first day arrives the morning after a trading day.</p>"
     else:
         missed = (f"<li class='warn'>Missed trading days: {e(', '.join(f'{d:%d %b}' for d in a.missed[-8:]))}"
-                  + (f" and {len(a.missed) - 8} more" if len(a.missed) > 8 else "") + "</li>"
+                  + (f" and {len(a.missed) - 8} more" if len(a.missed) > 8 else "")
+                  + "<div class='sub'>These cannot be collected later: the ASX page shows only "
+                  "the previous trading day.</div></li>"
                   if a.missed else "<li>No trading day missed</li>")  # fmt: skip
         arch = (f"<ul class='list'><li>Last day stored: <b>{a.last:%a %d %b %Y}</b> "
                 f"<span class='sub'>{plural(len(a.days), 'day')} in the archive</span></li>{missed}"
@@ -328,9 +339,15 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
         arch += "</li></ul>"
     parts.append(section("Info archive", arch + "<p class='caption'>Private, for your own use only: "
                          "never shared. Information only: it feeds no strategy.</p>"))  # fmt: skip
+    host = x.host[0] if x.host else {}
+    tm = host.get("timers")
+    if isinstance(tm, dict) and not all(tm.values()):
+        gone = ", ".join(TIMER_WORDS.get(str(k), str(k)) for k, ok in tm.items() if not ok)
+        parts.insert(2, f"<p class='note bad'>Timer not installed: {e(gone)}. The server worker "
+                     "installs it within a minute; if this stays, run on the server: "
+                     "<code>sudo bigwins install-worker</code>.</p>")  # fmt: skip
     # dead-man switch
     hb = x.heartbeat
-    host = x.host[0] if x.host else {}
     dm = host.get("daily_ping")
     parts.append(section("Outside alarm (healthchecks.io)", (
         "<ul class='list'>"
@@ -417,24 +434,14 @@ def costs(v: Any, x: Extras, o: Ops) -> str:
 
 
 def digest_for(src: Any, v: Any, o: Ops, friday: date, x: Extras) -> ov.Digest:
-    j = src.journal
-    mon, fri = ov.week_of(friday)
-    week = [(d, val) for d, val in v.series if mon - timedelta(days=3) <= d <= fri]
-    before = [(d, val) for d, val in v.series if d < mon]
-    if before:
-        week = [before[-1], *[w for w in week if w[0] >= mon]]
-    else:
-        week = [w for w in week if w[0] >= mon]
-    week_sb = ov.scoreboard(week, v.index, week[0][1], Decimal(0)) if len(week) > 1 else None
-    needs = []
-    if x.waiting:
-        needs.append(f"{plural(sum(w.n for w in x.waiting), 'order')} waiting for your approval")
-    if v.safety != "NORMAL":
-        needs.append(f"Safety is {v.safety}: see Controls")
-    if int(x.update.get("ahead") or 0) > 0:
-        needs.append("An update is waiting for your approval (Server > Strategy)")
-    return ov.digest(j, src.book, friday, o.score, week_sb, o.research, o.fresh,
-                     o.archive.days, o.store_days, needs)  # fmt: skip
+    """The same digest as the Friday inbox message (``ops_hooks.build_digest``)."""
+    from trader.ops_hooks import build_digest
+
+    sc = o.shared or shared_score(src, v)
+    sess = list(src.sessions()) if src.sessions else []
+    return build_digest(src.journal, src.book, friday, v.now, sc, v.series, v.index, sess,
+                        o.info_enabled, getattr(src, "scorecard", None), o.info_dir,
+                        o.store_days, getattr(src, "approval_deadline", "15:20"))  # fmt: skip
 
 
 def last_friday(today: date) -> date:
@@ -570,13 +577,16 @@ def prev_twin_section(pt: dict[str, Any] | None) -> str:
     cap = float(pt.get("capital") or new[0][1])
     nv, ov_ = new[-1][1], old[-1][1]
     diff = nv - ov_
-    word = "helped" if diff > 1 else ("cost" if diff < -1 else "made no difference")
-    sentence = (f"So far the update {word}"
-                + (f" {aud(abs(diff), dp=0)}" if abs(diff) > 1 else "") + ".")  # fmt: skip
+    if abs(diff) <= 1:
+        sentence = "So far the two versions are level."
+    else:
+        who = "this version" if diff > 0 else "the previous version"
+        sentence = (f"So far {who} is ahead by {aud(abs(diff), dp=0)}; over a few weeks that "
+                    f"is {ov.LUCK}.")  # fmt: skip
     d = dict(old)
     gaps = [v - d[k] for k, v in new if k in d]
     return section("Did the last update help?", (
-        f'<p class="verdict {tone(diff)}">{e(sentence)}</p>'
+        f'<p class="verdict2">{e(sentence)}</p>'
         '<dl class="stats two">'
         + stat(f"This version ({pt.get('new_label', 'new')})", aud(nv, dp=0), pct(nv / cap - 1))
         + stat(f"Previous ({pt.get('prev_label', 'old')})", aud(ov_, dp=0), pct(ov_ / cap - 1))
@@ -585,7 +595,7 @@ def prev_twin_section(pt: dict[str, Any] | None) -> str:
            if len(gaps) > 1 else "")
         + f"<p class='caption'>Both simulated (paper twins) with {aud(cap, dp=0)} from "
           f"{e(day(pt['since']))}, the same prices and costs; only the strategy version differs. "
-          f"Updated {e(day(pt.get('to', '')))}. A few weeks is {e(ov.LUCK)}.</p>"))  # fmt: skip
+          f"Updated {e(day(pt.get('to', '')))}.</p>"))  # fmt: skip
 
 
 def server_rows(o: Ops) -> str:

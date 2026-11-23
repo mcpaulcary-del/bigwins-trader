@@ -28,9 +28,11 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from trader.constants import ASX_TZ
 
 CAP_RAISE = re.compile(
     r"proposed issue|application for quotation|placement|entitlement|capital rais|"
@@ -274,16 +276,24 @@ def short_position(root: Path | None, code: str) -> ShortPos | None:
     return ShortPos(d, v, bd, bp)
 
 
-def status(root: Path | None, sessions: Sequence[date], today: date) -> ArchiveStatus:
+def status(root: Path | None, sessions: Sequence[date], today: date,
+           now: datetime | None = None) -> ArchiveStatus:  # fmt: skip
     """What the archive holds: complete days, ASX sessions missed since its first day
-    (up to yesterday), and the newest ASIC short-position file."""
+    (only sessions already due: the next morning at 09:30, BF-D81 N4; without ``now``,
+    up to yesterday), and the newest ASIC short-position file."""
     st = ArchiveStatus()
     if root is None:
         return st
     st.days = [d for d, p in _day_dirs(root) if (p / "DONE").is_file()]
     if st.days:
         have = set(st.days)
-        st.missed = [s for s in sessions if st.days[0] <= s < today and s not in have][-30:]
+
+        def due(s: date) -> bool:
+            if now is None:
+                return s < today
+            return datetime.combine(s + timedelta(days=1), time(9, 30), ASX_TZ) <= now
+
+        st.missed = [s for s in sessions if st.days[0] <= s and due(s) and s not in have][-30:]
     files = _short_files(root)
     st.short_files = len(files)
     st.short_day = files[-1][0] if files else None

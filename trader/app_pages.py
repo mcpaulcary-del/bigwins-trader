@@ -647,9 +647,16 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
     trades = _trade_days(v)
     chg = (f"{arrow(ct)}{aud(ct, True)} ({pct(ct_pct)}) today" if ct is not None
            else "no change yet")  # fmt: skip
-    lab = "Account value · AUD" + (f" · {v.series[-1][0]:%d %b}" if v.series else "")
-    hero_html = hero(val, lab, chg, tone(ct), app_more.month_milestone(v))
+    scored = x.ops is not None and getattr(x.ops, "score", None) is not None
+    # BF-D81 (review S6): one comparison with the index on Home, the scoreboard; the value,
+    # the chart and "since start" below are before running costs and say so
+    lab = ("Account value · before running costs" if scored else "Account value · AUD") + (
+        f" · {v.series[-1][0]:%d %b}" if v.series else "")  # fmt: skip
+    hero_html = hero(val, lab, chg, tone(ct), "" if scored else app_more.month_milestone(v))
     chart = perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
+    if scored:
+        chart += ('<p class="caption">The chart is before running costs; the scoreboard above '
+                  "is the comparison after costs.</p>")  # fmt: skip
     stats = (
         '<dl class="stats">'
         + stat("Since start", aud(since, True), pct(v.since_start), tone(since))

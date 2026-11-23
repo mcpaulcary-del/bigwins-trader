@@ -334,7 +334,17 @@ class Control:
                       json.dumps(r.data), "/settings", src, "off")  # fmt: skip
             return "alert settings saved"
         if r.kind == "costs":  # BF-D76: display only (the scoreboard and Costs screens)
-            set_state(self.journal, "running-costs", dict(r.data), r.at)
+            # BF-D81 (N1): each change applies from the day it was made; history is kept
+            st = get_state(self.journal, "running-costs")
+            old = st[0] if st and isinstance(st[0], dict) else {}
+            hist = list(old.get("history") or []) if isinstance(old.get("history"), list) else []
+            if not hist and any(k in old for k in ("server", "data", "other")):
+                hist = [{**{k: old.get(k, "0") for k in ("server", "data", "other")},
+                         "from": "1970-01-01"}]  # fmt: skip
+            frm = r.at.astimezone(ASX_TZ).date().isoformat()
+            hist = [h for h in hist if isinstance(h, dict) and h.get("from") != frm]
+            hist.append({**r.data, "from": frm} if r.data else {"cleared": True, "from": frm})
+            set_state(self.journal, "running-costs", {"history": hist[-24:]}, r.at)
             add_inbox(self.journal, self.clock(), "action", "You (app): running costs changed",
                       json.dumps(r.data), "/costs", src, "off")  # fmt: skip
             return "running costs saved"
@@ -1280,6 +1290,8 @@ class Control:
 
         st = get_state(self.journal, "running-costs") if not self.demo else None
         cur = st[0] if st and isinstance(st[0], dict) else {}
+        if isinstance(cur.get("history"), list) and cur["history"]:
+            cur = cur["history"][-1] if isinstance(cur["history"][-1], dict) else {}
         fields = "".join(
             f'<label class="flabel" for="c-{k}">{e(lab)} ($ a year)</label>'
             f'<input class="field" id="c-{k}" name="{k}" inputmode="decimal" '
@@ -1296,7 +1308,8 @@ class Control:
                 f'<form method="post" action="/act/costs"><input type="hidden" name="csrf" '
                 f'value="{e(token)}">{fields}<button class="btn wide" style="margin-top:16px">'
                 "Save</button></form>"
-                "<p class='caption'>Leave all three empty or 0 to use the server's yearly total "
+                "<p class='caption'>New amounts count from today; earlier days keep the amounts "
+                "that applied then. Leave all three empty or 0 to use the server's yearly total "
                 "(costs.fixed_aud_per_year).</p>"))
         )  # fmt: skip
 
@@ -1305,7 +1318,7 @@ class Control:
     ) -> tuple[int, dict[str, str], bytes]:
         from decimal import InvalidOperation
 
-        from trader.ops_view import COST_KEYS
+        from trader.ops_view import COST_KEYS, MIN_FIXED_TOTAL
 
         vals: dict[str, str] = {}
         for k, lab in COST_KEYS:
@@ -1316,7 +1329,15 @@ class Control:
                 return self._result(hdrs, f"Not saved: {lab} is not a number.", False)
             if not d.is_finite() or d < 0 or d > 100000:
                 return self._result(hdrs, f"Not saved: {lab} must be between 0 and 100,000.", False)
+            if 0 < d < 1:
+                why = f"Not saved: {lab} is under $1 a year (enter 0 for none)."
+                return self._result(hdrs, why, False)
             vals[k] = str(d.quantize(Decimal("0.01")))
+        total = sum(Decimal(v) for v in vals.values())
+        if 0 < total < MIN_FIXED_TOTAL:  # BF-D81 (N1): a typo cannot wipe the running costs
+            return self._result(hdrs, f"Not saved: ${total} a year in all looks too small. Enter "
+                                "the yearly amounts, or 0 in every box to use the server's "
+                                "total.", False)  # fmt: skip
         if self.demo:
             return self._result(hdrs, "DEMO: running costs not saved.", True)
         if all(Decimal(v) == 0 for v in vals.values()):

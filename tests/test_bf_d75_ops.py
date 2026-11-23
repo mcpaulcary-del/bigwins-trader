@@ -230,7 +230,7 @@ def test_BF_D75_research_lines_kept_unranked_and_labelled(tmp_path: Path) -> Non
     assert lines is not None
     assert [ln.id for ln in lines] == [k for k, _, _ in ov.KEPT_LINES]  # registered order
     h82 = next(ln for ln in lines if ln.id == "H82")
-    assert h82.book == "H82_lifecycle_5k"  # the book closest to A$10,000
+    assert h82.book == "H82_25k"  # the exact names, in order of preference
     assert not any("CXL" in (ln.book or "") for ln in lines)  # retired lines are not shown
     assert ov.research_lines(tmp_path / "missing.csv", date(2026, 12, 2)) is None
     from trader.app_ops import Ops, research_section
@@ -276,12 +276,13 @@ def test_BF_D77_freshness_late_failed_and_one_push_per_incident() -> None:
     assert fr["backup"].status == "failed" and fr["info"].status == "off"
     sent: list[tuple[str, str, str]] = []
     hooks = OpsHooks(j, BOOK, lambda: sess, _collect(sent))
+    set_state(j, "digest-last", "2026-03-06", now)  # (the digest is tested on its own)
     hooks.tick(now)
-    assert len(sent) == 2 and all(
-        t.startswith("PAGE ") and link == "/health" for t, _, link in sent
-    )
+    # the failed backup is already paged by the trader itself: only the late daily run here
+    assert len(sent) == 1 and sent[0][0].startswith("PAGE Trader daily run")
+    assert sent[0][2] == "/health"
     hooks.tick(now + timedelta(minutes=10))  # the same incidents: no second push
-    assert len(sent) == 2
+    assert len(sent) == 1
     fr = {f.key: f for f in ov.freshness(j, BOOK, sess, now + timedelta(days=1), True)}
     assert fr["info"].status == "late"  # switched on, nothing stored
 
@@ -331,6 +332,7 @@ def test_BF_D79_weekly_digest_once_on_friday_after_the_report(tmp_path: Path) ->
     sent: list[tuple[str, str, str]] = []
     hooks = OpsHooks(j, BOOK, lambda: sess, _collect(sent),
                      index=lambda: idx)  # fmt: skip
+    set_state(j, "digest-last", "2026-03-06", datetime(2026, 3, 6, 23, tzinfo=ASX_TZ))
     assert not hooks.weekly(datetime(2026, 3, 13, 22, 0, tzinfo=ASX_TZ))  # before 22:55
     assert hooks.weekly(datetime(2026, 3, 13, 23, 0, tzinfo=ASX_TZ))
     assert not hooks.weekly(datetime(2026, 3, 13, 23, 30, tzinfo=ASX_TZ))  # once a week
@@ -361,7 +363,8 @@ def test_BF_D78_D80_host_results_are_cleaned(tmp_path: Path) -> None:
     from trader.app_ops import prev_twin_section
 
     html = prev_twin_section(get_state(j, "prev-twin")[0])  # type: ignore[index]
-    assert "So far the update helped $100" in html and "simulated" in html
+    assert "So far this version is ahead by $100" in html and ov.LUCK in html
+    assert "simulated" in html and 'class="verdict' not in html.replace("verdict2", "")
     assert "Nothing to compare yet" in prev_twin_section(None)
 
 
@@ -393,9 +396,10 @@ def test_BF_D75_home_leads_with_the_honest_scoreboard(demo_app: Any) -> None:
     _, d = demo_app
     st, html = _get(d, "/")
     assert st == 200
-    i = html.index("Scoreboard · after all costs")
+    i = html.index("Scoreboard · after running costs, before tax")  # no tax rate here (M2)
     assert i < html.index('class="hero"')  # the headline comes first
-    assert ("Behind A200 by $" in html) or ("Ahead of A200 by $" in html)
+    assert "A200 by $" in html and "after running costs, before tax." in html
+    assert "after all costs" not in html
     assert "Same money in A200" in html and "Fixed running costs" in html
     assert "$21.0k against $18.6k" in html and "Research lines (information only)" in html
     assert "Info archive (announcements) late" in html  # the demo's late job is flagged
@@ -423,6 +427,7 @@ def test_BF_D77_health_costs_digest_and_share_page(demo_app: Any) -> None:
 
 def test_BF_D76_running_costs_edit_through_the_control_server() -> None:
     from tests.test_bf_app_actions import OWNER, _post, _session, _setup
+    from tests.test_bf_execution import T_APPROVE
 
     j, _, ctl, _, _ = _setup()
     sess = _session(ctl)
@@ -431,7 +436,9 @@ def test_BF_D76_running_costs_edit_through_the_control_server() -> None:
     )
     assert st == 200 and "running costs saved" in body
     got = get_state(j, "running-costs")
-    assert got is not None and got[0] == {"server": "240.00", "data": "360.50", "other": "0.00"}
+    assert got is not None and got[0]["history"][-1] == {
+        "server": "240.00", "data": "360.50", "other": "0.00",
+        "from": str(T_APPROVE.astimezone(ASX_TZ).date())}  # fmt: skip
     st, body = _post(ctl, {"server": "abc"}, session=sess, path="/act/costs")
     assert "Not saved" in body
     assert any("running costs changed" in r["title"] for r in inbox_rows(j))

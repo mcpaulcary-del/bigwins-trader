@@ -53,6 +53,67 @@ def cycle_ok_day(j: Journal, book: str, sessions: Sequence[date], now: datetime)
     return d
 
 
+# incidents the trader already pages itself (the failed report, prices not refreshed, a
+# failed backup or restore test, no good backup for 26 hours): only the daily reminder
+ALREADY_PAGED = frozenset({("daily", "failed"), ("prices", "late"), ("backup", "failed"),
+                           ("backup", "late"), ("restore", "failed")})  # fmt: skip
+REMIND_EVERY = timedelta(hours=24)
+
+
+def series_of(j: Journal, book: str) -> list[tuple[date, Decimal]]:
+    out = []
+    for k, r, _ in ov.job_rows(j, f"value:{book}:"):
+        d = ov._day(k.rsplit(":", 1)[1])
+        if d is not None and isinstance(r, Mapping) and r.get("value") is not None:
+            out.append((d, Decimal(str(r["value"]))))
+    return out
+
+
+def build_digest(
+    j: Journal,
+    book: str,
+    friday: date,
+    now: datetime,
+    score: ov.Score,
+    series: Sequence[tuple[date, Decimal]],
+    index: Sequence[tuple[date, float]],
+    sessions: Sequence[date],
+    info_enabled: bool,
+    scorecard: Path | None,
+    info_dir: Path | None,
+    store_days: Sequence[date],
+    approval_deadline: str = "15:20",
+) -> ov.Digest:
+    """The week's digest; the inbox message and the app's /digest page both come from
+    here, with the same scoreboard (BF-D81, review M4)."""
+    today = now.astimezone(ASX_TZ).date()
+    fresh = ov.freshness(j, book, sessions, now, info_enabled)
+    arch = iv.status(info_dir, sessions, today, now)
+    needs = _needs(j, book, now, approval_deadline)
+    lines = ov.research_lines(scorecard, today)
+    return ov.digest(j, book, friday, score.board, ov.week_change(series, index, friday), lines,
+                     fresh, arch.days, sorted(store_days), needs)  # fmt: skip
+
+
+def store_days_of(store_root: Path | None) -> list[date]:
+    out: list[date] = []
+    if store_root is not None:
+        for p in (store_root / "raw" / "bulk_eod").glob("AU_*.json.gz"):
+            d = ov._day(p.name[3:13])
+            if d is not None:
+                out.append(d)
+    return sorted(out)
+
+
+def last_friday(now: datetime) -> date:
+    """The latest Friday whose digest is due (from 22:55 that Friday)."""
+    t = now.astimezone(ASX_TZ)
+    fri = t.date() - timedelta(days=(t.weekday() - 4) % 7)
+    if fri == t.date() and t.time() < DIGEST_AT:
+        fri -= timedelta(days=7)
+    return fri
+
+
 @dataclass
 class OpsHooks:
     journal: Journal
@@ -66,88 +127,130 @@ class OpsHooks:
     scorecard: Path | None = None
     info_dir: Path | None = None
     store_root: Path | None = None
+    commission: Callable[[Decimal], Decimal] | None = None  # A200's buys (the IBKR plan)
+    fund_half_spread: Decimal = Decimal("0.0005")
+    tax_src: Any = None  # the tax inputs (marginal_rate, tax_params, ...); None = no tax
+    approval_deadline: str = "15:20"
     _last: datetime | None = field(default=None, repr=False)
 
     def tick(self, now: datetime) -> None:
         if self._last is not None and now - self._last < EVERY:
             return
         self._last = now
-        self.alerts(now)
-        self.weekly(now)
+        for name, fn in (("alarm", self.alerts), ("digest", self.weekly)):
+            try:
+                fn(now)
+            except Exception as e:  # BF-D81 (review S4): the monitor's own failure pages once
+                self._monitor_failed(name, e, now)
+
+    def _monitor_failed(self, name: str, e: Exception, now: datetime) -> None:
+        from trader.app_store import set_state
+
+        key = f"{name}:{now.astimezone(ASX_TZ).date()}"
+        st = ov.state(self.journal, "monitor-failed")
+        if st and st[0] == key:
+            return
+        self.notify(f"PAGE the app's {name} check itself failed ({type(e).__name__}). The "
+                    "jobs may still be fine: look at Server > Health and the trader log.",
+                    "page", "/health")  # fmt: skip
+        set_state(self.journal, "monitor-failed", key, now)
 
     # ------------------------------------------------------------ missed-job alarm
     def alerts(self, now: datetime) -> list[str]:
+        """One push per new incident (none for incidents the trader already pages), then
+        a reminder once a day while it lasts."""
         from trader.app_store import set_state
 
         fresh = ov.freshness(self.journal, self.book, list(self.sessions()), now,
                              self.info_enabled)  # fmt: skip
         st = ov.state(self.journal, "freshness-told")
-        told = [str(x) for x in st[0]] if st and isinstance(st[0], list) else []
+        raw = st[0] if st else None
+        if isinstance(raw, Mapping):
+            told: dict[str, str] = dict(raw)
+        else:  # the first build kept a plain list
+            told = dict.fromkeys(map(str, raw or []), now.isoformat())
         sent = []
         for f in fresh:
-            if not f.bad or not f.incident or f.incident in told:
+            if not f.bad or not f.incident:
                 continue
+            prev = told.get(f.incident)
             what = "FAILED" if f.status == "failed" else "is late"
-            self.notify(f"PAGE {f.name} {what}: {f.detail or 'last ' + f.last}. "
-                        "See Server > Health.", "page", "/health")  # fmt: skip
-            told.append(f.incident)
+            if prev is None:
+                told[f.incident] = now.isoformat()
+                if (f.key, f.status) in ALREADY_PAGED:
+                    continue  # the trader's own page said it; the reminder follows tomorrow
+                text = (f"PAGE {f.name} {what}: {f.detail or 'last ' + f.last}. "
+                        "See Server > Health.")  # fmt: skip
+            elif now - datetime.fromisoformat(prev) >= REMIND_EVERY:
+                told[f.incident] = now.isoformat()
+                still = "failed" if f.status == "failed" else "late"
+                text = (f"PAGE reminder: {f.name} still {still} "
+                        f"({f.detail or 'last ' + f.last}). See Server > Health.")  # fmt: skip
+            else:
+                continue
+            self.notify(text, "page", "/health")
             sent.append(f.incident)
-        if sent:
-            set_state(self.journal, "freshness-told", told[-KEEP_TOLD:], now)
+        live = {f.incident for f in fresh if f.bad and f.incident}
+        keep = {k: v for k, v in told.items() if k in live}
+        if sent or keep != told or not isinstance(raw, Mapping):
+            set_state(self.journal, "freshness-told", keep, now)
         return sent
 
     # ------------------------------------------------------------ the weekly digest
     def weekly(self, now: datetime) -> bool:
+        """Fridays from 22:55; a digest missed while the trader was down is sent late."""
         from trader.app_store import set_state
 
-        t = now.astimezone(ASX_TZ)
-        if t.weekday() != 4 or t.time() < DIGEST_AT:
-            return False
+        fri = last_friday(now)
         st = ov.state(self.journal, "digest-last")
-        if st and st[0] == str(t.date()):
+        if st and str(st[0]) >= str(fri):
             return False
-        dg = self.build(t.date(), now)
-        self.notify(dg.text(), "info", f"/digest?w={t.date()}")
-        set_state(self.journal, "digest-last", str(t.date()), now)
+        dg = self.build(fri, now)
+        late = "" if now.astimezone(ASX_TZ).date() == fri else " (sent late)"
+        text = dg.text().replace("\n", f"{late}\n", 1) if late else dg.text()
+        self.notify(text, "info", f"/digest?w={fri}")
+        set_state(self.journal, "digest-last", str(fri), now)
         return True
+
+    def score(self, series: Sequence[tuple[date, Decimal]],
+              idx: Sequence[tuple[date, float]], today: date) -> ov.Score:  # fmt: skip
+        j = self.journal
+        fc = ov.fixed_costs(j, self.fixed_items, self.fixed_per_year)
+        tax = ov.tax_estimate(self.tax_src, today) if self.tax_src is not None else (
+            None, "Tax: not included (your tax rate is not set on the server).")  # fmt: skip
+        return ov.build_score(j, self.book, series, idx, fc, self.commission,
+                              self.fund_half_spread, tax)  # fmt: skip
 
     def build(self, friday: date, now: datetime) -> ov.Digest:
         j = self.journal
-        series = [(date.fromisoformat(k.rsplit(":", 1)[1]), Decimal(str(r["value"])))
-                  for k, r, _ in ov.job_rows(j, f"value:{self.book}:")]  # fmt: skip
+        series = series_of(j, self.book)
         idx: list[tuple[date, float]] = []
         if self.index is not None:
             try:
                 idx = list(self.index())
             except Exception:
                 idx = []
-        capital = sum((Decimal(str(m["amount"])) for m in j.cash_moves_of(self.book)
-                       if m["kind"] == "DEPOSIT"), Decimal(0))  # fmt: skip
-        fc = ov.fixed_costs(j, self.fixed_items, self.fixed_per_year)
-        sb = ov.scoreboard(series, idx, capital, fc.per_year)
-        mon, fri = ov.week_of(friday)
-        week = [(d, v) for d, v in series if d < mon][-1:] + [(d, v) for d, v in series
-                                                                if mon <= d <= fri]  # fmt: skip
-        week_sb = ov.scoreboard(week, idx, week[0][1], Decimal(0)) if len(week) > 1 else None
-        sess = list(self.sessions())
-        fresh = ov.freshness(j, self.book, sess, now, self.info_enabled)
+        if series:
+            idx = [(d, x) for d, x in idx if series[0][0] <= d <= series[-1][0] and x > 0]
         today = now.astimezone(ASX_TZ).date()
-        arch = iv.status(self.info_dir, sess, today)
-        store_days: list[date] = []
-        if self.store_root is not None:
-            for p in (self.store_root / "raw" / "bulk_eod").glob("AU_*.json.gz"):
-                try:
-                    store_days.append(date.fromisoformat(p.name[3:13]))
-                except ValueError:
-                    continue
-        needs = _needs(j, self.book)
-        lines = ov.research_lines(self.scorecard, today)
-        return ov.digest(j, self.book, friday, sb, week_sb, lines, fresh, arch.days,
-                         sorted(store_days), needs)  # fmt: skip
+        return build_digest(j, self.book, friday, now, self.score(series, idx, today), series,
+                            idx, list(self.sessions()), self.info_enabled, self.scorecard,
+                            self.info_dir, store_days_of(self.store_root),
+                            self.approval_deadline)  # fmt: skip
 
 
-def _needs(j: Journal, book: str) -> list[str]:
+def _needs(j: Journal, book: str, now: datetime | None = None,
+           approval_deadline: str = "15:20") -> list[str]:  # fmt: skip
     out = []
+    if now is not None:
+        from trader.app_pages import waiting_batches
+
+        try:
+            n = sum(w.n for w in waiting_batches(j, book, now, approval_deadline))
+        except Exception:
+            n = 0
+        if n:
+            out.append(f"{ov.plural(n, 'order')} waiting for your approval")
     try:
         lvl = j.safety_level().value
     except Exception:

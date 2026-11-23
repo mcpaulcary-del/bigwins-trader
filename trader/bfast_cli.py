@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from trader.store_refresh import StoreRefresher
 
 DEFAULT_CONFIG = Path("config/bfast.yaml")
+TWINS_DIR = Path("/data/twins")  # BF-D81 (S3 b): the twins' own volume, never /app/out
 
 
 def _sessions(until: date) -> list[date]:
@@ -388,17 +389,27 @@ def _app_wiring(
 
 
 def ops_hooks(cfg: BfastConfig, j: Journal, app: BfApp, notifier: AppNotifier) -> Any:
+    from types import SimpleNamespace
+
     from trader.dashboard import store_index
     from trader.ops_hooks import OpsHooks
 
     store = cfg.data.forward_store
     rc = cfg.running_costs
+    bt = cfg.band_trend
+    # BF-D81 (review M4): the digest's scoreboard has the app's inputs (A200's buy cost, tax)
+    tax_src = None if cfg.tax.marginal_rate is None else SimpleNamespace(
+        journal=j, book=cfg.book, tax_params=cfg.tax.params(cfg.fund_codes()),
+        amit_csv=cfg.tax.amit_csv, prior_losses=cfg.tax.prior_losses_aud,
+        live=cfg.mode != "paper", marginal_rate=cfg.tax.marginal_rate)  # fmt: skip
     return OpsHooks(
         j, cfg.book, lambda: app.sessions, notifier.notify, cfg.info_archive.archive_enabled,
         store_index(store, cfg.dashboard.index_code) if (store / "manifest.tsv").is_file()
         else None, cfg.costs.fixed_aud_per_year,
         {"server": rc.server, "data": rc.data, "other": rc.other}, cfg.research.scorecard_csv,
-        cfg.info_archive.app_dir, store,
+        cfg.info_archive.app_dir, store, cfg.commission_model(),
+        bt.fund_half_spread if bt is not None else Decimal("0.0005"), tax_src,
+        cfg.execution.approval_deadline,
     )  # fmt: skip
 
 
@@ -638,7 +649,7 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912,
         from trader.ops_hooks import record_prev_twin
 
         book = load_bfast_config(args.config).book if args.config.is_file() else "EMG2_18_PAPER"
-        rec = record_prev_twin(j, Path("/app/out/twins"), book,
+        rec = record_prev_twin(j, TWINS_DIR, book,
                                json.loads(sys.stdin.read() or "{}"), now)  # fmt: skip
         print("previous-version twin stored: " + ("ok" if rec["ok"] else "FAILED"))
         return 0
@@ -974,6 +985,15 @@ def cmd_journal(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_archive_enabled(args: argparse.Namespace) -> int:
+    """BF-D81 (review S5): ``info_archive.archive_enabled`` read by the same loader as the
+    app (config/bfast.yaml with config/bfast.local.yaml laid over it); the host worker
+    asks this instead of reading the YAML itself. Prints yes / no; exit 0 = yes."""
+    on = load_bfast_config(args.config).info_archive.archive_enabled
+    print("yes" if on else "no")
+    return 0 if on else 1
+
+
 def cmd_golden_check(args: argparse.Namespace) -> int:
     """BF-D72 (strategy review M2): the live list and band-trend on 13 recorded month-ends
     v the research record; run by ``bigwins`` after a build, before the trader restarts
@@ -1024,6 +1044,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--store", type=Path, default=None)
     p.add_argument("--golden", type=Path, default=Path("config/golden/emg2_live_golden.json"))
+    p = sub.add_parser("archive-enabled", help="is the private info archive on? (BF-D78)")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p = sub.add_parser("check-secrets", help="the Docker secret files are readable (BF-D33)")
     p.add_argument("--all", action="store_true", help="every file of the stack (secrets-check)")
     p.add_argument("--dir", type=Path, default=Path("/run/secrets"))
@@ -1070,6 +1092,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
         "daily-summary": cmd_daily_summary,
         "server-jobs": cmd_server_jobs,
         "golden-check": cmd_golden_check,
+        "archive-enabled": cmd_archive_enabled,
     }
     if a.cmd in commands:
         return commands[a.cmd](a)

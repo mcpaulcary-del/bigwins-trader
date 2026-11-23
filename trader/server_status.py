@@ -61,6 +61,10 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
         ]  # fmt: skip
     if "onedrive" in raw:  # BF-D64
         out["onedrive"] = bool(raw.get("onedrive"))
+    tm = raw.get("timers")
+    if isinstance(tm, Mapping):  # BF-D81 (S7): which systemd timers exist (known names only)
+        out["timers"] = {k: bool(v) for k, v in tm.items()
+                         if k in ("worker", "backup", "weekly", "info", "twin")}  # fmt: skip
     if "daily_ping_set" in raw:  # BF-D77 (b): the optional daily-cycle check (never its URL)
         out["daily_ping_set"] = bool(raw.get("daily_ping_set"))
         dp = str(raw.get("daily_ping") or "")
