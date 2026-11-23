@@ -51,6 +51,12 @@ about the end of February 2027). The owner approves every order.
   GitHub → tests → owner approval in the app; never edit the live trader in place.
 - Partner (Bec) may get view-only access by Tailscale machine sharing (pending).
 
+## Strategy freeze (owner, 23 Nov 2026)
+The main strategy (EMG2-18 + band-trend shield + C6) is FROZEN until the start of January 2027:
+no rule or parameter changes, in the live trader or its paper line. Engineering work continues.
+New ideas run as separate pre-registered paper lines with their own random twins ("side lines").
+Real money around March 2027.
+
 ## Status / next steps
 1. IBKR application submitted 22 Nov; flagged "wholesale investor" — owner to ask IBKR to
    assess as **retail** (answer experience questions truthfully). Do not fund until resolved.
