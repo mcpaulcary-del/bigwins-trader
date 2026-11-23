@@ -107,7 +107,8 @@ KILL_COPY = (
         "Fills that have already happened, including part-fills, are kept.",
     )),
     ("To undo", (
-        "Controls, then Resume, with your 6-digit code.",
+        "Controls, then Resume, with your 6-digit code. Nothing else re-arms it: Pause and "
+        "Stop leave it killed.",
         "Approved orders are checked when they are due to be sent. Resume before then and they "
         "still go; if the trader is still killed at that time they are dropped and Resume does "
         "not bring them back.",

@@ -47,7 +47,7 @@ from trader.bfast_config import (
 from trader.canonical import canonical_json
 from trader.constants import ASX_TZ
 from trader.journal import Journal
-from trader.risk import SafetyLevel
+from trader.risk import SEVERITY, SafetyLevel
 
 if TYPE_CHECKING:
     from trader.app_notify import AppNotifier, ChannelTransport
@@ -899,8 +899,12 @@ def cmd_journal(a: argparse.Namespace) -> int:
         j.set_safety(SafetyLevel.KILLED, "CLI kill", "cli")
         print("KILLED (open orders are cancelled by the runner's kill path; re-arm needs 2FA)")
     elif a.cmd == "pause":
-        j.set_safety(SafetyLevel.PAUSED, "CLI pause", "cli")
-        print("PAUSED")
+        cur = j.safety_level()  # BF-D74: never lowers a stricter level (e.g. KILLED)
+        if SEVERITY[cur] > SEVERITY[SafetyLevel.PAUSED]:
+            print(f"already {cur.value}: pause changes nothing")
+        else:
+            j.set_safety(SafetyLevel.PAUSED, "CLI pause", "cli")
+            print("PAUSED")
     print(f"safety {j.safety_level().value}")
     if a.cmd == "status":
         cfg = load_bfast_config(a.config) if a.config.is_file() else None

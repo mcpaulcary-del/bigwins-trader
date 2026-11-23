@@ -52,7 +52,7 @@ from trader.constants import ASX_TZ
 from trader.corporate_actions import CaError, parse_ratio
 from trader.journal import Journal, Status
 from trader.orders import Side
-from trader.risk import SafetyLevel
+from trader.risk import SafetyLevel, worst
 from trader.secrets import SecretValue
 
 # ---------------------------------------------------------------- TOTP (second factor)
@@ -643,13 +643,16 @@ class ApprovalBot:
             self._quiet(lambda: bt.edit_text(m.chat_id, mid, f"{body}\n\nDONE: {reply}"))
         return reply
 
-    def _dispatch(self, m: Incoming) -> str:  # noqa: PLR0911 - one return per command
+    def _dispatch(self, m: Incoming) -> str:  # noqa: PLR0911, PLR0912 - one return per command
         parts = m.text.strip().split()
         if not parts:
             return "empty command"
         cmd, args = parts[0].lower().split("@")[0], parts[1:]
         actor = f"app:{m.login.strip().lower()}" if m.source == "app" else f"telegram:{m.chat_id}"
-        if cmd == "/pause":
+        if cmd == "/pause":  # BF-D74: a risk-reducing command never lowers the level
+            cur = self.journal.safety_level()
+            if worst(cur, SafetyLevel.PAUSED) is not SafetyLevel.PAUSED:
+                return f"already {cur.value}: pause changes nothing. /resume <code> to re-arm."
             self.journal.set_safety(SafetyLevel.PAUSED, "owner /pause", actor, m.at)
             return "PAUSED: buys stop, registered sells proceed. /resume <code> to re-arm."
         if cmd == "/kill":
@@ -665,8 +668,11 @@ class ApprovalBot:
             self.journal.mark_job(f"l11:end:{m.at.isoformat()}", {"why": "owner /resume"}, m.at)
             return "re-armed: NORMAL"
         if cmd == "/stop":  # L11 (d): the owner says stop; buys stay paused, sells go on
-            self.journal.set_safety(SafetyLevel.PAUSED, "owner /stop (L11)", actor, m.at)
             self.journal.mark_job(f"l11:stop:{m.at.isoformat()}", {"actor": actor}, m.at)
+            cur = self.journal.safety_level()  # BF-D74: never lowers a stricter level
+            if worst(cur, SafetyLevel.PAUSED) is not SafetyLevel.PAUSED:
+                return f"STOP recorded (L11 d); trading stays {cur.value}. /resume <code> re-arms."
+            self.journal.set_safety(SafetyLevel.PAUSED, "owner /stop (L11)", actor, m.at)
             return "STOP recorded (L11 d): buys stay paused, sells go on. /resume <code> re-arms."
         if cmd == "/continue":  # L11 stage 3: the owner's written confirmation to continue
             from trader.loss_rule import l11_episode

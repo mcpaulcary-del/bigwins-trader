@@ -533,8 +533,8 @@ def test_L11_stage2_stays_paused_when_the_staged_test_fails(
     d = m.walk("9000", "8100", "7200", "6400", "5900")
     assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
     if owner:
-        _owner(app, d, owner)
-        assert app.j.safety_level() is SafetyLevel.PAUSED
+        _owner(app, d, owner)  # BF-D74: /stop is recorded but never lowers HALTED_BUYS
+        assert app.j.safety_level() is SafetyLevel.HALTED_BUYS
     if integrity:
         from trader.journal import FillRecord
         from trader.orders import Side
