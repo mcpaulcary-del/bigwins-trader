@@ -26,7 +26,7 @@ from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
 from trader.orders import Side
-from trader.webui import backlink, chev, e, icon, page, plural, section, tile
+from trader.webui import backlink, chev, e, icon, page, plural, section, stat, tile
 
 CENT = Decimal("0.01")
 MINUS = "−"
@@ -500,23 +500,43 @@ def actions_note(x: Extras, demo: bool) -> str:
 
 
 def waiting_card(x: Extras, demo: bool, now: datetime | None = None) -> str:
+    """The approval card (BF-D73): count and value, the deadline with a countdown, Review
+    (the confirm screen that lists the orders, ``act_link(a="ok", n="all")``) or Refuse."""
     if not x.waiting:
         return ""
     now_iso = (now or datetime.now(UTC)).isoformat()
     out = []
     for w in x.waiting:
         out.append(
-            f'<p class="summary">{w.n} order(s) waiting for your approval</p>'
-            f'<p class="muted small">{e(w.batch_id)} · ≈ {aud(w.total, dp=0)} · by '
-            f"{w.by:%a %d %b %H:%M}. Orders not approved are not sent.</p>"
-            f'<p class="cd">{icon("clock")}<span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until '
-            f"{w.by:%H:%M}</span></p>"
+            f'<p class="summary">{plural(w.n, "order")} · ≈ {aud(w.total, dp=0)}</p>'
+            f'<p class="cd">{icon("clock")}<span data-deadline="{w.by.isoformat()}" '
+            f'data-now="{now_iso}">until {w.by:%H:%M}</span> · by {w.by:%H:%M %a %d %b}</p>'
             '<div class="btns">'
-            f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">Approve all</a>'
+            f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">Review &amp; '
+            "approve</a>"
             f'<a class="btn sec" href="{act_link(a="rf", b=w.batch_id)}">Refuse</a></div>'
-            f'<a href="/orders/{quote(w.batch_id)}" data-nav class="small">See each order ›</a>'
+            '<p class="caption">Not approved by the deadline = not sent. '
+            f'<a href="/orders/{quote(w.batch_id)}" data-nav>See each order</a></p>'
         )
-    return section("Waiting for you", "".join(out) + actions_note(x, demo), "waitcard")
+    return section("Needs your approval", "".join(out) + actions_note(x, demo), "waitcard")
+
+
+def _urgent(x: Extras, now: datetime) -> bool:
+    return any((w.by - now).total_seconds() < 2 * 3600 for w in x.waiting)
+
+
+def _srow(label: str, value: str, body: str = "", href: str = "", tone: str = "") -> str:
+    """One Home status row: a label, a one-line summary; taps open the full card
+    (``<details>``, works without JavaScript) or go to ``href``."""
+    dot = f'<span class="sd {tone}"></span>' if tone else ""
+    inner = f'<span class="srl">{e(label)}</span><span class="srv">{dot}{value}</span>{chev()}'
+    if href:
+        return f'<li><a class="sr" href="{e(href)}">{inner}</a></li>'
+    if not body:
+        return (f'<li><div class="sr srow"><span class="srl">{e(label)}</span><span class="srv">'
+                f"{dot}{value}</span></div></li>")  # fmt: skip
+    return (f'<li><details class="srow"><summary>{inner}</summary><div class="srbody">{body}'
+            "</div></details></li>")  # fmt: skip
 
 
 # ---------------------------------------------------------------- Home
@@ -534,67 +554,84 @@ def home(v: Any, x: Extras) -> str:
         )
         body += safety_card(v) + inbox_peek(x) + health_card(v, x)
         return shell(v, x, "Home", body, "home")
+    from trader import app_more
+
     val = v.value
     ct = v.change_today
     prev = v.series[-2][1] if len(v.series) > 1 else None
     ct_pct = float(ct / prev) if ct is not None and prev else None
     since = val - v.capital_in if val is not None and v.capital_in else None
-    vs = (v.book_return - v.index_return
-          if v.book_return is not None and v.index_return is not None else None)  # fmt: skip
     dd = drawdown(v.series)
     cur_dd = dd[-1][1] if dd else None
     max_dd = min((d for _, d in dd), default=None)
-    tiles = (
-        tile("Account value", aud(val), f"on {v.series[-1][0]:%d %b}" if v.series else "")
-        + tile("Today", aud(ct, True), pct(ct_pct), tone(ct))
-        + tile("Since start", aud(since, True), pct(v.since_start), tone(since))
-        + tile(f"vs {v.index_label}", pct(vs) if vs is not None else "-",
-               f"{v.index_label} {pct(v.index_return)}" if v.index_return is not None
-               else "index line not available", tone(vs))
-        + tile("From peak", pct(cur_dd), f"worst {pct(max_dd)}", tone(cur_dd))
-        + tile("Cash", aud(v.cash), f"money in {aud(v.capital_in, dp=0)}")
-    )  # fmt: skip
     trades = _trade_days(v)
     chg = (f"{arrow(ct)}{aud(ct, True)} ({pct(ct_pct)}) today" if ct is not None
            else "no change yet")  # fmt: skip
-    pill = (f'<span class="vs {tone(vs)}">{arrow(vs)}{pct(vs)} vs {e(v.index_label)}</span>'
-            if vs is not None else "")  # fmt: skip
-    since_pill = (f'<span class="vs {tone(since)}">{arrow(since)}{aud(since, True, dp=0)} since start'
-                  "</span>" if since is not None else "")  # fmt: skip
-    from trader import app_more
-
-    since_pill += app_more.month_milestone(v)  # BF-D68: subtle, and only this one
-    body = section("", hero(val, f"Account value · {v.series[-1][0]:%d %b}" if v.series else
-                            "Account value", chg, tone(ct),
-                            f'<div class="pills">{pill}{since_pill}</div>'
-                            + spark([float(x) for _, x in v.series[-60:]], 320, 46, "spk",
-                                    "Account value, last 60 trading days", stretch=True)), "herocard")  # fmt: skip
-    body += waiting_card(x, v.demo, v.now)
-    body += section("Performance", f'<div class="tiles">{tiles}</div>'
-                    + perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
-                    + '<p class="small muted">Drawdown from peak</p>' + dd_chart(dd),
-                    card="perf")  # fmt: skip
-    body += _card(twins_card(v, x), "twins")
-    nd = (f"Next decision <b>{v.next_decision:%a %d %b %Y}</b>, 22:20 Sydney"
-          if v.next_decision else "Next decision: -")  # fmt: skip
-    body += section("Next", f"<p>{nd}.</p>", card="next")
-    body += _card(safety_card(v), "safety") + _card(loss_card(v), "loss")
-    body += _card(app_more.whatif(v, getattr(v, "journal", None)), "whatif")
-    body += _card(inbox_peek(x), "inbox")
-    body += (
-        '<p class="small muted homehint">Tip: press and hold a card title to move or hide '
-        "cards (this phone only).</p>"
+    lab = "Account value · AUD" + (f" · {v.series[-1][0]:%d %b}" if v.series else "")
+    hero_html = hero(val, lab, chg, tone(ct), app_more.month_milestone(v))
+    chart = perf_chart(v.series, v.index, v.index_label, v.index_note, trades)
+    stats = (
+        '<dl class="stats">'
+        + stat("Since start", aud(since, True), pct(v.since_start), tone(since))
+        + stat("Cash", aud(v.cash), f"of {aud(v.capital_in, dp=0)} in")
+        + stat("From peak", pct(cur_dd), f"worst {pct(max_dd)}")
+        + "</dl>"
     )
-    body += (
-        '<div class="btns"><a class="btn sec" href="/act">Controls</a>'
-        '<a class="btn sec" href="/holdings" data-nav>Holdings</a></div>'
-        + (
-            "<footer>LIVE account - real money. Not shown to beat the index.</footer>"
-            if getattr(v, "live", False)
-            else "<footer>PAPER - no real money. Not shown to beat the index.</footer>"
-        )
+    wait = waiting_card(x, v.demo, v.now)
+    urgent = wait and _urgent(x, v.now)
+    # status rows: the full cards stay one tap away (progressive disclosure, BF-D73)
+    lvl = v.safety
+    stone = (
+        "ok" if lvl == "NORMAL" else ("bad" if lvl in ("KILLED", "HALTED_INTEGRITY") else "wait")
     )
-    return shell(v, x, "Home", body, "home")
+    rows = []
+    rows.append(_srow("Decision", (f"{v.next_decision:%a %d %b %Y} · 22:20" if v.next_decision
+                                   else "not scheduled")))  # fmt: skip
+    rows.append(_srow("Safety", e(SAFETY_WORDS.get(lvl, lvl)), safety_card(v), tone=stone))
+    lim = getattr(v, "limits", None)
+    if val is not None and lim is not None:
+        gap = float(val) - float(lim.review)
+        rows.append(_srow(
+            "Loss rule",
+            f"{aud(Decimal(str(abs(gap))), dp=0)} {'above' if gap >= 0 else 'below'} the first check",
+            loss_card(v), tone="ok" if gap >= 0 else "bad"))  # fmt: skip
+    tw = twins_card(v, x)
+    if tw:
+        tp = v.twin_pct
+        if tp is None:
+            rows.append(_srow("Twin check", "simulated twin", tw))
+        else:
+            rows.append(_srow("Twin check",
+                              f'{tp:.0f}th percentile <span class="sub">needs 10 or more</span>',
+                              tw, tone="bad" if tp < 10 else "ok"))  # fmt: skip
+    if len(dd) > 1:
+        rows.append(_srow("From peak", f"{pct(cur_dd)} now · worst {pct(max_dd)}",
+                          section("Drawdown from peak", dd_chart(dd))))  # fmt: skip
+    wi = app_more.whatif(v, getattr(v, "journal", None))
+    if wi:
+        rows.append(_srow("What if", "the market moves?", wi))
+    rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
+    status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>')
+    foot = (
+        "<footer>LIVE account: real money. Not shown to beat the index.</footer>"
+        if getattr(v, "live", False)
+        else "<footer>Paper: no real money. Not shown to beat the index.</footer>"
+    )
+    col_a = (
+        f'<div class="hero-wrap o1">{hero_html}</div>'
+        + (f'<div class="o2">{wait}</div>' if urgent else "")
+        + f'<div class="o3 perf" data-card="perf">{chart}</div>'
+        + f'<div class="o5 homestats">{stats}</div>'
+    )
+    col_b = (
+        (f'<div class="o4">{wait}</div>' if wait and not urgent else "")
+        + f'<div class="o6">{status}</div>'
+        + f'<div class="o7">{inbox_peek(x)}</div>'
+    )
+    body = (
+        f'<div class="home"><div class="col-a">{col_a}</div><div class="col-b">{col_b}</div></div>'
+    )
+    return shell(v, x, "Home", body + foot, "home")
 
 
 def _card(html: str, name: str) -> str:
@@ -671,7 +708,7 @@ def safety_card(v: Any) -> str:
     else:
         items.append("<li>Trend shield (L15): not decided yet</li>")
     return section("Safety", f'<ul class="list">{"".join(items)}</ul>'
-                   '<a class="small" href="/act">Pause, stop or kill</a>')  # fmt: skip
+                   '<a class="small" href="/act" aria-label="Pause, stop or kill">Pause, stop or kill</a>')  # fmt: skip
 
 
 def loss_card(v: Any) -> str:

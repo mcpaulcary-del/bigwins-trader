@@ -73,8 +73,10 @@ def test_BF_D55_D62_real_browser_buttons_chart_tabs_a11y(tmp_path: Path) -> None
     for step in ("pause", "kill", "approve"):
         assert "DEMO: nothing was done" in out[step], (step, out[step])
         assert "cross-site" not in out[step] and "form token" not in out[step]
-    assert "Approve all" in out["confirm"] and "total" in out["confirm"]
+    assert "You are approving 2 orders" in out["confirm"] and "≈ $" in out["confirm"]
     assert len(out["posts"]) == 3
+    assert out["killScreen"] == [True, 1, True]  # BF-D73: no tab bar, one red button, copy
+    assert out["statusRow"] is True
     # BF-D62: the chart read-out, range buttons, tab switching, holdings interactions
     assert out["tooltip"] and "$" in out["tooltip"] and "gap" in out["tooltip"]
     assert out["range"] == "true"

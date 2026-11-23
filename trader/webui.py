@@ -231,6 +231,16 @@ def tile(label: str, value: str, sub: str = "", tone: str = "") -> str:
     )
 
 
+def stat(label: str, value: str, sub: str = "", tone: str = "") -> str:
+    """An unboxed figure for a ``<dl class="stats">`` (BF-D73); gains carry ▲ / ▼ too."""
+    mark = {"up": '<span class="arr">▲</span>', "down": '<span class="arr">▼</span>'}.get(tone, "")
+    return (
+        f'<div><dt>{e(label)}</dt><dd class="{tone}">{mark}{e(value)}'
+        + (f"<small>{e(sub)}</small>" if sub else "")
+        + "</dd></div>"
+    )
+
+
 CSS = """
 :root{color-scheme:light;
 --bg:#f4f6f9;--surface:#ffffff;--surface-2:#f1f5f9;--line:#e2e8f0;--line-strong:#94a3b8;
@@ -341,7 +351,7 @@ font:500 13px/18px var(--font);background:var(--surface-2);color:var(--ink-2)}
 /* status rows (Home) */
 .srows{list-style:none;margin:0;padding:0}
 .srows>li{border-top:1px solid var(--line)}.srows>li:first-child{border-top:0}
-.srow>summary,.srows a.sr{display:flex;align-items:center;gap:12px;min-height:52px;padding:8px 0;cursor:pointer;list-style:none;
+.srow>summary,.srows a.sr,.srows div.sr{display:flex;align-items:center;gap:12px;min-height:52px;padding:8px 0;cursor:pointer;list-style:none;
 color:var(--ink);text-decoration:none}
 .srow>summary::-webkit-details-marker{display:none}
 .srl{flex:none;width:92px;font:500 14px/20px var(--font);color:var(--ink-2)}
@@ -496,7 +506,8 @@ background:var(--surface);color:var(--ink)}.field:focus{border:2px solid var(--f
 .summary{font:600 18px/24px var(--font);margin:4px 0 8px}
 /* approval card */
 .waitcard{border:0;border-left:3px solid var(--warn);background:var(--surface)}
-.waitcard>h2{color:var(--warn)}
+.waitcard>h2{color:var(--warn)}.waitcard .btns{grid-template-columns:3fr 2fr}
+.otable .tot td{font-size:14px}
 .cd{display:inline-flex;gap:6px;align-items:center;font:500 14px/20px var(--font);color:var(--warn);margin:0 0 4px}.cd .ic{width:16px;height:16px}
 /* inbox */
 .msg{position:relative;padding:12px 0 12px 18px!important;transition:transform .2s var(--ease)}
@@ -567,13 +578,17 @@ max-width:640px;margin:0 auto;box-shadow:var(--shadow-sheet)}
 .ghost{display:none}
 .sitem.done b{color:var(--up)}.setup .btn{margin-top:8px}
 [hidden]{display:none!important}
+/* Home: one column on a phone (cards ordered by urgency), two panes from 860px */
+@media (max-width:859px){.home{display:flex;flex-direction:column}.home>.col-a,.home>.col-b{display:contents}
+.home .o1{order:1}.home .o2{order:2}.home .o3{order:3}.home .o4{order:4}.home .o5{order:5}.home .o6{order:6}.home .o7{order:7}}
+.home .perf{margin:4px 0 8px}
 /* layout: Fold inner screen and tablets */
 @media (min-width:860px){body{max-width:1040px;padding:0 24px calc(84px + env(safe-area-inset-bottom))}
 .top,.demostrip{margin:0 -24px;padding-left:24px;padding-right:16px}
 main>*{max-width:720px;margin-left:auto;margin-right:auto}
 main>.home,main>.twopane{max-width:none}
 .home{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:0 24px;align-items:start}
-.home>.col-b{position:sticky;top:64px}
+.home>.col-b{position:sticky;top:64px}.home .o3{margin-top:4px}
 .twopane{display:grid;grid-template-columns:minmax(0,520px) minmax(0,1fr);gap:0 24px;align-items:start}
 .twopane>.pane{position:sticky;top:64px;max-height:calc(100vh - 160px);overflow:auto;background:var(--surface);border-radius:var(--r-md);padding:0 16px 16px}
 .twopane>.pane section{background:none;padding:0;margin:20px 0}

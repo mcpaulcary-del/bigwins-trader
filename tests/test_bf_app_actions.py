@@ -167,7 +167,7 @@ def test_BF_D39_kill_and_stop_need_the_confirm_button_pause_is_one_tap() -> None
     _, page = _post(ctl, {"a": "ki"})
     assert "needs the Yes button" in page and j.safety_level() is SafetyLevel.NORMAL
     st, _, body = ctl.respond("GET", "/act/confirm?a=ki", {"Tailscale-User-Login": OWNER})
-    assert "Yes, KILL" in body.decode() and 'name="confirm" value="yes"' in body.decode()
+    assert "Kill trading" in body.decode() and 'name="confirm" value="yes"' in body.decode()
     assert "KILLED" in _post(ctl, {"a": "ki", "confirm": "yes"})[1]
     assert j.safety_level() is SafetyLevel.KILLED
     _post(ctl, {"a": "so"})
@@ -225,7 +225,7 @@ def test_BF_D39_confirm_screen_shows_count_and_total() -> None:
     _, _, body = ctl.respond("GET", f"/act/confirm?a=ok&b={bid}&n=all",
                              {"Tailscale-User-Login": OWNER})  # fmt: skip
     page = body.decode()
-    assert f"Approve all 4 orders of {bid}" in page and "total ≈ A$" in page
+    assert "4 orders · ≈ $" in page and f"Batch {bid}" in page
     assert 'name="code"' in page and "Approve all 4 orders" in page
 
 

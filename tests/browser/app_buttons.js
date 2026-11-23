@@ -17,11 +17,13 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   await page.waitForLoadState();
   out.pause = await text();
   await page.goto(base + '/act/confirm?a=ki');
+  // BF-D73: a commit screen has no tab bar and says what Kill does and does not do
+  out.killScreen = await page.evaluate(() => [document.querySelector('.tabs') === null, document.querySelectorAll('.btn.danger').length, document.querySelector('main').innerText.includes('Nothing is sold')]);
   await page.click('button.danger');           // Kill -> Yes
   await page.waitForLoadState();
   out.kill = await text();
   await page.goto(base + '/');
-  await page.click('a.btn:has-text("Approve all")');
+  await page.click('a.btn:has-text("Review")');   // BF-D73: Review & approve
   await page.waitForLoadState();
   out.confirm = await text();
   await page.fill('#code', '123456');
@@ -70,7 +72,9 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   out.treemap = [code, await page.innerText('.sheet h1')];
   await page.click('.sheetx');
   await page.goto(base + '/');
+  await page.click('details.srow:has([data-whatif]) > summary');   // BF-D73: a status row opens it
   await page.waitForSelector('[data-whatif]');
+  out.statusRow = await page.evaluate(() => document.querySelector('details.srow:has([data-whatif])').open);
   const before = await page.innerText('[data-wi-v]');
   await page.$eval('#wi-r', r => { r.value = '-20'; r.dispatchEvent(new Event('input', { bubbles: true })); });
   out.whatif = [before, await page.innerText('[data-wi-v]'), await page.innerText('[data-wi-m]'), await page.innerText('[data-wi-s]')];

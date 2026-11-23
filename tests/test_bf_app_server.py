@@ -178,7 +178,7 @@ def test_BF_D43_every_tab_renders_with_the_tab_bar(demo_app: Any) -> None:
 def test_BF_D43_home_has_waiting_batch_chart_ranges_and_twins(demo_app: Any) -> None:
     demo, d = demo_app
     _, page = _get(d, "/")
-    assert "waiting for your approval" in page and "/act/confirm?a=ok&amp;b=" in page
+    assert "Needs your approval" in page and "/act/confirm?a=ok&amp;b=" in page
     assert 'data-range="31"' in page and 'id="perf-data"' in page and "From peak" in page
     assert "you are here" in page and "Percentile history" in page
 

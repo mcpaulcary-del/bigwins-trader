@@ -73,7 +73,7 @@ from trader.app_store import (
 from trader.approval import APP_CHAT, OPEN_FOR_APPROVAL, ApprovalBot, Incoming, approved_seqs
 from trader.constants import ASX_TZ
 from trader.journal import Journal
-from trader.webui import SECURITY_HEADERS, e, page, section
+from trader.webui import SECURITY_HEADERS, chev, e, icon, page, plural, section
 
 CODE_ACTS = frozenset({"ok", "ap", "rf", "veto", "re", "co", "idmap", "idmap_reject"})
 CONFIRM_ACTS = frozenset({"ki", "so", "cancel"})
@@ -84,6 +84,30 @@ NO_CODE_SERVER = frozenset(
     {"backup_now", "restore_test", "fetch", "hc_ping"}
 )  # allowed even when the app's address changed
 ONE_TAP = frozenset({"pa", "st"})
+CONFIRM_TITLE = {
+    "ok": "Approve orders", "ap": "Approve orders", "rf": "Refuse orders", "veto": "Veto order",
+    "re": "Resume trading", "co": "Continue (loss rule)", "idmap": "Code change",
+    "idmap_reject": "Undo code change", "pa": "Pause buying", "ki": "Kill switch",
+    "so": "Stop (loss rule)", "st": "Status", "cancel": "Cancel job",
+}  # fmt: skip
+# BF-D73: the Kill screen says exactly what /kill does (execution.kill + risk BLOCKS_ALL):
+# the KILLED latch refuses every new order (buys and sells) and cancels this book's open
+# orders at the broker; it never sells anything. /resume with a code re-arms (NORMAL).
+KILL_COPY = (
+    ("What happens", (
+        "The trader stops sending orders: no new buys and no new sells, including orders "
+        "you have already approved that have not been sent yet.",
+        "Any of this book's orders still open at the broker are cancelled.",
+    )),
+    ("What does not happen", (
+        "Nothing is sold. Your shares and cash stay exactly as they are.",
+        "Orders that have already filled are not reversed.",
+    )),
+    ("To undo", (
+        "Controls, then Resume, with your 6-digit code. Until then the trader stays stopped, "
+        "even at the next month-end decision.",
+    )),
+)  # fmt: skip
 MAX_FAILS = 3
 LOCK = timedelta(minutes=15)
 DAY_FAILS = 6  # BF-D58 (N6): slow guessing
@@ -521,10 +545,17 @@ class Control:
         return "cross-site request refused"
 
     def _html(
-        self, status: int, hdrs: dict[str, str], title: str, body: str, active: str = ""
+        self,
+        status: int,
+        hdrs: dict[str, str],
+        title: str,
+        body: str,
+        active: str = "",
+        confirm: bool = False,
     ) -> tuple[int, dict[str, str], bytes]:
         hdrs["Content-Type"] = "text/html; charset=utf-8"
-        out = page(title, body, active, demo=self.demo, refresh=False, live=self.live)
+        out = page(title, body, active, demo=self.demo, refresh=False, live=self.live,
+                   confirm=confirm)  # fmt: skip
         return status, hdrs, out.encode()
 
     # ------------------------------------------------------------ GET pages
@@ -543,7 +574,11 @@ class Control:
         if p == "/act":
             return self._html(200, hdrs, "Controls", self._controls(token), "server")
         if p == "/act/confirm":
-            return self._html(200, hdrs, "Confirm", self._confirm(qs, token))
+            title = CONFIRM_TITLE.get(qs.get("a", ""), "Confirm")
+            if qs.get("a", "").startswith("srv:") or qs.get("a") == "refresh":
+                title = "Server job"
+            body = f'<div class="confirm">{self._confirm(qs, token)}</div>'
+            return self._html(200, hdrs, title, body, confirm=True)
         if p == "/act/alerts":
             return self._html(200, hdrs, "Alerts", self._alerts_page(token), "server")
         if p == "/act/backup-key":
@@ -623,44 +658,78 @@ class Control:
         now = self.clock()
         lvl = self.journal.safety_level().value
         lock = self.locked(now)
-        out = [f"<h1>Controls</h1><p>Safety now: <b>{e(lvl)}</b></p>"]
+        tone = (
+            "ok"
+            if lvl == "NORMAL"
+            else ("bad" if lvl in ("KILLED", "HALTED_INTEGRITY") else "wait")
+        )
+        out = [
+            f'<h1>Controls</h1><p class="statusline"><span class="sd {tone}"></span>Safety now: '
+            f"<b>{e(lvl)}</b></p>"
+        ]
         if self.demo:
-            out.append('<p class="note">DEMO: buttons here are simulated; nothing is changed.</p>')
+            out.append(
+                '<p class="note info">Demo: buttons here are simulated; nothing is changed.</p>'
+            )
         if lock:
             out.append(
                 f'<p class="note">Code actions are locked until {lock.astimezone(ASX_TZ):%H:%M} '
                 "(too many wrong codes). Pause, Kill and Stop still work.</p>"
             )
+
+        def row(href: str, ic: str, label: str, desc: str, cls: str = "") -> str:
+            return (
+                f'<li><a class="mrow {cls}" href="{href}">{icon(ic)}<span class="mt">'
+                f'<span class="ml">{e(label)}</span><span class="md">{e(desc)}</span></span>'
+                f"{chev()}</a></li>"
+            )
+
+        pause = self._form(token, {"a": "pa"}, '<button class="btn sm warnb">Pause</button>')
         out.append(section(
-            "Stop or slow the trader",
-            self._form(token, {"a": "pa"},
-                       '<button class="btn wide warnb">Pause buying now</button>')
-            + '<p class="small muted">Pause is one tap: buys stop, registered sells go on.</p>'
-            '<div class="btns"><a class="btn danger" href="/act/confirm?a=ki">Kill</a>'
-            '<a class="btn sec" href="/act/confirm?a=so">Stop (loss rule)</a></div>',
+            "Stop or slow",
+            '<ul class="menu"><li><div class="mrow">' + icon("pause")
+            + '<span class="mt"><span class="ml">Pause buying</span><span class="md">One tap: buys '
+            "stop, registered sells go on.</span></span>" + pause + "</div></li>"
+            + row("/act/confirm?a=so", "minus-circle", "Stop (loss rule)", "Asks you to confirm")
+            + row("/act/confirm?a=ki", "stop-octagon", "Kill switch",
+                  "Stops all orders and cancels open ones", "dangerrow")
+            + "</ul>",
         ))  # fmt: skip
+        status = self._form(
+            token, {"a": "st"},
+            f'<button class="mrow">{icon("activity")}<span class="mt"><span class="ml">Status'
+            '</span><span class="md">Shows the safety level</span></span></button>',
+        )  # fmt: skip
         out.append(section(
-            "Re-arm (needs your code)",
-            '<div class="btns"><a class="btn sec" href="/act/confirm?a=re">Resume</a>'
-            '<a class="btn sec" href="/act/confirm?a=co">Continue (loss rule)</a></div>'
-            + self._form(token, {"a": "st"}, '<button class="btn sec wide">Status</button>'),
+            "Re-arm · needs your code",
+            '<ul class="menu">'
+            + row("/act/confirm?a=re", "play", "Resume", "Back to normal trading")
+            + row("/act/confirm?a=co", "check", "Continue (loss rule)",
+                  "Stage 3 written confirmation")
+            + f"<li>{status}</li></ul>",
         ))  # fmt: skip
         waiting = self.waiting_batches(now)
         rows = "".join(
-            f'<li><a class="rowlink" href="/act/confirm?a=ok&amp;b={e(b)}&amp;n=all">'
-            f'<span class="grow"><b>{e(b)}</b><div class="sub">{n} order(s) waiting · '
-            f"by {e(dl)}</div></span><span class='chev'>&rsaquo;</span></a></li>"
+            f'<li><a class="mrow" href="/act/confirm?a=ok&amp;b={e(b)}&amp;n=all">{icon("clock")}'
+            f'<span class="mt"><span class="ml">{plural(n, "order")} · by {e(dl)}</span>'
+            f'<span class="md mono">{e(b)}</span></span>{chev()}</a></li>'
             for b, n, dl in waiting
         )
         out.append(section(
-            "Waiting for your approval",
-            f'<ul class="list">{rows}</ul>' if rows else '<p class="muted">Nothing waiting.</p>',
+            "Waiting for approval",
+            f'<ul class="menu">{rows}</ul>' if rows else '<p class="muted">Nothing waiting.</p>',
         ))  # fmt: skip
-        out.append(section("Code changes (BF-D19)", self._idmap_html()))
-        out.append(
-            '<p class="small muted"><a href="/act/alerts">Alerts on this phone</a> · '
-            '<a href="/server" data-nav>Server</a></p>'
-        )
+        out.append(section(
+            "More",
+            '<ul class="menu">'
+            + row("/act/alerts", "bell", "Alerts on this phone", "Turn on, choose which")
+            + '<li><details class="srow"><summary class="mrow">' + icon("swap")
+            + '<span class="mt"><span class="ml">Share code changes</span><span class="md">'
+            "Confirm or record a code change (BF-D19)</span></span>" + chev() + "</summary>"
+            f'<div class="srbody">{self._idmap_html()}</div></details></li>'
+            + row("/server", "server", "Server", "Health, jobs and updates")
+            + "</ul>",
+        ))  # fmt: skip
         return "".join(out)
 
     def _idmap_html(self) -> str:
@@ -676,13 +745,14 @@ class Control:
         )
         manual = (
             '<form method="get" action="/act/confirm"><input type="hidden" name="a" value="idmap">'
-            '<div class="btns"><input class="code" style="font-size:16px;letter-spacing:1px" '
-            'name="old" placeholder="old code" maxlength="6" required>'
-            '<input class="code" style="font-size:16px;letter-spacing:1px" name="new" '
-            'placeholder="new code" maxlength="6" required></div>'
-            '<input class="code" style="font-size:16px;letter-spacing:1px" name="ratio" '
-            'placeholder="ratio, e.g. 1:10 (optional)" maxlength="12">'
-            '<button class="btn sec wide" style="margin-top:8px">Record a code change</button>'
+            '<div class="btns"><input class="field" aria-label="Old code" '
+            'name="old" placeholder="Old code" maxlength="6" required>'
+            '<input class="field" aria-label="New code" name="new" '
+            'placeholder="New code" maxlength="6" required></div>'
+            '<input class="field" aria-label="Share ratio" name="ratio" '
+            'placeholder="Ratio, e.g. 1:10 (optional)" maxlength="12">'
+            '<button class="btn sec wide" style="margin-top:8px" aria-label="Record a code change">'
+            "Record a code change</button>"
             "</form>"
         )
         return (f'<ul class="list">{items}</ul>' if items else
@@ -738,7 +808,7 @@ class Control:
         return self.bot.preview(a, args, now)
 
     def _summary(self, qs: Mapping[str, str]) -> str:
-        """The orders an approval / refusal covers, with the total value."""
+        """The orders an approval / refusal covers: a labelled table with totals."""
         b, n = qs.get("b", ""), qs.get("n", "")
         if qs.get("a") not in ("ok", "ap", "rf", "veto") or not b:
             return ""
@@ -750,67 +820,95 @@ class Control:
         sells = sum((Decimal(str(it.value_at_ref)) for it, _ in its if it.side.value == "SELL"),
                     Decimal(0))  # fmt: skip
         rows = "".join(
-            f"<tr><td>{it.seq}</td><td class='{'buy' if it.side.value == 'BUY' else 'sell'}'>"
-            f"{e(it.side.value.lower())}</td><td><b>{e(it.entity)}</b><div class='sub'>{it.qty} "
-            f"@ ≤ {e(it.limit_price)}</div></td>"
-            f"<td class='r'>≈ A${Decimal(str(it.value_at_ref)):,.0f}</td></tr>"
+            f"<tr><td class='sub'>{it.seq}</td><td><span class='side'>"
+            f"{e(it.side.value.capitalize())}</span></td><td><b>{e(it.entity)}</b></td>"
+            f"<td class='r'>{it.qty:,}</td><td class='r'>≤ {_px(it.limit_price)}</td>"
+            f"<td class='r'>${Decimal(str(it.value_at_ref)):,.0f}</td></tr>"
             for it, _ in its
         )
-        tot = f"buys ≈ A${buys:,.0f}" + (f", sells ≈ A${sells:,.0f}" if sells else "")
+        net = sells - buys
+        sign = "+" if net >= 0 else "\u2212"
         return (
-            f'<p class="muted">{len(its)} order(s): {e(tot)} (at the reference prices; '
-            "limits shown)</p>"
-            f"<table><tbody>{rows}</tbody></table>"
+            '<div class="tscroll"><table class="otable"><thead><tr><th>#</th><th>Side</th>'
+            '<th>Share</th><th class="r">Qty</th><th class="r">Limit</th><th class="r">≈ Value</th>'
+            f"</tr></thead><tbody>{rows}"
+            f'<tr class="tot"><td></td><td colspan="3">Sells ≈ ${sells:,.0f} · Buys ≈ ${buys:,.0f}'
+            f'</td><td class="r" colspan="2">Net {sign}${abs(net):,.0f}</td></tr>'
+            "</tbody></table></div>"
+            '<p class="caption">Values at the reference prices; each order is sent with the limit '
+            "shown.</p>"
         )
 
-    def _confirm(self, qs: Mapping[str, str], token: str) -> str:
+    def _deadline(self, b: str) -> str:
+        now = self.clock()
+        for bid, _n, dl in self.waiting_batches(now):
+            if bid == b:
+                return dl
+        return ""
+
+    def _confirm(self, qs: Mapping[str, str], token: str) -> str:  # noqa: PLR0912
         now = self.clock()
         a = qs.get("a", "")
         why, _cmd, what = self._preview(qs, now)
         if why is not None:
             return section(
-                "Cannot do this", f"<p>{e(why)}</p><a class='btn sec' href='/act'>Back</a>"
+                "Cannot do this", f"<p>{e(why)}</p><a class='btn sec wide' href='/act'>Back</a>"
             )
         fields = {k: qs.get(k, "") for k in ("a", "b", "n", "old", "new", "ratio", "job")}
         if a == "srv:update":  # BF-D48: the exact commit shown here is what gets applied
             fields["commit"] = str(self.update_state().get("remote") or "")
-        head = f"<h1>{e(ACTION_LABEL.get(a, 'Confirm'))}</h1>"
-        summary = self._summary(qs)
-        if a == "ok" and qs.get("n") == "all" and qs.get("b"):
-            its = self.journal.intents_of(qs["b"])
-            total = sum((Decimal(str(it.value_at_ref)) for it, _ in its), Decimal(0))
-            what = f"Approve all {len(its)} orders of {qs['b']} — total ≈ A${total:,.0f}"
+        cancel = '<a class="btn sec wide" style="margin-top:8px" href="/act">Cancel</a>'
         demo = (
-            '<p class="note">DEMO: nothing will be changed; the result is simulated.</p>'
+            '<p class="note info">Demo: nothing will be sent or changed. The result is '
+            "simulated.</p>"
             if self.demo else ""
         )  # fmt: skip
-        if a in ONE_TAP:
-            inner = f'<button class="btn wide">{e(ACTION_LABEL[a])}</button>'
-            return (
-                head
-                + demo
-                + section(
-                    "", f'<p class="summary">{e(what)}</p>' + self._form(token, fields, inner)
-                )
+        head = demo
+        b = qs.get("b", "")
+        if a in ("ok", "ap", "rf", "veto") and b:
+            its = self.journal.intents_of(b)
+            if qs.get("n") and qs.get("n") != "all":
+                its = [(it, st) for it, st in its if str(it.seq) == qs.get("n")]
+            total = sum((Decimal(str(it.value_at_ref)) for it, _ in its), Decimal(0))
+            verb = {"ok": "approving", "ap": "approving", "rf": "refusing", "veto": "vetoing"}[a]
+            dl = self._deadline(b)
+            head += (
+                f'<p class="caption">You are {verb}</p>'
+                f"<h1>{plural(len(its), 'order')} · ≈ ${total:,.0f}</h1>"
+                + (f'<p class="cd">{icon("clock")}Approve by {e(dl)}. Not approved by then = not '
+                   "sent.</p>" if dl else "")
+                + self._summary(qs)
+                + f'<p class="mono">Batch {e(b)}</p>'
+            )  # fmt: skip
+        elif a == "ki":
+            cons = "".join(
+                f"<h3>{e(t)}</h3><ul>" + "".join(f"<li>{e(x)}</li>" for x in items) + "</ul>"
+                for t, items in KILL_COPY
             )
+            head += (
+                f'<span class="stop">{icon("stop-octagon")}</span><h1>Stop all trading now</h1>'
+                f'<div class="cons">{cons}</div>'
+            )
+        else:
+            head += f'<p class="summary">{e(what[:1].upper() + what[1:])}.</p>' if what else ""
+        if a in ONE_TAP:
+            inner = f'<button class="btn wide big">{e(ACTION_LABEL[a])}</button>'
+            return head + section("", self._form(token, fields, inner) + cancel)
         if a.startswith("srv:") and a[4:] in NO_CODE_SERVER:
             inner = (
                 '<input type="hidden" name="confirm" value="yes">'
-                '<button class="btn wide">Yes, run it</button>'
+                '<button class="btn wide big">Yes, run it</button>'
             )
-            return head + demo + section(
-                "", f'<p class="summary">{e(what)}.</p>' + self._form(token, fields, inner)
-                + '<a class="btn sec wide" style="margin-top:8px" href="/act">Cancel</a>',
-            )  # fmt: skip
+            return head + section("", self._form(token, fields, inner) + cancel)
         if a in CONFIRM_ACTS:
+            label = {"ki": "Kill trading", "so": "Stop: keep buys paused"}.get(
+                a, f"Yes, {ACTION_LABEL[a]}"
+            )
             inner = (
                 '<input type="hidden" name="confirm" value="yes">'
-                f'<button class="btn wide danger">Yes, {e(ACTION_LABEL[a])}</button>'
+                f'<button class="btn wide big danger">{e(label)}</button>'
             )
-            return head + demo + section(
-                "", f'<p class="summary">{e(what)}.</p>' + self._form(token, fields, inner)
-                + '<a class="btn sec wide" style="margin-top:8px" href="/act">Cancel</a>',
-            )  # fmt: skip
+            return head + section("", self._form(token, fields, inner) + cancel)
         lock = self.locked(now)
         if lock:
             return head + section(
@@ -832,26 +930,31 @@ class Control:
                 "Do it anyway</label>"
             )
         go = "Run on the server" if a.startswith("srv:") else ACTION_LABEL.get(a, "Confirm")
-        if a == "ok" and qs.get("b"):
-            n_all = len(self.journal.intents_of(qs["b"]))
+        cls = "btn wide big"
+        if a == "srv:rollback":
+            cls += " danger"
+        if a == "ok" and b:
+            n_all = len(self.journal.intents_of(b))
             go = (
                 f"Approve all {n_all} orders"
                 if qs.get("n") == "all"
                 else f"Approve order {qs.get('n')}"
             )
-        inner = (
-            extra
-            + '<label class="small muted" for="code">Your 6-digit code (authenticator app)</label>'
-            '<input class="code" id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" '
-            'maxlength="6" autocomplete="one-time-code" required autofocus>'
-            f'<button class="btn wide" style="margin-top:10px">{e(go)}</button>'
-        )
-        return (
-            head + demo
-            + section("", f'<p class="summary">{e(what)}</p>{summary}'
-                      + self._form(token, fields, inner)
-                      + '<a class="btn sec wide" style="margin-top:8px" href="/act">Cancel</a>')
+        if a == "rf" and b:
+            go = f"Refuse {plural(len(self.journal.intents_of(b)), 'order')}"
+            cls += " dangerline"
+        after = (
+            '<p class="caption">Orders go to the broker at the close auction on the execution day. '
+            "You can't undo an approval here.</p>"
+            if a in ("ok", "ap") else ""
         )  # fmt: skip
+        inner = (
+            extra + '<label class="flabel" for="code">6-digit code from your authenticator</label>'
+            '<input class="code" id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" '
+            'maxlength="6" autocomplete="one-time-code" required autofocus placeholder="••••••">'
+            f'<button class="{cls}" style="margin-top:12px">{e(go)}</button>'
+        )
+        return head + section("", self._form(token, fields, inner) + cancel + after)
 
     def update_state(self) -> dict[str, Any]:
         st = get_state(self.journal, "update-available")
@@ -1084,13 +1187,15 @@ class Control:
     def _result(
         self, hdrs: dict[str, str], text: str, good: bool
     ) -> tuple[int, dict[str, str], bytes]:
-        tone = "ok" if good else "bad"
+        tone = "up" if good else "down"
         body = (
+            f'<div class="confirm"><span class="okmark {tone}">'
+            f'{icon("check" if good else "x")}</span>'
             f'<h1>{"Done" if good else "Not done"}</h1>'
-            + section("", f'<p><span class="pill {tone}">{"OK" if good else "NO"}</span> '
-                      f"{e(text)}</p>"
-                      '<div class="btns"><a class="btn sec" href="/orders" data-nav>Orders</a>'
-                      '<a class="btn sec" href="/act">Controls</a></div>')
+            + section("", f"<p>{e(text)}</p>"
+                      '<a class="btn wide" href="/orders" data-nav>Back to Orders</a>'
+                      '<a class="btn sec wide" style="margin-top:8px" href="/act">Controls</a>')
+            + "</div>"
         )  # fmt: skip
         return self._html(200, hdrs, "Result", body)
 
@@ -1140,6 +1245,15 @@ ACTIONS_OFF = (
     "(it reads your Tailscale log-in and writes it to <code>app.allowed_logins</code> in "
     "config/bfast.yaml on the server), then restart the trader.</p>"
 )
+
+
+def _px(x: object) -> str:
+    """A limit price: 2 dp at $2 and above, 3 dp below (BF-D73)."""
+    try:
+        q = Decimal(str(x))
+    except ArithmeticError:
+        return e(x)
+    return f"${q.quantize(Decimal('0.01') if abs(q) >= 2 else Decimal('0.001')):,}"
 
 
 def control_qs(**kw: str) -> str:
