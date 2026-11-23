@@ -145,9 +145,9 @@ def score_card(o: Ops, v: Any) -> str:
     stats = (
         '<dl class="stats two">'
         + stat(mine[:1].upper() + mine[1:], aud(s.after_costs, dp=0),
-               pct(s.mine_pct) + " on the money put in", tone(s.mine_pct))
+               pct(s.mine_pct) + " on money put in", tone(s.mine_pct))
         + stat("Same money in A200", aud(s.a200, dp=0) if s.a200 is not None else "–",
-               (pct(s.a200_pct) + " on the money put in") if s.a200 is not None
+               (pct(s.a200_pct) + " on money put in") if s.a200 is not None
                else "no fund prices yet", tone(s.a200_pct))
         + "</dl>"
     )  # fmt: skip

@@ -432,7 +432,7 @@ def scoreboard(
         return None
     d0, d1 = series[0][0], series[-1][0]
     fl: list[Flow] = ([(d0, Decimal(flows))] if isinstance(flows, Decimal | int)
-                      else [(max(d, d0), Decimal(a)) for d, a in flows])  # fmt: skip
+                      else [(min(max(d, d0), d1), Decimal(a)) for d, a in flows])  # fmt: skip
     capital = sum((a for _, a in fl), Decimal(0))
     if not capital:
         return None

@@ -553,3 +553,15 @@ def test_BF_D81_short_file_gzip_roundtrip(tmp_path: Path) -> None:
                 "% of Total Product in Issue Reported as Short Positions\nMADE UP,ZZQ,1,100,1.0\n")  # fmt: skip
     sp = iv.short_position(tmp_path, "ZZQ")
     assert sp is not None and sp.pct == pytest.approx(1.0)
+
+
+def test_BF_D81_S1_moves_outside_the_book_days_are_clamped() -> None:
+    """A deposit dated after the last daily value (or before the first) is counted on the
+    nearest book day, never dropped (A200 would show $0)."""
+    d0, d1 = date(2024, 1, 15), date(2024, 2, 29)
+    series = [(d0, Decimal(10000)), (d1, Decimal(10400))]
+    idx = [(d0, 1.0), (d1, 1.02)]
+    sb = ov.scoreboard(series, idx, [(date(2026, 11, 24), Decimal(10000))], Decimal(0))
+    assert sb is not None and sb.a200 == Decimal("10000.00") and sb.flows[0][0] == d1
+    early = ov.scoreboard(series, idx, [(date(2023, 1, 2), Decimal(10000))], Decimal(0))
+    assert early is not None and early.a200 == Decimal("10200.00")

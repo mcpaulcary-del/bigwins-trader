@@ -125,7 +125,13 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
         random_twins=random_twins,
     )  # fmt: skip
     for book in (s.book, s.sim_book):
-        j.add_cash(book, "DEPOSIT", Decimal(10000), "demo paper deposit")
+        j.add_cash(
+            book,
+            "DEPOSIT",
+            Decimal(10000),
+            "demo paper deposit",
+            datetime.combine(start, time(9, 0), ASX_TZ),
+        )  # dated the demo's first day
     sim = SimBroker(cash=Decimal(10000), half_spread=s.sim_half_spread)
     tr = _InboxTransport()
     app = BfApp(
