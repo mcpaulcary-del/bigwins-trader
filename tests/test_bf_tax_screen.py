@@ -153,5 +153,5 @@ def test_BF_D44_screen_unrealised_rebuy_flag_and_estimate() -> None:
     page = screen(v, Extras(), src, {"fy": "2026-27"})
     assert "not tax advice" in page and "Paper account: no real tax" in page
     assert "Estimated tax" in page and "34.5%" in page and "FIFO" in page
-    assert "TR 2008/1" in page and "discount now" in page
+    assert "TR 2008/1" in page and "Discount now" in page
     assert "enter them from your dividend statements" not in page  # no dividends: no gap

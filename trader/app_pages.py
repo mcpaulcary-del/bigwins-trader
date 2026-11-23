@@ -22,7 +22,7 @@ from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
 
 from trader.app_store import SERVER_ACTIONS, get_state, inbox_rows, server_job_rows
-from trader.app_viz import arrow, donut, gauge, hero, ring, slice_colours, spark, threshold_meter
+from trader.app_viz import arrow, donut, gauge, hero, slice_colours, spark, threshold_meter
 from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
@@ -1390,8 +1390,48 @@ def health_card(v: Any, x: Extras) -> str:
     return section("Trader health", f'<ul class="list">{"".join(items)}</ul>')
 
 
+SRV_MENU = (  # BF-D73: (job, icon, short label, one-line description, destructive)
+    ("refresh", "refresh", "Refresh prices", "The day's EODHD bulk file", False),
+    ("srv:check", "shield", "Run server checks", "Secret files, containers", False),
+    ("srv:fetch", "download", "Check for updates", "Looks at GitHub now", False),
+    ("srv:restart", "refresh", "Restart trader", "Refused while the ASX is open", False),
+    ("srv:update", "upload", "Update to latest", "Pull, rebuild, restart", False),
+    ("srv:rollback", "undo", "Roll back", "The commit before the last update", True),
+    ("srv:backup_now", "archive", "Back up now", "Server and OneDrive", False),
+    ("srv:restore_test", "beaker", "Restore test", "Unpack the latest backup and check it", False),
+    ("srv:backup_key", "key", "Show recovery key", "Once, needs your code", False),
+    ("srv:hc_ping", "activity", "Test healthchecks ping", "healthchecks.io", False),
+    ("srv:claude_remote", "terminal", "Claude remote: start", "tmux session 'remote'", False),
+    ("srv:claude_stop", "terminal", "Claude remote: stop", "Ends the session", False),
+)
+
+
+def menu_row(href: str, ic: str, label: str, desc: str = "", value: str = "",
+             danger: bool = False, nav: bool = False) -> str:  # fmt: skip
+    """An iOS-style row: icon, label, one-line description, a value, a chevron."""
+    return (
+        f'<li><a class="mrow{" dangerrow" if danger else ""}" href="{href}"'
+        f'{" data-nav" if nav else ""}>{icon(ic)}<span class="mt"><span class="ml">{e(label)}</span>'
+        + (f'<span class="md">{e(desc)}</span>' if desc else "")
+        + "</span>"
+        + (f'<span class="mv">{e(value)}</span>' if value else "")
+        + f"{chev()}</a></li>"
+    )
+
+
 def server(v: Any, x: Extras) -> str:
     parts = ["<h1>Server</h1>"]
+    bk: Mapping[str, Any] = x.backup[0] if x.backup else {}
+    parts.append(section("", '<ul class="menu">'
+                         + menu_row("/act", "shield", "Controls", "Pause, stop or kill")
+                         + menu_row("/setup", "list-check", "Setup & IBKR", nav=True)
+                         + menu_row("/backups", "archive", "Backups",
+                                    value="OK" if bk.get("ok") else "", nav=True)
+                         + menu_row("/strategy", "chart", "Strategy",
+                                    value="update available" if int(x.update.get("ahead") or 0) > 0
+                                    else "", nav=True)
+                         + menu_row("/accounts", "key", "Accounts & services", nav=True)
+                         + "</ul>"))  # fmt: skip
     if x.host is None:
         parts.append(section("Server", (
             "<p class='muted'>No status from the server yet. The host worker sends it every "
@@ -1424,10 +1464,21 @@ def server(v: Any, x: Extras) -> str:
             f"<li>ASX: {e(hs.get('asx', '-'))}</li>",
         ]
         cont = "".join(
-            f"<li>{e(c['name'])}: <span class='pill {'ok' if 'Up' in c['state'] or 'running' in c['state'] else 'bad'}'>"
-            f"{e(c['state'])}</span></li>"
+            f"<li><span class='sd {'ok' if 'Up' in c['state'] or 'running' in c['state'] else 'bad'}'>"
+            f"</span><b>{e(c['name'])}</b> <span class='sub'>{e(c['state'])}</span></li>"
             for c in hs.get("containers", [])
         )
+        bad_c = [c for c in hs.get("containers", [])
+                 if not ("Up" in c["state"] or "running" in c["state"])]  # fmt: skip
+        ok_all = not stale and not bad_c
+        parts.insert(1, (
+            f'<p class="statusline"><span class="sd {"ok" if ok_all else "bad"}"></span>'
+            + ("All systems normal" if ok_all else
+               ("Status is old" if stale else f"{e(bad_c[0]['name'])} is not running"))
+            + "</p>"
+            + (f'<p class="caption">Up {float(up) / 86400:.0f} days · status {ago(at, v.now)}</p>'
+               if up is not None else "")
+        ))  # fmt: skip
         parts.append(section(
             "Machine", (f'<p class="note">Status is {ago(at, v.now)} old: is the worker running?</p>'
                         if stale else f'<p class="small muted">Status {ago(at, v.now)}</p>')
@@ -1435,16 +1486,22 @@ def server(v: Any, x: Extras) -> str:
         if cont:
             parts.append(section("Containers", f'<ul class="list">{cont}</ul>'))
         if hs.get("log"):
-            parts.append(section("Trader log (last lines, cleaned)",
-                                 f'<div class="logs">{e(chr(10).join(hs["log"]))}</div>'))  # fmt: skip
+            log = list(hs["log"])
+            parts.append(section("Trader log", (
+                f'<div class="logs">{e(chr(10).join(log[-3:]))}</div>'
+                + (f'<details class="about"><summary>Show more</summary><div class="logs">'
+                   f"{e(chr(10).join(log))}</div></details>" if len(log) > 3 else "")
+                + '<p class="caption">Last lines, cleaned.</p>')))  # fmt: skip
     parts.append(health_card(v, x))
-    btns = "".join(
-        f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="srv:" + k)}">{e(lab)}</a>'
-        for k, lab in SERVER_ACTIONS.items()
-    )
-    btns += f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="refresh")}">Refresh prices now</a>'
-    parts.append(section("Run the server", btns + "<p class='small muted'>Each asks for your "
-                         "6-digit code; restart and update are refused while the ASX is open "
+    known = {k for k, *_ in SRV_MENU}
+    menu = "".join(menu_row(act_link(a=k), ic, lab, desc, danger=dn)
+                   for k, ic, lab, desc, dn in SRV_MENU
+                   if k == "refresh" or k[4:] in SERVER_ACTIONS)  # fmt: skip
+    menu += "".join(menu_row(act_link(a="srv:" + k), "server", lab)
+                    for k, lab in SERVER_ACTIONS.items() if "srv:" + k not in known)  # fmt: skip
+    parts.append(section("Run on the server", f'<ul class="menu">{menu}</ul>'
+                         "<p class='caption'>Each opens a confirm screen; most ask for your "
+                         "6-digit code. Restart and update are refused while the ASX is open "
                          "unless you tick “Do it anyway”.</p>" + actions_note(x, v.demo)))  # fmt: skip
     if x.server_jobs:
         rows = "".join(
@@ -1465,21 +1522,10 @@ def server(v: Any, x: Extras) -> str:
         "<p class='small'>Claude Code runs on the server in the tmux session <code>remote</code> "
         "(<code>claude remote-control</code>); you talk to it in the official Claude app, signed "
         "in with your Claude account. This app never runs Claude or any command itself.</p>"
-        '<div class="btns">'
-        f'<a class="btn sec" href="{act_link(a="srv:claude_remote")}">Start / check</a>'
-        f'<a class="btn sec" href="{act_link(a="srv:claude_stop")}">Stop</a></div>'
-        '<a class="btn wide" href="https://claude.ai/code" target="_blank" rel="noopener noreferrer">'
+        "<p class='caption'>Start or stop it under Run on the server.</p>"
+        '<a class="btn sec wide" href="https://claude.ai/code" target="_blank" rel="noopener noreferrer">'
         f"Open Claude {icon('external')}</a><p class='small muted'>First time only: sign in once on the server "
         "(Termius: <code>tmux attach -t remote</code>).</p>")))  # fmt: skip
-    parts.append('<a class="btn sec wide" href="/act">Trader controls (pause, stop, kill)</a>')
-    parts.append(
-        '<div class="btns"><a class="btn sec" href="/backups" data-nav>Backups</a>'
-        '<a class="btn sec" href="/accounts" data-nav>Accounts</a></div>'
-    )
-    parts.append(
-        '<a class="btn sec wide" style="margin-top:10px" href="/setup" data-nav>'
-        "Setup &amp; IBKR checklist</a>"
-    )
     return shell(v, x, "Server", "".join(parts), "server")
 
 
@@ -1534,8 +1580,10 @@ def strategy(v: Any, x: Extras) -> str:
     run = x.running
     u = x.update
     parts = [backlink("/server", "Server") + "<h1>Strategy</h1>"]
+    mono = {"id", "config", "code", "commit"}
     rows = "".join(
-        f"<tr><td>{e(k)}</td><td class='r'><b>{e(run.get(key, '-') or '-')}</b></td></tr>"
+        f"<tr><td class='sub'>{e(k)}</td><td class='r{' mono' if key in mono else ''}'>"
+        f"{e(run.get(key, '-') or '-')}</td></tr>"
         for k, key in (("Version", "version"), ("Version id", "id"), ("Config hash", "config"),
                        ("Strategy code hash", "code"), ("Code commit", "commit"))
     )  # fmt: skip
@@ -1562,7 +1610,7 @@ def strategy(v: Any, x: Extras) -> str:
         elif u.get("reasons"):
             body += "<p class='small muted'>" + e("; ".join(u["reasons"][:6])) + "</p>"
         body += f'<a class="btn wide" href="{act_link(a="srv:update")}">Approve update</a>'
-        parts.append(section("Update available", body))
+        parts.append(section("Update available", body, "waitcard"))
     else:
         parts.append(section("Updates", "<p class='muted'>Up to date with the branch on GitHub "
                              "(checked by the server worker every 10 minutes).</p>"))  # fmt: skip
@@ -1587,11 +1635,12 @@ def strategy(v: Any, x: Extras) -> str:
                              "</tbody></table><p class='small muted'>Each decision is stamped with the "
                              "version that made it.</p>"))  # fmt: skip
     notes = "".join(
-        f"<li><b>{e(c.get('version'))}</b> <span class='sub'>{e(c.get('date', ''))}</span>"
-        + "".join(f"<div class='small'><b>{lab}:</b> {e(c[k])}</div>"
+        f"<li class='rel'><p class='summary'>{e(c.get('version'))}</p>"
+        f"<p class='caption'>{e(c.get('date', ''))}</p><dl class='reld'>"
+        + "".join(f"<dt>{lab}</dt><dd>{e(c[k])}</dd>"
                   for k, lab in (("what", "What"), ("why", "Why"), ("tested", "Tested"),
                                  ("takes_effect", "Takes effect")) if c.get(k))
-        + "</li>"
+        + "</dl></li>"
         for c in x.changelog
     )  # fmt: skip
     parts.append(section("Release notes", f'<ul class="list">{notes}</ul>' if notes
@@ -1633,12 +1682,10 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
             '<p>Card density</p><div class="chips" role="group" aria-label="Density">'
             '<button type="button" class="chip" data-density="comfortable">Comfortable</button>'
             '<button type="button" class="chip" data-density="compact">Compact</button></div>'
-            '<div class="btns"><button type="button" class="btn sec" data-tour-replay>Replay the '
-            'tour</button><button type="button" class="btn sec" data-home-reset>Reset Home cards'
-            "</button></div><p class='small muted'>Kept on this phone only.</p>"))
+            '<button type="button" class="btn sec wide" style="margin-top:12px" data-tour-replay>'
+            "Replay the tour</button><p class='small muted'>Kept on this phone only.</p>"))
         + section("About", f"<p>App version <b>{e(version)}</b></p><p class='small muted'>All amounts are in "
-                  "Australian dollars (AUD). Tip: on Home, press and hold a card title to move or "
-                  "hide cards (this phone only).</p>")
+                  "Australian dollars (AUD).</p>")
     )  # fmt: skip
     return shell(v, x, "Settings", body, "")
 
@@ -1656,7 +1703,7 @@ IBKR_SECRETS = ("tws_password", "ibkr_flex_token", "ibkr_flex_query_id")
 
 
 def _ext(href: str, label: str) -> str:
-    return (f'<a class="btn sec" href="{e(href)}" target="_blank" rel="noopener noreferrer">'
+    return (f'<a class="btn ter sm" href="{e(href)}" target="_blank" rel="noopener noreferrer">'
             f"{e(label)} {icon('external')}</a>")  # fmt: skip
 
 
@@ -1756,20 +1803,29 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
             else (f'<p class="small muted">{e(status)}</p>' if status else "")
         )
         btn = _ext(link, "Open IBKR" if "interactivebrokers" in link else "Open") if link else ""
-        rows.append(
-            f'<li class="{cls}" data-item="{e(key)}"><div class="rowlink"><span class="grow">'
-            f"<b>{e(title)}</b></span>{st}</div><p class='small'>{e(how)}</p>{extra}{ticks}"
-            f"{btn}</li>"
-        )
+        inner = f"<p class='small'>{e(how)}</p>{extra}{ticks}{btn}"
+        if auto:  # BF-D73: a done step collapses to one line
+            rows.append(
+                f'<li class="{cls}" data-item="{e(key)}"><details class="ord"><summary>'
+                f'<span class="grow"><b>{e(title)}</b></span>{st}{chev()}</summary>{inner}'
+                "</details></li>"
+            )
+        else:
+            rows.append(
+                f'<li class="{cls}" data-item="{e(key)}"><div class="rowlink"><span class="grow">'
+                f"<b>{e(title)}</b></span>{st}</div>{inner}</li>"
+            )
     n = len(items)
-    ring_html = ring(auto_done / n, f"{auto_done}/{n}", "done", f"{auto_done} of {n} done")
+    ring_html = (f'<div class="meter" role="img" aria-label="{auto_done} of {n} done">'
+                 f'<b style="width:{auto_done / n * 100:.0f}%"></b></div>')  # fmt: skip
     body = (
         backlink("/server", "Server")
         + "<h1>Setup &amp; IBKR</h1>"
         + section(
             "",
-            f'<div class="rings" id="setup-ring" data-total="{n}">{ring_html}'
-            f'<p class="summary"><span id="setup-count">{auto_done} of {n} done</span></p></div>'
+            f'<div id="setup-ring" data-total="{n}">'
+            f'<p class="summary"><span id="setup-count">{auto_done} of {n} done</span></p>'
+            f"{ring_html}</div>"
             "<p class='small muted'>Automatic ticks come from the trader's own records. Your "
             "own ticks are kept on this phone only (not on the server), so they show here "
             "and nowhere else.</p>",

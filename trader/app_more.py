@@ -426,7 +426,8 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
     def bar(r: list[Any], cls: str = "") -> str:
         p = share_pages._f(r[4]) or 0
         return (f'<li class="rb {cls}"><span class="rbn">{e(r[0])}</span><span class="rbb">'
-                f'<b style="width:{p * 100:.0f}%"></b></span><span class="rbv">#{e(r[5])}</span></li>')  # fmt: skip
+                f'<b style="width:{p * 100:.0f}%"></b></span><span class="rbv">Rank {e(r[5])} · P{p * 100:.0f}'
+                f"{' · picked' if cls == 'pick' else ''}</span></li>")  # fmt: skip
 
     steps = []
     steps.append(("Band C ranked", (
@@ -473,7 +474,8 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
     return (
         backlink("/orders", "Orders") + f"<h1>Replay: {day:%d %b %Y}</h1>"
         + section("", (
-            f'<div class="replay" data-replay><div class="rdots">{dots}</div>{panes}'
+            f'<div class="replay" data-replay><div class="rprog"><span data-rstep>Step 1</span>'
+            f'<div class="rdots">{dots}</div></div>{panes}'
             '<div class="btns rbtn"><button type="button" class="btn sec" data-rprev>Back</button>'
             '<button type="button" class="btn" data-rnext>Next</button></div>'
             '<button type="button" class="chip" data-rplay>▶ Play</button></div>'

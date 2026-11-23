@@ -151,7 +151,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     )
     r = safe(lambda: report(src, y), None)
     p = _params(src)
-    head = (seg + f'<p class="note">{e(label(src))}</p><div class="seg">{picker}</div>'
+    head = (seg + f'<div class="chips">{picker}</div><p class="note info">{e(label(src))}</p>'
             f"<p class='small muted'>1 Jul {y} – 30 Jun {y + 1} · parcels matched "
             f"<b>{e(p.method)}</b> · discount: {e(p.rule_text())}</p>")  # fmt: skip
     if r is None:
@@ -229,10 +229,10 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     marks = {h.code: h.mark for h in v.holdings if h.mark is not None}
     unr: list[Unrealised] = safe(lambda: unrealised(src, marks, today), [])
     un_rows = "".join(
-        f"<tr><td><b>{e(u.code)}</b><div class='sub'>{u.qty.normalize():f} bought {u.acquired:%d %b %y}</div></td>"
+        f"<tr><td><b>{e(u.code)}</b><div class='sub'>{u.qty.normalize():f} sh · bought {u.acquired:%-d %b %Y} · cost {aud(u.cost)}</div></td>"
         f"<td class='r {tone(None if u.value is None else u.value - u.cost)}'>"
-        f"{aud(None if u.value is None else u.value - u.cost, True)}<div class='sub'>cost {aud(u.cost)}</div></td>"
-        f"<td class='r small'>{'discount now' if u.eligible_from <= today else 'discount from ' + format(u.eligible_from, '%d %b %Y')}</td></tr>"
+        f"{aud(None if u.value is None else u.value - u.cost, True)}"
+        f"<div class='sub'>{'Discount now' if u.eligible_from <= today else 'Discount from ' + format(u.eligible_from, '%-d %b %Y')}</div></td></tr>"
         for u in unr
     )  # fmt: skip
     un_html = (f"<table><tbody>{un_rows}</tbody></table><p class='small muted'>Gain if sold at "
@@ -243,24 +243,38 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
     from trader.tax_report import accountant_items
 
     chk = "".join(
-        f"<li class='small'><span class='pill {'amber' if rel else 'ok'}'>"
-        f"{'check' if rel else 'n/a this year'}</span> {e(text)}</li>"
+        f"<li class='ckrow'><span>{e(text)}</span><span class='pill {'amber' if rel else 'nodot'}'>"
+        f"{'check' if rel else 'n/a this year'}</span></li>"
         for text, rel in accountant_items(r)
     )
+    quiet = (not r.cgt and not (divs + specials + credits) and not s.carried_in
+             and not s.carried_out and not t["distributions"])  # fmt: skip
     body = (
         head
-        + section(f"FY {fy_label(y)}", f'<div class="tiles">{tiles}</div>')
-        + section("Capital gains, step by step", order)
-        + section("Sales, parcel by parcel", sales_html)
-        + section("Dividends", div_html)
+        + section(
+            f"FY {fy_label(y)}",
+            f'<div class="tiles">{tiles}</div>'
+            + (
+                f"<p class='muted'>No sales, dividends or carried losses in FY {fy_label(y)}.</p>"
+                if quiet
+                else ""
+            ),
+        )
+        + (
+            ""
+            if quiet
+            else section("Capital gains, step by step", order)
+            + section("Sales, parcel by parcel", sales_html)
+            + section("Dividends", div_html)
+        )
         + section("If you sold today", un_html)
-        + section("Accountant checklist", f'<ul class="list">{chk}</ul>')
+        + section("Accountant checklist", f'<ol class="list cklist">{chk}</ol>')
         + (section("Check with your accountant", f'<ul class="list">{fl}</ul>') if fl else "")
         + f'<a class="btn sec wide" href="/tax.csv?fy={fy_label(y)}" download>'
         + icon("download")
         + "EOFY CSV for "
         "your accountant / myTax</a>"
-        f"<footer>{e(NOT_ADVICE)} {e(label(src))}</footer>"
+        f"<footer>{e(NOT_ADVICE)}</footer>"
     )
     return shell(v, x, "Tax", body, "holdings")
 

@@ -825,19 +825,24 @@ def shares_list(ctx: ShareCtx, held: Sequence[str]) -> str:
         if counts[k]
     )
     rows = []
+    last = ""
     for info in sorted(infos.values(), key=lambda i: (order[i.status], i.code)):
+        if info.status != last:  # BF-D73: group headers instead of a chip on every row
+            rows.append(f'<li class="day">{STATUS_LABEL[info.status]} · {counts[info.status]}</li>')
+            last = info.status
         r = lrow.get(info.code)
         p = _f(r[4]) if r is not None else None
-        sub = (f"rank {r[5]} · percentile {p * 100:.0f}" if r is not None and p is not None
-               else "not in the latest band C")  # fmt: skip
-        if info.first_flag:
-            sub += f" · first flagged {info.first_flag:%b %Y}"
+        right = (f"Rank {r[5]} · P{p * 100:.0f}" if r is not None and p is not None
+                 else "not in band C")  # fmt: skip
+        sub = f"first flagged {info.first_flag:%b %Y}" if info.first_flag else ""
+        bar = (f'<span class="meter" style="width:40px;display:inline-block;vertical-align:middle;'
+               f'margin:0 0 0 8px"><b style="width:{p * 100:.0f}%"></b></span>'
+               if p is not None else "")  # fmt: skip
         rows.append(
             f'<li data-kind="{info.status}"><a class="rowlink" href="/shares/{quote(info.code)}" '
-            f'data-nav data-sheet="1"><span class="grow"><b>{e(info.code)}</b> '
-            f'<span class="pill st-{info.status}">{STATUS_LABEL[info.status]}</span>'
-            f'<div class="sub">{e(sub)}</div></span>{chev()}'
-            "</a></li>"
+            f'data-nav data-sheet="1"><span class="grow"><b>{e(info.code)}</b>'
+            + (f'<div class="sub">{e(sub)}</div>' if sub else "")
+            + f'</span><span class="sub">{e(right)}{bar}</span>{chev()}</a></li>'
         )
     body = (
         f'<div class="chips" role="group" aria-label="Filter">{chips}</div>'
