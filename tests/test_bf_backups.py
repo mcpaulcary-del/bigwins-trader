@@ -243,7 +243,8 @@ def test_BF_D64_daily_summary_has_no_secrets(tmp_path: Path) -> None:
 def test_BF_D64_worker_runs_backup_jobs_from_the_fixed_list() -> None:
     sh = (ROOT / "deploy/bigwins.sh").read_text()
     assert (
-        "check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping) ;;" in sh
+        "check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin) ;;"
+        in sh
     )
     assert "OnCalendar=*-*-* 23:30:00 Australia/Sydney" in sh
     assert 'gitops.py" seal "$SECRETS/worker_job_key" "$BKEY"' in sh

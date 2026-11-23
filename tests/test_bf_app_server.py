@@ -58,7 +58,7 @@ def test_BF_D42_old_requests_are_not_run_and_only_whitelisted_names_exist() -> N
     assert server_job_rows(j)[0]["status"] == "REFUSED"
     assert set(SERVER_ACTIONS) == {"restart", "update", "rollback", "check", "claude_remote",
                                    "claude_stop", "backup_now", "restore_test", "backup_key",
-                                   "fetch", "hc_ping"}  # fmt: skip
+                                   "fetch", "hc_ping", "info_archive", "prev_twin"}  # fmt: skip
     for bad in ("rm", "update; rm -rf /", "shell"):
         with pytest.raises(ValueError):
             add_server_job(j, bad, False, "o", T0)

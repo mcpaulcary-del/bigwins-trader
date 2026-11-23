@@ -109,6 +109,8 @@ services:
       - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro
       # BF-D27: writable, the scheduled Flex Web Service download writes the statements
       - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
+      # BF-D78: the private info archive (written by the host job, read here for the digest)
+      - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
       - traderout:/app/out
     # internal: gateway + db; egress: EODHD, IBKR Flex, Web Push, healthchecks (and Telegram
     # when on); control: the dashboard forwards the app's /act/... requests (BF-D39)
@@ -169,6 +171,10 @@ services:
       - ../config:/app/config:ro
       - ${FORWARD_STORE:?path of bigwins_forward/data/eodhd}:/data/forward/eodhd:ro
       - traderout:/app/out:ro
+      # BF-D75: the research record's scorecard (research section); BF-D78: the private
+      # announcements archive (share pages). Both read-only.
+      - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro
+      - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
     read_only: true
     mem_limit: 512m  # review F11
     tmpfs: [/tmp]

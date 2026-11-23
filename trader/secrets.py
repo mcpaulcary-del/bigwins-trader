@@ -35,6 +35,7 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "worker_job_key",  # BF-D48: trader -> host worker server-job signatures
         "db_dashboard_password",  # BF-D52: the dashboard's SELECT-only database role
         "healthchecks_backup_url",  # review F9: optional second check for good backups
+        "healthchecks_daily_url",  # BF-D77 (b): optional check pinged after each good daily cycle
     }
 )
 

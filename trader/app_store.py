@@ -33,6 +33,8 @@ SERVER_ACTIONS: dict[str, str] = {
     "backup_key": "Show the backup recovery key once",
     "fetch": "Check for updates now",  # BF-D65
     "hc_ping": "Send a test ping to healthchecks.io",
+    "info_archive": "Collect the announcements now (private archive, if on)",  # BF-D78
+    "prev_twin": "Run the previous-version twin now (after a strategy update)",  # BF-D80
 }
 GUARDED_ACTIONS = frozenset({"restart", "update", "rollback"})  # ASX open: refused unless forced
 # bits of server_jobs.force (BF-D42, BF-D45)

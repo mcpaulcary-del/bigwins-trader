@@ -43,6 +43,9 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         # review F9 / security M3: hours since the newest good backup; the key's fingerprint
         "backup_age_h": int(env["BACKUP_AGE_H"]) if env.get("BACKUP_AGE_H", "").isdigit() else None,
         "key_fp": env.get("KEY_FP", ""),
+        # BF-D77 (b): is the optional daily-cycle check set up, and the last day it pinged
+        "daily_ping_set": env.get("DAILY_PING_SET") == "1",
+        "daily_ping": env.get("DAILY_PING", ""),
         # BF-D63: which secret files exist (names only; the worker tests -s, never reads)
         "secrets": {**dict.fromkeys(env.get("SECRETS_PRESENT", "").split(), True),
                     **dict.fromkeys(env.get("SECRETS_MISSING", "").split(), False)},

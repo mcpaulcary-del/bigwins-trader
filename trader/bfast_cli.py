@@ -35,7 +35,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from trader.bfast_config import (
     BfastConfig,
@@ -382,7 +382,24 @@ def _app_wiring(
                    every_s=cfg.heartbeat.every_seconds)  # fmt: skip
     print(f"heartbeat: {'on' if hb.enabled else 'off (healthchecks_url is none)'}", file=sys.stderr)
     hooks.append(hb.tick)
+    if notifier is not None:  # BF-D77 missed-job alarm, BF-D79 weekly digest
+        hooks.append(ops_hooks(cfg, j, app, notifier).tick)
     return hooks, sleep
+
+
+def ops_hooks(cfg: BfastConfig, j: Journal, app: BfApp, notifier: AppNotifier) -> Any:
+    from trader.dashboard import store_index
+    from trader.ops_hooks import OpsHooks
+
+    store = cfg.data.forward_store
+    rc = cfg.running_costs
+    return OpsHooks(
+        j, cfg.book, lambda: app.sessions, notifier.notify, cfg.info_archive.archive_enabled,
+        store_index(store, cfg.dashboard.index_code) if (store / "manifest.tsv").is_file()
+        else None, cfg.costs.fixed_aud_per_year,
+        {"server": rc.server, "data": rc.data, "other": rc.other}, cfg.research.scorecard_csv,
+        cfg.info_archive.app_dir, store,
+    )  # fmt: skip
 
 
 def key_bytes(secret: SecretValue) -> bytes:
@@ -552,7 +569,7 @@ def cmd_vapid_public(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_server_jobs(args: argparse.Namespace) -> int:
+def cmd_server_jobs(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912, PLR0915
     """BF-D42: the host worker's side of the server-job queue (``deploy/bigwins.sh
     worker``, root on the host, through ``docker compose exec trader``). ``claim``
     prints the next job as JSON (``{}`` when none) and marks it RUNNING; ``finish``
@@ -602,6 +619,28 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:
             old = args.config.read_text(encoding="utf-8") if args.config.is_file() else None
             set_state(j, "update-available", update_info(raw["update"], old), now)
         print("status stored")
+        # BF-D77 (b): the day whose daily cycle finished well; the worker pings the owner's
+        # optional healthchecks_daily_url once for it
+        from trader.ops_hooks import cycle_ok_day
+
+        book = load_bfast_config(args.config).book if args.config.is_file() else "EMG2_18_PAPER"
+        ok_day = cycle_ok_day(j, book, _sessions(now.date()), now)
+        if ok_day is not None:
+            print(f"cycle-ok {ok_day}")
+        return 0
+    if args.op == "info-archive":  # BF-D78: the host's info-archive result
+        from trader.ops_hooks import record_archive
+
+        rec = record_archive(j, json.loads(sys.stdin.read() or "{}"), now)
+        print("info archive result stored: " + ("ok" if rec["ok"] else "FAILED"))
+        return 0
+    if args.op == "prev-twin":  # BF-D80: the nightly previous-version twin
+        from trader.ops_hooks import record_prev_twin
+
+        book = load_bfast_config(args.config).book if args.config.is_file() else "EMG2_18_PAPER"
+        rec = record_prev_twin(j, Path("/app/out/twins"), book,
+                               json.loads(sys.stdin.read() or "{}"), now)  # fmt: skip
+        print("previous-version twin stored: " + ("ok" if rec["ok"] else "FAILED"))
         return 0
     if args.op == "backup":  # BF-D64: the worker's backup / restore-test result
         from trader.backups import record_result
@@ -767,6 +806,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             sessions=lambda: demo.sessions, today=lambda: demo.last_day, clock=lambda: demo.now,
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
             tax_params=tax, prices=demo.prices, forecast_dir=args.config.parent,
+            **{**_ops_sources(cfg), "scorecard": demo.scorecard, "info_dir": demo.info_dir,
+               "info_enabled": True},
         )  # fmt: skip
         import secrets as _secrets
 
@@ -793,7 +834,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             prior_losses=cfg.tax.prior_losses_aud, amit_csv=cfg.tax.amit_csv,
             prices=store_prices(store) if (store / "manifest.tsv").is_file() else None,
             tr_prices=store_tr(store) if (store / "manifest.tsv").is_file() else None,
-            forecast_dir=args.config.parent,
+            forecast_dir=args.config.parent, **_ops_sources(cfg),
         )  # fmt: skip
         if cfg.notify.app and not args.snapshot:
             from trader.secrets import read_secret
@@ -825,6 +866,24 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     print(f"phone app on http://{args.host}:{args.port}", file=sys.stderr)
     httpd.serve_forever()
     return 0
+
+
+def _ops_sources(cfg: BfastConfig) -> dict[str, Any]:
+    """BF-D75..BF-D80: what the scoreboard, Costs, Health and the share pages read."""
+    rc = cfg.running_costs
+    bt = cfg.band_trend
+    sr = cfg.data.store_refresh
+    return {
+        "fixed_items": {"server": rc.server, "data": rc.data, "other": rc.other},
+        "fixed_total": cfg.costs.fixed_aud_per_year,
+        "half_spread": cfg.data.sim_half_spread,
+        "fund_half_spread": bt.fund_half_spread if bt is not None else Decimal("0.0005"),
+        "commission": cfg.commission_model(),
+        "scorecard": cfg.research.scorecard_csv,
+        "info_dir": cfg.info_archive.app_dir,
+        "info_enabled": cfg.info_archive.archive_enabled,
+        "eodhd_budget": sr.calls_per_day if sr is not None else 100000,
+    }
 
 
 def _version() -> str:
@@ -976,7 +1035,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p = sub.add_parser("vapid-public", help="the phone app's Web Push public key (BF-D40)")
     p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
     p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
-    p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal"])
+    p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal",
+                                  "info-archive", "prev-twin"])  # fmt: skip
     p.add_argument("--fp", default="", help="reveal: the recovery key's fingerprint (M3)")
     p.add_argument("--id", type=int)
     p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])

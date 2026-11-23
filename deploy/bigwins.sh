@@ -23,7 +23,9 @@ OD_REMOTE=bigwins-onedrive                    # the rclone remote for OneDrive
 OD_PATH="$OD_REMOTE:Big Wins server backups"
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
-TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token"
+TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url"
+INFO_SCRIPT=$DEPLOY/info_archive.py         # BF-D78: the private info archive (host job)
+IMAGE=asx-trader-bfast-trader               # the image compose builds (:local; :prev = BF-D80)
 
 g() { printf '\033[32m%s\033[0m\n' "$*"; }
 y() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -166,11 +168,15 @@ do_update() {  # no questions asked (the app's server worker uses it too)
   git -C $REPO pull --ff-only || { r "Update failed (no changes made)."; return 1; }
   if [ "$(git -C $REPO rev-parse HEAD)" != "$before" ]; then
     python3 "$DEPLOY/gitops.py" record "$STATE" "$before"  # BF-D45: the rollback target
+    new_strategy_version "$before" HEAD && note_prev_version "$before"  # BF-D80
   fi
 }
 
 after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
+  if [ "$(id -u)" = 0 ] && ! command -v pdftotext >/dev/null; then  # BF-D78: notice texts
+    apt-get -y -qq install poppler-utils >/dev/null 2>&1 || y "Could not install poppler-utils (pdftotext)."
+  fi
   make_keys || { r "Update stopped before the restart: fix the message above, then: bigwins update"; return 1; }
   if [ -f "$DEPLOY/.env" ] && secrets_ready; then
     docker rm -f bigwins-demo >/dev/null 2>&1  # F4: the demo never runs beside the real app
@@ -232,6 +238,7 @@ update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing el
   if [ "$kind" = strategy ] && market_open; then
     echo "refused: a trading update is applied outside ASX hours"; return 1
   fi
+  new_strategy_version "$before" "$commit" && note_prev_version "$before"  # BF-D80
   git -C $REPO merge --ff-only -q "$commit" || { echo "refused: fast-forward failed (no changes made)"; return 1; }
   python3 "$DEPLOY/gitops.py" record "$STATE" "$before"
   echo "now at $(git -C $REPO log --oneline -1)"
@@ -366,12 +373,14 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
   ps=$(dc ps --format '{{.Service}}|{{.Status}}' 2>/dev/null)
   logs=$(dc logs --tail 30 --no-color trader 2>/dev/null | tail -30)
   local n present="" missing=""  # BF-D63: secret names only (the files are never read)
-  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password healthchecks_backup_url; do
+  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password healthchecks_backup_url; do  # (BF-D77: daily_url is in TYPED)
     if [ -s "$SECRETS/$n" ]; then present="$present $n"; else missing="$missing $n"; fi
   done
   TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" SECRETS_PRESENT="$present" \
     SECRETS_MISSING="$missing" ONEDRIVE="$(onedrive_ok && echo 1 || echo 0)" \
     BACKUP_AGE_H="$(backup_age_h)" KEY_FP="$(key_fp)" \
+    DAILY_PING_SET="$(daily_url >/dev/null && echo 1 || echo 0)" \
+    DAILY_PING="$(cat "$STATE/daily_ping_day" 2>/dev/null | head -c 10)" \
     python3 "$DEPLOY/host_status.py"
 }
 
@@ -573,9 +582,24 @@ finish_job() {  # id status text: record a server job's result (retried while th
   return 1
 }
 
+daily_url() {  # BF-D77 (b): the optional daily-cycle check's URL (a secret: never printed)
+  local u; u=$(cat "$SECRETS/healthchecks_daily_url" 2>/dev/null)
+  case "$u" in https://*) return 0;; *) return 1;; esac
+}
+
+daily_ping() {  # BF-D77 (b): ping once for each day the trader reports a good daily cycle
+  local day=$1
+  [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 0
+  [ "$(cat "$STATE/daily_ping_day" 2>/dev/null)" = "$day" ] && return 0
+  daily_url || return 0
+  curl -fsS -m 10 -o /dev/null "$(cat "$SECRETS/healthchecks_daily_url")" && printf '%s' "$day" > "$STATE/daily_ping_day"
+}
+
 cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s, as root)
   mkdir -p "$STATE" && chmod 700 "$STATE"  # the worker's own notes: root only
-  host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status >/dev/null 2>&1
+  local st
+  st=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>/dev/null)
+  daily_ping "$(printf '%s\n' "$st" | sed -n 's/^cycle-ok //p' | head -1)"
   if [ -s "$STATE/last_backup.json" ]; then  # a result recorded while the trader was down
     dc exec -T trader trader-bf server-jobs backup < "$STATE/last_backup.json" >/dev/null 2>&1 && rm -f "$STATE/last_backup.json"
   fi
@@ -607,7 +631,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
         finish_job "$id" REFUSED "refused: a rollback is applied outside ASX hours; ask again after 16:15"
         return 0
       fi;;
-    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping) ;;
+    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin) ;;
     *) finish_job "$id" REFUSED "refused: not an allowed server action"; return 0;;
   esac
   case "$action" in  # the fixed list only; nothing from the app is ever run as a command
@@ -621,9 +645,90 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     backup_key) out=$(python3 "$DEPLOY/gitops.py" seal "$SECRETS/worker_job_key" "$BKEY" | dc exec -T trader trader-bf server-jobs reveal --fp "$(key_fp)" 2>&1); rc=$?;;
     fetch) rm -f "$STATE/last_fetch"; out=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>&1); rc=$?;;
     hc_ping) out=$(u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null); case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" && echo "ping ok";; *) echo "heartbeat is off (healthchecks_url is none)";; esac 2>&1); rc=$?;;
+    info_archive) out=$(do_info_archive 2>&1); rc=$?;;
+    prev_twin) out=$(do_prev_twin 2>&1); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
   esac
   if [ "$rc" = 0 ]; then finish_job "$id" DONE "$out"; else finish_job "$id" FAILED "$out"; fi
+}
+
+# ---------------------------------------------------------------- BF-D78 / BF-D80
+info_enabled() {  # BF-D78: info_archive.archive_enabled (the local file wins); off by default
+  local c=""
+  [ -f "$LOCAL" ] && c=$(sed -n 's/^  archive_enabled: *\([a-z]*\).*/\1/p' "$LOCAL" | head -1)
+  [ -n "$c" ] || c=$(sed -n 's/^  archive_enabled: *\([a-z]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -1)
+  [ "$c" = true ]
+}
+
+info_dir() { local d; d=$(envval INFO_ARCHIVE_DIR); echo "${d:-/var/lib/bigwins/info}"; }
+
+do_info_archive() {  # BF-D78: the private info archive, as the trader's uid (never root)
+  local d res
+  if ! info_enabled; then
+    echo "info archive is switched off (info_archive.archive_enabled: false)"; return 0
+  fi
+  d=$(info_dir)
+  mkdir -p "$d" && chown 10001:10001 "$d" && chmod 755 "$d"
+  command -v pdftotext >/dev/null || y "pdftotext is missing (apt install poppler-utils): PDFs are kept without text"
+  res=$(setpriv --reuid=10001 --regid=10001 --clear-groups \
+        python3 -I "$INFO_SCRIPT" --out "$d" --asic-limit 400 2>>"$STATE/info_archive.log" | tail -1)
+  case "$res" in "{"*) ;; *) res='{"ok":false,"error":"the archive script failed (see deploy/.worker/info_archive.log)"}';; esac
+  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs info-archive >/dev/null 2>&1
+  echo "$res"
+  case "$res" in *'"ok": true'*|*'"ok":true'*) return 0;; *) return 1;; esac
+}
+
+new_strategy_version() {  # BF-D80: the top release-note version differs (a strategy change)
+  local a b
+  a=$(git -C $REPO show "$1:config/strategy_changelog.yaml" 2>/dev/null | grep -m1 'version:')
+  b=$(git -C $REPO show "$2:config/strategy_changelog.yaml" 2>/dev/null | grep -m1 'version:')
+  [ -n "$b" ] && [ "$a" != "$b" ]
+}
+
+note_prev_version() {  # BF-D80: before a strategy update, keep the running image as :prev
+  local before=$1
+  [[ "$before" =~ ^[0-9a-f]{40}$ ]] || return 0
+  docker image tag "$IMAGE:local" "$IMAGE:prev" >/dev/null 2>&1 || return 0
+  mkdir -p "$STATE" && printf '%s %s\n' "$before" "$(date +%F)" > "$STATE/prev_version"
+}
+
+store_days() {  # the price store's bulk days, oldest first (YYYY-MM-DD)
+  local fs; fs=$(envval FORWARD_STORE)
+  ls "$fs/raw/bulk_eod" 2>/dev/null | sed -n 's/^AU_\([0-9-]\{10\}\).*/\1/p' | sort -u
+}
+
+do_prev_twin() {  # BF-D80: replay the previous and the current version from the update day
+  local pf="$STATE/prev_version" prev since to tmp fs ref rec vol res
+  [ -s "$pf" ] || { echo "no previous version yet: it starts after the next strategy update"; return 0; }
+  read -r prev since < "$pf"
+  [[ "$prev" =~ ^[0-9a-f]{40}$ && "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad $pf"; return 1; }
+  since=$(store_days | awk -v s="$since" '$0 >= s' | head -1)
+  to=$(store_days | tail -1)
+  if [ -z "$since" ] || [ "$to" \< "$since" ] || [ "$to" = "$since" ]; then
+    echo "the twins start after the first trading day since the update"; return 0
+  fi
+  res='{"ok":false,"since":"'"$since"'","error":"the previous version image is missing"}'
+  if docker image inspect "$IMAGE:prev" >/dev/null 2>&1; then
+    fs=$(envval FORWARD_STORE); ref=$(envval REF_DIR); rec=$(envval RECORD_DIR)
+    vol=$(docker volume ls -q | grep -m1 '_traderout$')
+    tmp=$(mktemp -d)
+    git -C $REPO archive "$prev" config | tar -x -C "$tmp"
+    run_twin() {  # image config-dir out-name
+      docker run --rm --network none -u 10001:10001 --memory 1200m -e TZ=Australia/Sydney \
+        -v "$2:/app/config:ro" -v "$fs:/data/forward/eodhd:ro" -v "$ref:/data/ref:ro" \
+        -v "$rec:/data/forward/record:ro" -v "$vol:/app/out" "$1" sh -c \
+        "rm -rf /app/out/twins/$3 && mkdir -p /app/out/twins/$3 && cp /app/config/strategy_changelog.yaml /app/out/twins/$3/ 2>/dev/null; trader-bf dry-run --start $since --to $to --out /app/out/twins/$3 >/dev/null 2>&1; ls /app/out/twins/$3/dryrun_*.sqlite3 >/dev/null"
+    }
+    if run_twin "$IMAGE:local" "$REPO/config" new && run_twin "$IMAGE:prev" "$tmp/config" prev; then
+      res='{"ok":true,"since":"'"$since"'"}'
+    else
+      res='{"ok":false,"since":"'"$since"'","error":"a twin run failed (see bigwins prev-twin)"}'
+    fi
+    rm -rf "$tmp"
+  fi
+  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs prev-twin >/dev/null 2>&1
+  echo "$res"
+  case "$res" in *'"ok":true'*) return 0;; *) return 1;; esac
 }
 
 cmd_install_worker() {  # BF-D42: the systemd timer that runs `bigwins worker` every 30 s
@@ -696,8 +801,18 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+  local u  # BF-D78: the info archive the morning after each trading day; BF-D80: the twins
+  for u in "info|info-archive|private info archive (BF-D78; off unless switched on)|Tue..Sat *-*-* 07:40:00" \
+           "twin|prev-twin|previous-version twin (BF-D80)|Tue..Sat *-*-* 01:20:00"; do
+    IFS='|' read -r n c d t <<<"$u"
+    printf '[Unit]\nDescription=Big Wins %s\nAfter=docker.service\n\n[Service]\nType=oneshot\nExecStart=%s %s\nTimeoutStartSec=7200\n' \
+      "$d" "$DEPLOY/bigwins.sh" "$c" > "/etc/systemd/system/bigwins-$n.service"
+    printf '[Unit]\nDescription=Big Wins %s\n\n[Timer]\nOnCalendar=%s Australia/Sydney\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' \
+      "$d" "$t" > "/etc/systemd/system/bigwins-$n.timer"
+  done
   systemctl daemon-reload  # review F19: before enabling the new units
   systemctl enable --now bigwins-backup.timer bigwins-weekly.timer >/dev/null 2>&1 || y "Backup timers not started."
+  systemctl enable --now bigwins-info.timer bigwins-twin.timer >/dev/null 2>&1 || y "Info / twin timers not started."
   if systemctl enable --now bigwins-worker.timer; then
     g "Server worker installed. The app's Server tab fills in within a minute."
   else
@@ -837,6 +952,7 @@ case ${1:-} in
   backup) do_backup;; restore-test) do_restore_test;; onedrive) cmd_onedrive;; restore) cmd_restore;;  # BF-D61: run by update after the pull (the new script)
   start-trader) cmd_start_trader "${2:-}";; ibkr) cmd_ibkr;; seed-data) cmd_seed_data;;
   weekly) cmd_weekly;; new-backup-key) cmd_new_backup_key;;
+  info-archive) do_info_archive;; prev-twin) do_prev_twin;;  # BF-D78, BF-D80 (timers)
   ""|menu) menu;;
   *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key]";;
 esac

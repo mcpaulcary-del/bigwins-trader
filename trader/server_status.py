@@ -61,6 +61,11 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
         ]  # fmt: skip
     if "onedrive" in raw:  # BF-D64
         out["onedrive"] = bool(raw.get("onedrive"))
+    if "daily_ping_set" in raw:  # BF-D77 (b): the optional daily-cycle check (never its URL)
+        out["daily_ping_set"] = bool(raw.get("daily_ping_set"))
+        dp = str(raw.get("daily_ping") or "")
+        if len(dp) == 10 and dp[4] == "-" and dp[7] == "-" and dp.replace("-", "").isdigit():
+            out["daily_ping"] = dp
     sec = raw.get("secrets")
     if isinstance(sec, Mapping):  # BF-D63: known secret NAMES -> present?; never a value
         from trader.secrets import KNOWN_SECRETS

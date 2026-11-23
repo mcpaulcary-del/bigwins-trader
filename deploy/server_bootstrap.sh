@@ -10,8 +10,9 @@ timedatectl set-timezone Australia/Sydney
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get -y full-upgrade
-# review F7: age + rclone (backups), tmux (Claude sessions), openssl (generated keys)
-apt-get -y install unattended-upgrades ufw git qrencode curl ca-certificates age rclone tmux openssl
+# review F7: age + rclone (backups), tmux (Claude sessions), openssl (generated keys);
+# BF-D78: poppler-utils (pdftotext, the private info archive's notice texts)
+apt-get -y install unattended-upgrades ufw git qrencode curl ca-certificates age rclone tmux openssl poppler-utils
 dpkg-reconfigure -f noninteractive unattended-upgrades
 
 echo "== 2/9 swap (2 GB): the gateway and a build at the same time need it"
