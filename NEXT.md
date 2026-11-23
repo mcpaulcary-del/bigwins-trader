@@ -346,6 +346,23 @@ correctness (BF-D72): see docs/DECISIONS.md. Owner one-time steps after the upda
 GO_LIVE_GUIDE C7 (bigwins update; `sudo bigwins install-worker` again for the weekly
 timer; disable the Tailscale key expiry, C5b).
 
+## Scoreboard, costs, Health, alarm, announcements, digest, previous-version twin (24 Nov 2026; BF-D75..BF-D80)
+
+- Home leads with the honest scoreboard (after all costs v the same money in A200);
+  research lines unranked ("mostly luck at this stage") from the record's scorecard.
+- Server > Running costs (amounts editable in the app), Server > Health, the missed-job
+  alarm (one push per incident) and the optional `healthchecks_daily_url` daily-cycle
+  check pinged by the host worker.
+- Share pages: announcements, director trades (cautious 3Y heuristic), ASIC short
+  positions from the private info archive (`deploy/info_archive.py`, host job, uid 10001,
+  07:40 Tue-Sat; **off** until `info_archive.archive_enabled: true` after 30 Nov).
+- Weekly digest in the Inbox (Fridays from 22:55); `/digest`.
+- Previous-version twin: after the next strategy update the worker replays the old and
+  new image with `trader-bf dry-run` nightly (01:20 Tue-Sat); Strategy > "Did the last
+  update help?".
+- Owner after pulling: `bigwins update`, then `sudo bigwins install-worker` once (the two
+  new timers); optional daily-cycle check (GO_LIVE_GUIDE C5); archive switch-on (C10).
+
 ## Owner / record keeper points still open
 
 1. **Amendment for the staged L11 rule** (record keeper), with the interpretations of

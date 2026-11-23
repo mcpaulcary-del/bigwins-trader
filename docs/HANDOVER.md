@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 22 Nov 2026)
+# HANDOVER — read this first (state on 24 Nov 2026)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -24,8 +24,19 @@ about the end of February 2027). The owner approves every order.
   100 random twins / stop rule / owner says stop; < A$5k written confirm or wind down over two
   decisions.
 - Comparison: 100 random twins drawn from the same buyable set; simulated twin `EMG2_18_SIM`.
-- Other paper lines tracked for research: BLIND3 "Steady Momentum", PAIR "Combined",
-  H82 "Large-Cap Core", EARLY (rejected). Research trial count N = 2,964.
+- Other paper lines tracked for research (information only, never evidence for or against
+  the main line): side lines SWEEP / WIDE / FIP (each the main line with one change,
+  ledger seq 91-92) and the aggressive MOON_TOP5 / MOON_NOLOT5 / MOON_LEG2 (seq 94-95),
+  all registered before the first decision of 30 Nov 2026 with their own 100 random twins.
+  **Retirement list locked (owner, 24 Nov 2026, ledger seq 96)**: kept = BT_C6 main +
+  twins, REF book, EMG2, H82, MOM, BLIND3, SWEEP, WIDE, FIP, MOON_TOP5, MOON_NOLOT5,
+  MOON_LEG2 (info EST-C, DIL-C); retired at the 31 Dec 2026 close (history kept) = H6,
+  COMBO, SIM_BT, PAIR, EARLY, ACC, M3, E3, CXL and the REF twins. No new paper line of any
+  kind before the Dec 2028 review unless one is retired. Research trial count
+  **N = 3,046** (gap review seq 90, big-winner research seq 93).
+- Backtest honesty (gap review, seq 90): with the live A$10k cap and rule 14, 2018-26
+  gives A$21.0k against A$18.6k for the fund, before fixed costs (not the uncapped
+  A$34.5k).
 
 ## Where things live
 | Thing | Where |
@@ -66,7 +77,15 @@ Real money around March 2027.
    spike, five paper dry runs, go-live checklist.
 3. 30 Nov 2026: first month-end decisions for all paper lines (research environment).
 4. Built since: nightly encrypted backups (server + OneDrive) with a weekly restore test
-   (BF-D64, BF-D70). Still to build: previous-version simulated twin.
+   (BF-D64, BF-D70). **24 Nov 2026 (BF-D75..BF-D80)**: the honest scoreboard as the Home
+   headline (main line after all costs v the same money in A200; research lines unranked,
+   "mostly luck at this stage"); running-costs tracker (Server > Running costs, amounts
+   editable in the app); Server > Health; the missed-job alarm (one push per incident)
+   and an optional outside daily-cycle check (`healthchecks_daily_url`); announcements,
+   director trades and short positions on each share's page from the private info
+   archive (host job, **off** until after 30 Nov); the weekly digest in the Inbox
+   (Fridays after the close); the previous-version simulated twin (runs after the next
+   strategy update).
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
@@ -81,7 +100,17 @@ Real money around March 2027.
    remote branch.
 8. Final independent stress test of everything before real money (owner asked for it last).
 
+## Owner decision 24 Nov 2026: the private info archive
+Automated access to asx.com.au is allowed **only** for the private info archive
+(`deploy/info_archive.py`, server copy of the research script `bigwins_forward/code/
+info_archive.py`): the previous trading day's announcement list and the director-interest
+(Appendix 3Y/3X/3Z) and capital-raising notice PDFs, plus ASIC's daily short positions.
+Personal, non-commercial use, never shared, feeds no paper line and no trading decision
+(ledger seq 96). The trader and the app themselves never contact asx.com.au. On the
+server the archive is a host job, off until the research record moves (after 30 Nov;
+GO_LIVE_GUIDE C10).
+
 ## Rules that never change
 Paper only until the checklist passes · never read or show secrets · no automated access to
-asx.com.au · EODHD data private · scan for secrets before every push, never force-push ·
+asx.com.au (the one exception above) · EODHD data private · scan for secrets before every push, never force-push ·
 the owner's personal details stay out of the repo and out of external requests.

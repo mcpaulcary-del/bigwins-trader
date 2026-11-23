@@ -250,6 +250,7 @@ nano .env
 | `REF_DIR` | `/srv/ref` | holds `etp_list.txt` (config `data.etp_list`) |
 | `RECORD_DIR` | `/srv/record/68_forward_record` | the record's folder with `CORPORATE_ACTIONS.csv` (read-only; `data.corporate_actions_csv`, BF-D23) |
 | `FLEX_INBOX` | `/srv/flex/inbox` | IBKR Flex XML files; the trader writes them (`data.flex_inbox`, BF-D27) |
+| `INFO_ARCHIVE_DIR` | optional, default `/var/lib/bigwins/info` | the private announcements archive (BF-D78); outside the repository, read-only in the app; written only by the archive job, which is off until you switch it on (part C10) |
 
 The **frozen LIC list** needs nothing from you: it is `config/lic_list.csv` in the
 repository (69 codes), pinned by SHA-256 in `config/bfast.yaml`
@@ -461,6 +462,25 @@ the app is down. The app itself pages when the last good backup is over 26 hours
 when the server worker has been silent for 5 minutes, when the disk is over 80% full
 and when less than 10% of memory is free.
 
+**Daily-cycle check (optional but recommended, BF-D77)**: one more free check that
+says "the trader finished its day", so you hear about a missed day even when the server
+and the app are both down. Set it up **after the paper trader has started** (before
+that there is no daily cycle, and the check would alarm):
+
+1. On healthchecks.io, **Add Check**, name it "Big Wins daily cycle". Choose
+   **Simple**: period **1 day**, grace **3 hours**. (The server pings it once a day,
+   shortly after 23:00 Sydney, also on weekends and public holidays.)
+2. Under **Notifications** turn on the healthchecks.io phone app or email (free).
+3. Copy the check's ping URL. It is a secret: never paste it into a chat, a message or
+   GitHub.
+4. On the server: `bigwins` > 5) Add/replace a secret > `healthchecks_daily_url`, paste
+   it. Nothing else to restart: the server worker pings after the next good daily cycle,
+   and the app's Server > Health shows "Daily-cycle check: set up".
+
+The app's own missed-job alarm (Server > Health) also pushes one alert to your phone
+for each late or failed job (daily run, price download, nightly backup, weekly restore
+test, announcements archive), as long as the server is up.
+
 ### C5b. Tailscale: disable key expiry for the server (review F8)
 
 Tailscale admin console > **Machines** > the server > **...** > **Disable key expiry**.
@@ -506,6 +526,12 @@ outside ASX hours (10:00-16:15 Sydney):
    fingerprint (show and save the key if the screen asks). The update refuses to restart
    the trader if the record checks fail (`trader-bf golden-check`, when the record's
    price store is on the server) and pages instead.
+
+7. **After the scoreboard / Health / announcements update (24 Nov 2026, BF-D75..BF-D80)**:
+   `git -C /srv/asx-trader pull --ff-only && bigwins update`, then `sudo bigwins
+   install-worker` once (it adds two timers: the announcements archive at 07:40 and the
+   previous-version twin at 01:20, Tuesday to Saturday). Nothing else is needed; the
+   archive stays off until part C10. Optional: the daily-cycle check (C5).
 
 ### C8. Backups (server + OneDrive) and the recovery key
 
@@ -554,6 +580,28 @@ files) and a computer with Termius.
    IBKR: log in to the paper gateway again if it asks (IBKR Mobile).
 
 ---
+
+### C10. The private announcements archive (after 30 Nov 2026, BF-D78)
+
+Owner decision 24 Nov 2026: the only automated access to asx.com.au is this private
+archive (the previous trading day's announcement list, and the director-interest and
+capital-raising notices), plus ASIC's daily short positions. It is for your own use
+only, is never shared, and feeds no strategy. It is **off** until the research record
+moves to this server (after 30 Nov; Claude does the move with you). Then:
+
+1. Ask Claude on the server to copy the research archive's existing data
+   (`asx_notices/`, `asic_short/`) into `/var/lib/bigwins/info` (or your
+   `INFO_ARCHIVE_DIR`), so the history is not lost, and to stop the research copy.
+2. In `config/bfast.local.yaml` add:
+   ```yaml
+   info_archive:
+     archive_enabled: true
+   ```
+3. `bigwins` > 4) Restart the trader. From the next morning (07:40, Tuesday to Saturday)
+   the server collects the previous trading day; Server > Health shows the last day
+   stored and any missed trading days; each share's page shows its last 90 days of
+   headlines, director trades and the short position. Server > Run on the server >
+   **Collect announcements** runs it at once.
 
 ## D. First messages, approving in the app, and the controls
 
@@ -624,8 +672,15 @@ actions locked.
 
 ### D5. The rest of the app
 
-- **Home**: value, today, since start, vs A200, drawdown from peak; the chart with
-  1M / 3M / 6M / All (touch and drag to read a day); the twin check.
+- **Home** starts with the **scoreboard** (BF-D75): Big Wins after *all* costs
+  (brokerage and the spread are inside the account value; the fixed running costs and,
+  if your tax rate is set, the estimated tax on realised gains are taken off) against
+  the same money put into A200 on day one, in dollars and %, with one plain sentence
+  ("Behind A200 by $X after all costs"). "What is counted" opens the sums. Then value,
+  today, since start, drawdown from peak; the chart with 1M / 3M / 6M / All; the twin
+  check; a red line if a scheduled job is late; and, folded away, **Research lines
+  (information only)**: the other paper strategies, never ranked, each "mostly luck at
+  this stage".
 - **Holdings**: tap a share for its price since you bought it, gain, days held, why it
   was chosen (rank and scores at the decision) and where it stands on sell rule C6.
   **Tax**: per financial year, gains parcel by parcel, the 50% discount, losses carried
@@ -647,6 +702,26 @@ actions locked.
   **Go back to the previous version…** returns to the version before the last update.
   (Live later: daily strategy changes raise costs and tax; immediate mode on real money
   will need a deliberate config change.)
+- **Server > Health** (BF-D77): each scheduled job against its timetable (daily run,
+  price download, backup, restore test, announcements, previous-version twin), free
+  disk (warning under 2 GB), backups, prices and EODHD calls used today, the
+  announcements archive (last day, missed trading days), the outside alarms and the
+  versions. One push per late or failed job.
+- **Server > Running costs** (BF-D76): brokerage and fees, the modelled spread and the
+  fixed costs by month, for this financial year and since the start, in $ and % of the
+  account, with a one-line verdict. **Edit the amounts** sets the server, price-data and
+  other costs a year (no code needed: nothing trades on them).
+- **Server > Weekly digest** (BF-D79): every Friday after the 22:45 report a digest lands
+  in the Inbox: the week against A200 after costs, the research lines (unranked), the
+  data collected, the week's alerts and anything that needs you.
+- **A share's page** (BF-D78): after the archive is switched on (C10), the last 90 days
+  of announcements with capital raisings, trading halts and takeovers marked, director
+  trades read from the notices (on-market buy or sell with number and value; option and
+  rights issues are "not a buy"; anything unsure says "unclear") and ASIC's short
+  position. "Not collected yet" until then.
+- **Strategy > Did the last update help?** (BF-D80): after each strategy update the
+  server also runs the previous version on paper; both simulated twins start from the
+  update day with $10,000, and the screen shows which is ahead.
 - **Settings** (gear): alerts, who may act, the go-live checklist items the app can see.
 
 ---
