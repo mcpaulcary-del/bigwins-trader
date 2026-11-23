@@ -59,3 +59,25 @@ Owner chose: the live EMG2-18 book (with the band-trend protection unchanged) us
 
 ## Clarification (coordinator), 20 Nov 2026
 The C6 entry above wrongly listed "leaving the eligible set/band downward" as a forced sell. The tested, frozen C6 rule (deep99 FREEZE_99) sells such a holding only once it has been held 6 month-ends. The live and paper books follow the frozen, tested rule (BF-D35, AMENDMENT_live_EMG2_18_C6.md). Forced sells at any time remain: bid-peg (takeover price pinned), payouts/delistings, and the protection switch to FUND.
+
+## 22 Nov 2026 — Run everything through the phone app (owner)
+- Owner chose: the Big Wins phone app (private, Tailscale only) does everything: viewing,
+  approvals, refuse, pause/kill/stop/resume, and alerts (in-app inbox + phone notifications).
+  Telegram is switched off (kept in the code as an option).
+- Same safety as before: 6-digit authenticator code for anything that adds risk or re-arms,
+  15:20 approval cut-off, Kill/Stop need a confirm, only the owner's Tailscale login may act.
+- Known trade-off accepted: app notifications can be delayed by Android and there is no second
+  channel; a healthchecks.io "server down" email is added as the backup alarm.
+
+## 22 Nov 2026 — Longer paper soak (owner)
+- Paper trading continues to about the end of February 2027 (three month-end decisions plus the
+  Christmas/New Year half days); real money (A$10k) around March 2027 instead of mid-December.
+  Prompted by a friend's review and the operations review's timeline finding.
+
+## 23 Nov 2026 — Strategy freeze and side variations (owner)
+- The main strategy (EMG2-18 + band-trend shield + C6 patient sell, as in the live trader and
+  the paper line EMG2_18_SIM_BT_C6) is FROZEN until the start of January 2027: no rule or
+  parameter changes to it. Engineering (app, server, backups, reliability, tax) continues.
+- New strategy ideas run ON THE SIDE as separate, pre-registered paper lines with their own
+  100 random twins; they never change the main line mid-soak.
+- Real money still around March 2027, after the paper soak to about end of February.

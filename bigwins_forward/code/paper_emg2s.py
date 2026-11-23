@@ -71,8 +71,14 @@ def lottery(D, R):
         out[cid] = bool(age < LOT_AGE or not ((r.get('close_5') or 0) >= LOT_CLOSE) or not ((r.get('tv_med63') or 0) >= LOT_TV63))
     return out
 
-def lists_for(b, R):
-    """(T best first, K keep zone) for a book: score-based, or a twin's persistent seeded random score over band C (redraw p=0.2)."""
+TWIN_BUYABLE_FROM = '2026-11-30'                                                                # AMENDMENT_twins_buyable_set.md (ledger seq 83)
+
+def lists_for(b, R, lot=None):
+    """(T best first, K keep zone) for a book: score-based, or a twin's persistent seeded random score over band C (redraw p=0.2).
+    From TWIN_BUYABLE_FROM (AMENDMENT_twins_buyable_set.md) a twin's T is drawn by stratum so that it holds exactly as many buyable names
+    (not lottery class; bid peg already out) as the real book's T: the m best random scores among the buyable non-peg band-C names plus
+    the len(T) - m best among the lottery-class non-peg band-C names, m = buyable names in the real T. The random scores, their draw order
+    and K are unchanged; lot = paper_emg2s.lottery() of the same table (required from that date)."""
     C = R['C']
     if not rnd(b):
         return list(R['T']), {c for c in C if R['rows'][c]['score_pct'] is not None and R['rows'][c]['score_pct'] > KEEP}
@@ -82,7 +88,15 @@ def lists_for(b, R):
     for c in C:
         if c not in rs or rng.random() < REDRAW: rs[c] = float(rng.random())
     b['rng_state'] = rng.bit_generator.state; b['rs'] = {c: rs[c] for c in C}
-    T = sorted((c for c in C if not R['rows'][c]['bid_peg']), key=lambda c: (-rs[c], c))[:len(R['T'])]
+    key = lambda c: (-rs[c], c); pool = [c for c in C if not R['rows'][c]['bid_peg']]
+    if R['asof'] >= TWIN_BUYABLE_FROM:
+        assert lot is not None, 'twin lists from ' + TWIN_BUYABLE_FROM + ' need the lottery class (AMENDMENT_twins_buyable_set.md)'
+        m = sum(1 for c in R['T'] if not lot.get(c, True))
+        buy = sorted((c for c in pool if not lot.get(c, True)), key=key)[:m]
+        lotc = sorted((c for c in pool if lot.get(c, True)), key=key)[:len(R['T']) - m]
+        T = sorted(buy + lotc, key=key)
+    else:
+        T = sorted(pool, key=key)[:len(R['T'])]
     pc = pd.Series([rs[c] for c in C], dtype=float).rank(method='average').values / len(C) if C else []
     return T, {c for c, x in zip(C, pc) if x > KEEP}
 
@@ -101,7 +115,7 @@ def decide(b, R, lot, d, k, last, E, duplog):
             q = shares(h); p = last[h['code']]['p']; v = q * p
             parts = realise(h, q, v); b['cash'] += v; del b['holdings'][cid]
             record(b, dict(date=d, side='payout', code=h['code'], shares=q, price=p, half_spread=0.0, brokerage=0.0, cash=round(v, 2), reason='payout (20 sessions without a close)', lots=parts))
-    T, K = lists_for(b, R); tset = set(T)
+    T, K = lists_for(b, R, lot); tset = set(T)
     nav = nav_of(b, last); sizing = min(nav, CAP)                                                   # L1
     n = max(0, min(SLOTS, int(math.floor(sizing / SLOT_UNIT + 1e-9)))); parcel = sizing / n if n else 0.0   # L3 (EMG2-18)
     proceeds = 0.0; kept = []

@@ -15,7 +15,7 @@
 #      decision (the November 2026 month-end) to ME: before tax and after tax at 32% (CL regime), the local fund on the same dollars,
 #      and 100 random-portfolio controls per design (fixed seeds 1000-1099).
 #   4. Writes 68_forward_record/multi/SCORECARD_MULTI.md, history_multi.csv (append-only), orders_<ME>.csv, and one ledger entry.
-import os, sys, io, json, gzip, time, math, hashlib, argparse, pickle, traceback
+import os, sys, io, json, gzip, time, math, hashlib, argparse, pickle, traceback, fcntl
 import numpy as np, pandas as pd
 import requests
 
@@ -27,6 +27,7 @@ import multi_engine as ME
 
 DATA = S + '/fwd_multi/data'                                  # store + raw archive (owner keeps this)
 REC = S + '/onedrive/research2/68_forward_record'
+DAILY_LOCK = S + '/bigwins_forward/out/paper_state/.daily.lock'   # the ASX daily job's lock (paper_daily.py), held while a month is booked
 K0_MONTH = '2026-11'                                         # first decision: each market's last session of November 2026
 SIZES = (25000.0, 100000.0)
 SEEDS = range(1000, 1100)
@@ -565,13 +566,24 @@ def book_next(a, state, stp, mkts, today, api, log, L):
     nxt = (pd.Timestamp(f'{me_tag}-01') + pd.offsets.MonthBegin(1)); late = pd.Timestamp(today) >= nxt + pd.Timedelta(days=7)
     if missing and not late:
         log('waiting for', missing); json.dump(state, open(stp, 'w'), indent=1); return 'waiting'
+    if not evs:                                                     # preflight fix F1 (ledger seq 84): never book a month with no market in it
+        state.setdefault('data_block_waits', {}).setdefault(me_tag, []).append(today)
+        log('DATA BLOCK', me_tag, ': no market complete by the 8th; month NOT booked (no ledger entry); retried on the next run')
+        json.dump(state, open(stp, 'w'), indent=1); return 'waiting'
     for m in missing: notes.append(f'{m}: no complete data by the 8th; month not booked for this market (data block)')
     calls = api.spent - calls0
-    files, e = write_outputs(a.out, L, me_tag, evs, notes, calls, code_hashes(), log)
-    for ev in evs: state['booked'].setdefault(ev['market'], []).append(ev['me'])
-    state.setdefault('months', []).append(me_tag)
-    state.setdefault('runs', []).append(dict(utc=utc(), month=me_tag, markets=done, credits=calls, ledger_seq=e['seq'] if e else None))
-    json.dump(state, open(stp, 'w'), indent=1)
+    # preflight fix F2 (ledger seq 84): book under the ASX daily job's .daily.lock (taken in the same order as paper_daily: .daily.lock, then
+    # the ledger lock inside fwd_ledger.append), and re-check the state on disk so a second run never books the same month twice
+    with open(DAILY_LOCK, 'a') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        disk = json.load(open(stp)) if os.path.exists(stp) else {}
+        if me_tag in disk.get('months', []):
+            log('month', me_tag, 'already booked by another run; nothing written'); return 'idle'
+        files, e = write_outputs(a.out, L, me_tag, evs, notes, calls, code_hashes(), log)
+        for ev in evs: state['booked'].setdefault(ev['market'], []).append(ev['me'])
+        state.setdefault('months', []).append(me_tag)
+        state.setdefault('runs', []).append(dict(utc=utc(), month=me_tag, markets=done, credits=calls, ledger_seq=e['seq'] if e else None))
+        json.dump(state, open(stp, 'w'), indent=1)
     log('booked', me_tag, 'markets', len(done), 'credits', calls, 'ledger seq', e['seq'] if e else None)
     return 'booked'
 

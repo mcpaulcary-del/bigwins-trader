@@ -10,7 +10,7 @@
 # list LIC_list_frozen_v2.csv (SHA-256 pinned) and by no name word; ranks among the class only (LICs/funds left out), as before.
 # Governs EMG2 + BANDSPREAD here and, through table(), EMG2_18_REF/H6/COMBO (paper_emg2s) and PAIR member E (paper_pair).
 # EARLY keeps LIC_RE + lic_codes() (list v1) unchanged; tables dated before CLASS_V2_FROM keep the v1 rule.
-import os, re, json, math, traceback, warnings
+import os, sys, re, json, math, traceback, warnings
 warnings.filterwarnings('ignore', message='All-NaN slice encountered')
 warnings.filterwarnings('ignore', message='Mean of empty slice')
 import numpy as np, pandas as pd
@@ -352,7 +352,10 @@ def get_bundle(d, log):
     import paper_shadow as SH
     _BC.clear(); v = SH.bundle_for(d, log); _BC.update(d=d, v=v); return v
 
-def clear_bundle(): _BC.clear()
+def clear_bundle():
+    _BC.clear()
+    sh = sys.modules.get('paper_shadow')                                                            # preflight fix F5 (ledger seq 84): paper_shadow's cache too
+    if sh is not None and hasattr(sh, 'clear_bundle_cache'): sh.clear_bundle_cache()
 
 def write_list(R, d):
     rows = []
@@ -446,8 +449,12 @@ def scorecard_rows(d):
     last = s['last']; cm = {c['id']: c for c in s['cmps']}; bs = bs_summary(s)
     f = lambda x: '' if x is None or (isinstance(x, float) and np.isnan(x)) else (f'{x:+.2%}' if isinstance(x, float) else str(x))
     sc = bs['C_TOP_minus_ALL']
-    md.append(f"| **BANDSPREAD band C (EMG2 signal spread)** | — | {f(sc['mean_a_year'])} a year | t {'' if sc['t_nw1'] is None else round(sc['t_nw1'], 2)} over {sc['n']} months (Newey-West lag 1); "
-              f"band B TOP-ALL {f(bs['B_TOP_minus_ALL']['mean_a_year'])} a year; history +16.9 a year, t 4.5 (2018-Oct 2026) |")
+    if not sc['n']:                                                                                 # preflight fix F3 (ledger seq 84): no closed month yet
+        md.append("| **BANDSPREAD band C (EMG2 signal spread)** | — | n/a (first month) | no month closed yet: the first reading comes one month-end after "
+                  "the first decision; history +16.9 a year, t 4.5 (2018-Oct 2026) |")
+    else:
+        md.append(f"| **BANDSPREAD band C (EMG2 signal spread)** | — | {f(sc['mean_a_year'])} a year | t {'' if sc['t_nw1'] is None else round(sc['t_nw1'], 2)} over {sc['n']} months (Newey-West lag 1); "
+                  f"band B TOP-ALL {f(bs['B_TOP_minus_ALL']['mean_a_year'])} a year; history +16.9 a year, t 4.5 (2018-Oct 2026) |")
     rows.append(dict(asof=d, book='EMG2_BANDSPREAD_C', kind='SHADOW_EMG2 measurement', return_since_start=sc['mean_a_year'],
                      note=f"band C TOP-ALL mean a year; t(NW1) {sc['t_nw1']}; months {sc['n']}; " + json.dumps({k: v['mean_a_year'] for k, v in bs.items()})))
     for tag, cap, _, _ in SIZES:

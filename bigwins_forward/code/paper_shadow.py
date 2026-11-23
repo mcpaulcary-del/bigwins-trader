@@ -299,11 +299,17 @@ def run_day(b, d, mkt, last, log):
 
 
 # ---------------------------------------------------------------- bundle for a decision day
+_SB = {}                                                                              # preflight fix F5 (ledger seq 84): the rebuilt bundle of day d,
+def clear_bundle_cache(): _SB.clear()                                                 # built once per decision day (paper_emg2.clear_bundle clears it)
+
 def bundle_for(d, log):
-    """(D, blocked, source).  Normally the bundle the H82 decision just built (paper_lib.BUNDLE); else rebuilt from the forward store cut at d."""
+    """(D, blocked, source).  Normally the bundle the H82 decision just built (paper_lib.BUNDLE); else rebuilt from the forward store cut at d
+    (once per day: a second call for the same day returns the same object; blocked is read from paper_lib.BUNDLE on every call)."""
     B = getattr(P, 'BUNDLE', {})
     hb = bool(B.get('blocked')) if B.get('asof') == d else None                       # H82's Q4 test of the same day governs the shadow lines too
     if d >= OLD_FROM and B.get('asof') == d and B.get('D') is not None: return B['D'], hb, 'H82 decision bundle'
+    if _SB.get('d') == d: return _SB['D'], hb, _SB['src']
+    _SB.clear()
     # Amendments v1.5/v1.6: before 31 Dec 2026 the H82 bundle is built under the frozen A4 and A7(a)/(b), so the shadow lines rebuild it with A4(b) and A7(c) (same file, same cut)
     if B.get('asof') == d: B.pop('D', None)                                           # the H82 decision is done with it; free the memory first
     import bw13_prep
@@ -313,7 +319,9 @@ def bundle_for(d, log):
     bw13_prep.pd = _PD(); bw13_prep.DF = P.DATA_ROOT
     D = bw13_prep.build(d, download_end=d, dup_rule='A7b', verbose=False, admit_old=True, dup_ret=True)   # v1.5 A4(b) and v1.6 A7(c) from the first shadow decision
     log('SHADOW', d, 'bundle built from the forward store with A4(b) _old codes admitted (Amendment v1.5) and A7(c) duplicate test (Amendment v1.6)')
-    return D, hb, 'forward store cut at ' + d + ', A4(b) admitted, A7(c) applied'
+    src = 'forward store cut at ' + d + ', A4(b) admitted, A7(c) applied'
+    _SB.update(d=d, D=D, src=src)
+    return D, hb, src
 
 
 def write_snapshot(R, d):

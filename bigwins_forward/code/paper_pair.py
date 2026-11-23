@@ -12,7 +12,8 @@
 # and 5% of the 20-session median traded value, duplicate-return refusal, buys stop at the Ensemble's cap, June tax 32% (367-day halving,
 # losses carried), FIFO parcels, payout rule for a holding with no close for more than 20 sessions.
 # Twins: member B's twin = BLIND3's twin rule (persistent random score over place <= 800, redraw 0.2101); member E's twin = paper_emg2s'
-# twin rule (persistent random score over band C, redraw 0.2, top len(T)); member seeds 1000 x (8800000 + i) + {0 (B), 1 (E)}.
+# twin rule (persistent random score over band C, redraw 0.2, top len(T); from 30 Nov 2026 drawn by buyable / lottery stratum,
+# AMENDMENT_twins_buyable_set.md); member seeds 1000 x (8800000 + i) + {0 (B), 1 (E)}.
 # PAPER ONLY: no real money, no broker orders, the AI never places trades. Own state file STATE_DIR/pair_state.json; never writes the H82
 # state or another line's state (reads emg2s_state.json and blind3_state.json for the reading only). Idempotent and resumable.
 import os, sys, json, math, hashlib, traceback, importlib.util
@@ -142,7 +143,7 @@ def decide(b, FE, R, lot, d, last, E, okB, okE):
         if rnd(b): mB.rs = B3._RS(B3.twin_scores(b['mB'], FE, rk))
     else: mB = Idle()
     if okE:
-        T = R['T'] if not rnd(b) else ES.lists_for(b['mE'], R)[0]
+        T = R['T'] if not rnd(b) else ES.lists_for(b['mE'], R, lot)[0]   # lot: AMENDMENT_twins_buyable_set.md
         mE = MemberE(FE, R, lot, T)
     else: mE = Idle()
     cB, cE = Cap(mB), Cap(mE); ens = T4.Ensemble([cB, cE])
