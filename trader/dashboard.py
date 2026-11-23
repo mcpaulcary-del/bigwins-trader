@@ -912,7 +912,7 @@ class Dashboard:
             if not ok:
                 return None
             codes = [h.code for h in v.holdings]
-            body = ('<p><a href="/holdings" data-nav>\u2039 Holdings</a></p><h1>Compare</h1>'
+            body = (webui.backlink("/holdings", "Holdings") + "<h1>Compare</h1>"
                     + app_more.compare(v, self.share_ctx(v), codes))  # fmt: skip
             return html_t, app_pages.shell(v, x, "Compare", body, "holdings").encode()
         if path.startswith("/replay/"):

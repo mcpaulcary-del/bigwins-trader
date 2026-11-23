@@ -185,7 +185,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
             f"at {Decimal(str(rate)) * 100:.1f}% less franking credits and TFN amounts withheld",
         )
     else:
-        tiles += tile("Estimated tax", "-", "set tax.marginal_rate on the server")
+        tiles += tile("Estimated tax", "–", "needs your tax rate (set up on the server)")
     order = (
         "<table><tbody>"
         f"<tr><td>Gains not eligible for the discount</td><td class='r'>{aud(s.short_gains)}</td></tr>"
@@ -253,11 +253,13 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         head
         + section(
             f"FY {fy_label(y)}",
-            f'<div class="tiles">{tiles}</div>'
-            + (
-                f"<p class='muted'>No sales, dividends or carried losses in FY {fy_label(y)}.</p>"
+            (
+                f"<p>No sales, dividends or carried losses in FY {fy_label(y)}.</p>"
+                f"<p class='caption'>Brokerage so far "
+                f"{aud((t['brokerage_buys'] or 0) + (t['brokerage_sells'] or 0))}, in the cost "
+                "bases.</p>"
                 if quiet
-                else ""
+                else f'<div class="tiles">{tiles}</div>'
             ),
         )
         + (

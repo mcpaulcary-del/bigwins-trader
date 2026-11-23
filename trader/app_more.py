@@ -123,14 +123,19 @@ def treemap(holdings: Sequence[Any], hist: Mapping[str, Sequence[float]]) -> str
         since = float(h.gain_pct) if h.gain_pct is not None else None
         pts = list(hist.get(h.code, []))
         today = pts[-1] / pts[-2] - 1 if len(pts) > 1 and pts[-2] else None
-        small = w * hh < 70
+        # BF-D73 review: a short tile puts code and % on one line, a narrow one rounds the %
+        # (the full figures stay in the label read by a screen reader)
+        tall = hh >= 10
+        dp = 1 if w >= 16 else 0
+        cls = "tm" if tall and w >= 16 else "tm sm"
+        code_html = f"<b>{e(h.code)}</b>" + ("<br>" if tall else " ") if tall or w >= 16 else ""
         tiles.append(
-            f'<a class="tm" href="/holdings/{quote(h.code)}" data-nav data-sheet="1" '
+            f'<a class="{cls}" href="/holdings/{quote(h.code)}" data-nav data-sheet="1" '
             f'style="left:{x:.3f}%;top:{y / th * 100:.3f}%;width:{w:.3f}%;height:{hh / th * 100:.3f}%" '
-            f'data-cs="{_tone(since)}" data-ct="{_tone(today)}" data-ls="{e(_pc(since))}" '
-            f'data-lt="{e(_pc(today))}" aria-label="{e(h.code)}: {e(_pc(since))} since bought, '
-            f'{e(_pc(today))} today"><span class="tmi {_tone(since)}"><b>{e(h.code)}</b>'
-            f'{"" if small else "<br>"}<span class="tml">{e(_pc(since))}</span></span></a>'
+            f'data-cs="{_tone(since)}" data-ct="{_tone(today)}" data-ls="{e(_pc(since, dp))}" '
+            f'data-lt="{e(_pc(today, dp))}" aria-label="{e(h.code)}: {e(_pc(since))} since bought, '
+            f'{e(_pc(today))} today"><span class="tmi {_tone(since)}">{code_html}'
+            f'<span class="tml">{e(_pc(since, dp))}</span></span></a>'
         )
     chips = ('<div class="chips" role="group" aria-label="Colour by" data-tmseg>'
              '<button type="button" class="chip on" data-tm="s" aria-pressed="true">Since bought'

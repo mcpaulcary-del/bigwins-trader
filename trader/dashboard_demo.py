@@ -33,7 +33,7 @@ from trader.panel import PricePanel
 from trader.secrets import SecretValue
 
 DEMO_SEED = "JBSWY3DPEHPK3PXP"  # a public test seed (RFC 4648 example), demo only
-DEMO_VERSION = {"version": "EMG2-18 C6 v1.0 (DEMO)", "id": "demo0000v100", "config": "demo",
+DEMO_VERSION = {"version": "EMG2-18 C6 v1.0", "id": "demo0000v100", "config": "demo",
                 "code": "demo", "commit": "demo"}  # fmt: skip
 
 
@@ -142,9 +142,9 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
     set_state(j, "heartbeat", {"ok": True, "error": "", "every_s": 300}, now - timedelta(minutes=2))
     set_state(j, "host-status", {
         "load1": 0.18, "cpus": 2, "mem_used_pct": 41, "disk_used_pct": 37,
-        "uptime_s": 9 * 86400 + 3600, "tailscale": "connected (DEMO)",
-        "code_version": "demo build", "asx": "open (DEMO)", "onedrive": True,
-        "containers": [{"name": n, "state": "Up 9 days (DEMO)"}
+        "uptime_s": 9 * 86400 + 3600, "tailscale": "connected",
+        "code_version": "demo build", "asx": "open", "onedrive": True,
+        "containers": [{"name": n, "state": "Up 9 days"}
                        for n in ("trader", "dashboard", "db", "gw-paper")],
         "log": ["DEMO log: scheduler idle, next job 14:30 remind",
                 "DEMO log: decision batch planned, waiting for approval"],
@@ -164,7 +164,7 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
         "ahead": 2, "head": "a" * 40, "remote": "b" * 40, "previous": "c" * 40, "strategy": True,
         "reasons": ["strategy setting: live_emg2_20"], "files": ["config/bfast.yaml"],
         "subject": "DEMO: keep zone 45% (example)",
-        "notes": {"version": "EMG2-18 C6 v1.1 (DEMO)", "what": "Keep zone widened from the top "
+        "notes": {"version": "EMG2-18 C6 v1.1", "what": "Keep zone widened from the top "
                   "40% to the top 45% of band C (an example, DEMO).", "why": "Fewer sells of "
                   "names that are still strong (example).", "tested": "Full test suite and the "
                   "record replay (example).", "takes_effect": "Tonight's out-of-cycle decision "

@@ -763,7 +763,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         demo = build_demo(Path(tempfile.mkdtemp()) / "demo_journal.sqlite")
         j = Journal.read_only(read_only_engine(f"sqlite+pysqlite:///{demo.journal_path}"))
         src = Sources(
-            j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index (demo)",
+            j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index",
             sessions=lambda: demo.sessions, today=lambda: demo.last_day, clock=lambda: demo.now,
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
             tax_params=tax, prices=demo.prices, forecast_dir=args.config.parent,

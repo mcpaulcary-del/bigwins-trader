@@ -337,15 +337,16 @@ def fan_chart(  # noqa: PLR0912, PLR0915 - one block per layer of the chart
         + "".join(hits) + "</svg>"
     )  # fmt: skip
     legend = (
-        '<p class="legend"><span class="key fk1"></span>p10-p90 <span class="key fk2"></span>'
-        'p25-p75 <span class="key k1"></span>median'
+        '<p class="legend"><span><span class="key fk1"></span>p10-p90</span><span><span '
+        'class="key fk2"></span>p25-p75</span><span><span class="key k1"></span>median</span>'
         + (
             ""
             if not mean_line
-            else ' <span class="key km"></span>mean'
+            else '<span><span class="key km"></span>mean'
             + ("" if all(rows[m].mean is not None for m in months) else " (12 months)")
+            + "</span>"
         )
-        + f' <span class="key ka"></span>{e(code)} · months since bought</p>'
+        + f'<span><span class="key ka"></span>{e(code)}</span><span>months since bought</span></p>'
     )
     return _tipbox(svg, legend)
 
@@ -427,8 +428,8 @@ def _lines(series: Sequence[tuple[Series, str, str]], label: str, fmt: str,
         f'<text x="{pl - 4}" y="{yy(hi) + 8:.1f}" class="ax" text-anchor="end">{fmt.format(hi)}</text>'
         f'<text x="{pl - 4}" y="{yy(lo):.1f}" class="ax" text-anchor="end">{fmt.format(lo)}</text>'
         f"{refl}{paths}{dots}"
-        f'<text x="{pl}" y="{h - 5}" class="ax">{d0:%d %b %y}</text>'
-        f'<text x="{w - pr}" y="{h - 5}" class="ax" text-anchor="end">{d1:%d %b %y}</text>'
+        f'<text x="{pl}" y="{h - 5}" class="ax">{d0:%-d %b %Y}</text>'
+        f'<text x="{w - pr}" y="{h - 5}" class="ax" text-anchor="end">{d1:%-d %b %Y}</text>'
         + "".join(hits) + "</svg>"
     )  # fmt: skip
     return _tipbox(svg)
@@ -661,8 +662,9 @@ def expected_section(ctx: ShareCtx, info: Info, f: Facts, px: Series, idx: Serie
         )
     reb = rebased_chart(px, idx, f.entry, end, code, ctx.index_label)
     reb_s = (f"<h3 class='h3'>Price vs {e(ctx.index_label)}, both 100 at entry</h3>{reb}"
-             '<p class="legend"><span class="key k1"></span>' + e(code)
-             + f' <span class="key k2"></span>{e(ctx.index_label)}</p>') if reb else ""  # fmt: skip
+             '<p class="legend"><span><span class="key k1"></span>' + e(code)
+             + f'</span><span><span class="key k2"></span>{e(ctx.index_label)}</span></p>'
+             ) if reb else ""  # fmt: skip
     return section(
         "Expected vs actual",
         lead + (f'<div class="seg" role="group" aria-label="Benchmark" data-benchseg>{seg}</div>'
@@ -686,16 +688,19 @@ def price_section(info: Info, f: Facts, px: Series) -> str:
         if p:
             marks.append((p[0], p[1], "hypd"))
     marks = [m for m in marks if s and m[0] >= s[0][0]]
-    chart = _lines([(s, "s1", info.code), (hi, "hi52", "52-week high")],
-                   f"{info.code} price from 12 months before entry, 52-week high dashed", "{:.3f}",
+    tone_ = "s1 down" if s and s[-1][1] < s[0][1] else "s1"  # line colour follows the range
+    pfmt = "${:.2f}" if s and s[-1][1] >= 2 else "${:.3f}"
+    chart = _lines([(s, tone_, info.code), (hi, "hi52", "52-week high")],
+                   f"{info.code} price from 12 months before entry, 52-week high dashed", pfmt,
                    marks)  # fmt: skip
     if not chart:
         return ""
     return section("Price history", chart + (
-        '<p class="legend"><span class="key k1"></span>price <span class="key khi"></span>52-week '
-        'high <span class="key kb"></span>buy <span class="key ks"></span>sell'
-        + (' <span class="key" style="background:var(--s3)"></span>would-be entry'
-           if f.hypothetical else "") + " · from 12 months before entry</p>"))  # fmt: skip
+        '<p class="legend"><span><span class="key k1"></span>price</span><span><span class="key '
+        'khi"></span>52-week high</span><span><span class="key kb"></span>buy</span><span><span '
+        'class="key ks"></span>sell</span>'
+        + ('<span><span class="key kh"></span>would-be entry</span>'
+           if f.hypothetical else "") + "<span>from 12 months before entry</span></p>"))  # fmt: skip
 
 
 def _nth_month_end(sessions: Sequence[date], after: date, n: int) -> date | None:

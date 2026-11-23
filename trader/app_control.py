@@ -36,6 +36,7 @@ written to the inbox with its outcome (source ``app:<login>``).
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import hmac
 import json
@@ -91,23 +92,39 @@ CONFIRM_TITLE = {
     "so": "Stop (loss rule)", "st": "Status", "cancel": "Cancel job",
 }  # fmt: skip
 # BF-D73: the Kill screen says exactly what /kill does (execution.kill + risk BLOCKS_ALL):
-# the KILLED latch refuses every new order (buys and sells) and cancels this book's open
-# orders at the broker; it never sells anything. /resume with a code re-arms (NORMAL).
+# the KILLED latch refuses every new order (buys and sells) at the send-time check and asks
+# the broker to cancel this book's open orders; it never sells anything. /resume with a code
+# re-arms (NORMAL). Wording reviewed against the code (REVIEW_AFTER section 3).
 KILL_COPY = (
     ("What happens", (
-        "The trader stops sending orders: no new buys and no new sells, including orders "
-        "you have already approved that have not been sent yet.",
-        "Any of this book's orders still open at the broker are cancelled.",
+        "The trader sends no orders at all: no buys and no sells. That includes orders you "
+        "have approved that have not gone to the broker yet.",
+        "It asks the broker to cancel every order of this book that is still open. The result "
+        "screen tells you how many were cancelled.",
     )),
     ("What does not happen", (
-        "Nothing is sold. Your shares and cash stay exactly as they are.",
-        "Orders that have already filled are not reversed.",
+        "Nothing is sold. Your shares and cash stay as they are.",
+        "Fills that have already happened, including part-fills, are kept.",
     )),
     ("To undo", (
-        "Controls, then Resume, with your 6-digit code. Until then the trader stays stopped, "
-        "even at the next month-end decision.",
+        "Controls, then Resume, with your 6-digit code.",
+        "Approved orders are checked when they are due to be sent. Resume before then and they "
+        "still go; if the trader is still killed at that time they are dropped and Resume does "
+        "not bring them back.",
+        "The trader keeps making its month-end decision and will ask for approval, but sends "
+        "nothing until you resume.",
     )),
 )  # fmt: skip
+# per-job confirm titles and button verbs (review item 14)
+SRV_TITLE = {
+    "restart": ("Restart trader", "Restart now"), "update": ("Update trader", "Update now"),
+    "rollback": ("Roll back", "Roll back now"), "check": ("Server checks", "Run checks"),
+    "claude_remote": ("Claude remote", "Start it"), "claude_stop": ("Claude remote", "Stop it"),
+    "backup_now": ("Back up now", "Back up now"), "restore_test": ("Restore test", "Run the test"),
+    "backup_key": ("Recovery key", "Ask for the key"), "fetch": ("Check for updates", "Check now"),
+    "hc_ping": ("Healthchecks ping", "Send the ping"),
+}  # fmt: skip
+_ACT: contextvars.ContextVar[str] = contextvars.ContextVar("bw_act", default="")
 MAX_FAILS = 3
 LOCK = timedelta(minutes=15)
 DAY_FAILS = 6  # BF-D58 (N6): slow guessing
@@ -464,6 +481,7 @@ class Control:
         if p == "/act/do":
             if form.get("a") == "srv:backup_key":  # security review L2: this session only
                 self._key_sessions[login] = hashlib.sha256(sid.encode()).hexdigest()
+            _ACT.set(form.get("a", ""))  # the result page's way back (presentation)
             return self._do(form, login, hdrs)
         if p == "/act/alerts":
             return self._alerts_post(form, login, hdrs)
@@ -554,9 +572,26 @@ class Control:
         confirm: bool = False,
     ) -> tuple[int, dict[str, str], bytes]:
         hdrs["Content-Type"] = "text/html; charset=utf-8"
+        waiting = 0 if confirm else sum(n for _, n, _ in self._safe_waiting())
+        latest = 0 if confirm else self._latest_inbox()
         out = page(title, body, active, demo=self.demo, refresh=False, live=self.live,
-                   confirm=confirm)  # fmt: skip
+                   confirm=confirm, waiting=waiting, latest_inbox=latest)  # fmt: skip
         return status, hdrs, out.encode()
+
+    def _safe_waiting(self) -> list[tuple[str, int, str]]:
+        try:
+            return self.waiting_batches(self.clock())
+        except Exception:
+            return []
+
+    def _latest_inbox(self) -> int:
+        from trader.app_store import inbox_rows
+
+        try:
+            rows = inbox_rows(self.journal, 1)
+        except Exception:
+            return 0
+        return int(rows[0]["id"]) if rows else 0
 
     # ------------------------------------------------------------ GET pages
     def _get(  # noqa: PLR0911 - one return per page
@@ -575,8 +610,10 @@ class Control:
             return self._html(200, hdrs, "Controls", self._controls(token), "server")
         if p == "/act/confirm":
             title = CONFIRM_TITLE.get(qs.get("a", ""), "Confirm")
-            if qs.get("a", "").startswith("srv:") or qs.get("a") == "refresh":
-                title = "Server job"
+            if qs.get("a", "").startswith("srv:"):
+                title = SRV_TITLE.get(qs.get("a", "")[4:], ("Server job", ""))[0]
+            if qs.get("a") == "refresh":
+                title = "Refresh prices"
             body = f'<div class="confirm">{self._confirm(qs, token)}</div>'
             return self._html(200, hdrs, title, body, confirm=True)
         if p == "/act/alerts":
@@ -690,7 +727,8 @@ class Control:
             '<ul class="menu"><li><div class="mrow">' + icon("pause")
             + '<span class="mt"><span class="ml">Pause buying</span><span class="md">One tap: buys '
             "stop, registered sells go on.</span></span>" + pause + "</div></li>"
-            + row("/act/confirm?a=so", "minus-circle", "Stop (loss rule)", "Asks you to confirm")
+            + row("/act/confirm?a=so", "minus-circle", "Stop (loss rule)",
+                  "Keeps buys paused; sells go on")
             + row("/act/confirm?a=ki", "stop-octagon", "Kill switch",
                   "Stops all orders and cancels open ones", "dangerrow")
             + "</ul>",
@@ -706,7 +744,7 @@ class Control:
             + row("/act/confirm?a=re", "play", "Resume", "Back to normal trading")
             + row("/act/confirm?a=co", "check", "Continue (loss rule)",
                   "Stage 3 written confirmation")
-            + f"<li>{status}</li></ul>",
+            + "</ul>",
         ))  # fmt: skip
         waiting = self.waiting_batches(now)
         rows = "".join(
@@ -725,10 +763,10 @@ class Control:
             + row("/act/alerts", "bell", "Alerts on this phone", "Turn on, choose which")
             + '<li><details class="srow"><summary class="mrow">' + icon("swap")
             + '<span class="mt"><span class="ml">Share code changes</span><span class="md">'
-            "Confirm or record a code change (BF-D19)</span></span>" + chev() + "</summary>"
+            "Confirm or record a code change</span></span>" + chev() + "</summary>"
             f'<div class="srbody">{self._idmap_html()}</div></details></li>'
             + row("/server", "server", "Server", "Health, jobs and updates")
-            + "</ul>",
+            + f"<li>{status}</li></ul>",
         ))  # fmt: skip
         return "".join(out)
 
@@ -833,7 +871,8 @@ class Control:
             '<th>Share</th><th class="r">Qty</th><th class="r">Limit</th><th class="r">≈ Value</th>'
             f"</tr></thead><tbody>{rows}"
             f'<tr class="tot"><td></td><td colspan="3">Sells ≈ ${sells:,.0f} · Buys ≈ ${buys:,.0f}'
-            f'</td><td class="r" colspan="2">Net {sign}${abs(net):,.0f}</td></tr>'
+            f'</td><td class="r" colspan="2">Net cash {"in" if net >= 0 else "out"} '
+            f"{sign}${abs(net):,.0f}</td></tr>"
             "</tbody></table></div>"
             '<p class="caption">Values at the reference prices; each order is sent with the limit '
             "shown.</p>"
@@ -875,8 +914,11 @@ class Control:
             head += (
                 f'<p class="caption">You are {verb}</p>'
                 f"<h1>{plural(len(its), 'order')} · ≈ ${total:,.0f}</h1>"
-                + (f'<p class="cd">{icon("clock")}Approve by {e(dl)}. Not approved by then = not '
-                   "sent.</p>" if dl else "")
+                + ((f'<p class="cd">{icon("clock")}Approve by {e(dl)}. Not approved by then = not '
+                    "sent.</p>" if a in ("ok", "ap") else
+                    f'<p class="cd">{icon("clock")}Deadline {e(dl)}. Refusing now means '
+                    f"{'this order is not sent' if a == 'veto' else 'none of these are sent'}.</p>")
+                   if dl else "")
                 + self._summary(qs)
                 + f'<p class="mono">Batch {e(b)}</p>'
             )  # fmt: skip
@@ -890,7 +932,9 @@ class Control:
                 f'<div class="cons">{cons}</div>'
             )
         else:
-            head += f'<p class="summary">{e(what[:1].upper() + what[1:])}.</p>' if what else ""
+            head += f'<p class="summary">{e(what[:1].upper() + what[1:])}</p>' if what else ""
+            if a == "srv:update" and fields.get("commit"):
+                head += f'<p class="mono">Commit {e(fields["commit"][:10])}</p>'
         if a in ONE_TAP:
             inner = f'<button class="btn wide big">{e(ACTION_LABEL[a])}</button>'
             return head + section("", self._form(token, fields, inner) + cancel)
@@ -929,7 +973,8 @@ class Control:
                 '<label class="chk"><input type="checkbox" name="force" value="1" required> '
                 "Do it anyway</label>"
             )
-        go = "Run on the server" if a.startswith("srv:") else ACTION_LABEL.get(a, "Confirm")
+        go = (SRV_TITLE.get(a[4:], ("", "Run on the server"))[1] if a.startswith("srv:")
+              else ACTION_LABEL.get(a, "Confirm"))  # fmt: skip
         cls = "btn wide big"
         if a == "srv:rollback":
             cls += " danger"
@@ -945,7 +990,8 @@ class Control:
             cls += " dangerline"
         after = (
             '<p class="caption">Orders go to the broker at the close auction on the execution day. '
-            "You can't undo an approval here.</p>"
+            "Changed your mind? Refuse the batch (or veto a buy) before the deadline; once orders "
+            "are sent they cannot be recalled here.</p>"
             if a in ("ok", "ap") else ""
         )  # fmt: skip
         inner = (
@@ -980,7 +1026,7 @@ class Control:
         rows = []
         if act == "update":
             kind = "Strategy update" if strat else "App-only update (the strategy does not change)"
-            rows.append(f"<p><b>{e(kind)}</b> · {_ahead(u)} new commit(s)</p>")
+            rows.append(f"<p><b>{e(kind)}</b> · {plural(_ahead(u), 'new commit')}</p>")
             notes = u.get("notes") or {}
             for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),
                            ("tested", "Tested"), ("takes_effect", "Takes effect")):  # fmt: skip
@@ -1188,13 +1234,29 @@ class Control:
         self, hdrs: dict[str, str], text: str, good: bool
     ) -> tuple[int, dict[str, str], bytes]:
         tone = "up" if good else "down"
+        act = _ACT.get()
+        if act in ("ok", "ap", "rf", "veto"):
+            back = (
+                '<a class="btn wide" href="/orders" data-nav>Back to Orders</a>'
+                '<a class="btn sec wide" style="margin-top:8px" href="/act">Controls</a>'
+            )
+        elif act.startswith("srv:") or act in ("refresh", "cancel"):
+            back = (
+                '<a class="btn wide" href="/server" data-nav>Back to Server</a>'
+                '<a class="btn sec wide" style="margin-top:8px" href="/act">Controls</a>'
+            )
+        else:
+            back = (
+                '<a class="btn wide" href="/act">Back to Controls</a>'
+                '<a class="btn sec wide" style="margin-top:8px" href="/orders" data-nav>'
+                "Orders</a>"
+            )
         body = (
             f'<div class="confirm"><span class="okmark {tone}">'
             f'{icon("check" if good else "x")}</span>'
             f'<h1>{"Done" if good else "Not done"}</h1>'
             + section("", f"<p>{e(text)}</p>"
-                      '<a class="btn wide" href="/orders" data-nav>Back to Orders</a>'
-                      '<a class="btn sec wide" style="margin-top:8px" href="/act">Controls</a>')
+                      + back)
             + "</div>"
         )  # fmt: skip
         return self._html(200, hdrs, "Result", body)

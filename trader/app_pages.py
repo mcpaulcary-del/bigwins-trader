@@ -88,10 +88,24 @@ def px(x: Decimal | float | None) -> str:
 fmt_px = px  # for screens with a local ``px`` series
 
 
+def day(x: object) -> str:
+    """One date style (BF-D73): "29 Feb 2024"; ISO text in, anything else shown as is."""
+    if isinstance(x, datetime):
+        x = x.date()
+    if not isinstance(x, date):
+        try:
+            x = date.fromisoformat(str(x)[:10])
+        except ValueError:
+            return str(x)
+    return f"{x:%-d %b %Y}"
+
+
 def pct(x: float | None, sign: bool = True) -> str:
     if x is None or not math.isfinite(x):
         return "–"
     s = f"{abs(x) * 100:.1f}%"
+    if s == "0.0%":  # BF-D73: zero carries no sign
+        return s
     return (("+" if x >= 0 else MINUS) + s) if sign else s
 
 
@@ -223,9 +237,7 @@ def company_names(store_root: Path | None) -> dict[str, str]:
 
 def demo_names(codes: Sequence[str]) -> dict[str, str]:
     """Made-up company names for the demo's synthetic codes (S001 ... ), clearly labelled."""
-    return {
-        c: f"Demo Company {c[1:]} Ltd (made up)" for c in codes if c[:1] == "S" and c[1:].isdigit()
-    }
+    return {c: f"Demo Company {c[1:]} Ltd" for c in codes if c[:1] == "S" and c[1:].isdigit()}
 
 
 def collect_extras(
@@ -331,7 +343,7 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         "label": label,
         "trades": [[_epoch(d), k] for d, k in trades],  # buy / sell days (markers)
     }
-    w, h, pl, pr, pt, pb = 340, 190, 4, 4, 12, 22
+    w, h, pl, pr, pt, pb = 340, 190, 4, 44, 12, 22
     base = float(series[0][1])
     book = [(d, (float(v) / base - 1) * 100) for d, v in series]
     idx = [(d, (v / index[0][1] - 1) * 100) for d, v in index] if index else []
@@ -355,8 +367,8 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
     ticks = _ticks_pct(lo, hi)
     dp = 1 if max(abs(t - round(t)) for t in ticks) > 0 else 0
     grid = "".join(
-        f'<line x1="{pl}" x2="{w - pr}" y1="{yy(v):.1f}" y2="{yy(v):.1f}" class="grid"/>'
-        f'<text x="{w - pr}" y="{yy(v) - 4:.1f}" class="ax" text-anchor="end">{_sp(v, dp)}</text>'
+        f'<line x1="{pl}" x2="{w - 2}" y1="{yy(v):.1f}" y2="{yy(v):.1f}" class="grid"/>'
+        f'<text x="{w - 2}" y="{yy(v) + 4:.1f}" class="ax" text-anchor="end">{_sp(v, dp)}</text>'
         for v in ticks
         if abs(v) > 1e-9
     )
@@ -397,11 +409,14 @@ def perf_chart(series: Sequence[tuple[date, Decimal]], index: Sequence[tuple[dat
         f'aria-pressed="{"true" if n == 0 else "false"}">{lab}</button>'
         for lab, n in (("1M", 31), ("3M", 92), ("6M", 183), ("1Y", 365), ("All", 0))
     )
-    legend = f'<span><span class="key k1"></span>Book <b>{_sp(b_end, 1)}</b></span>'
+    legend = '<span><span class="key k1"></span>Book</span>'
     if i_end is not None:
         gap = b_end - i_end
-        legend += (f'<span><span class="key k2"></span>{e(label)} <b>{_sp(i_end, 1)}</b></span>'
+        legend += (f'<span><span class="key k2"></span>{e(label)}</span>'
                    f"<span>{'Ahead' if gap >= 0 else 'Behind'} by {abs(gap):.1f} pts</span>")  # fmt: skip
+    if trades:
+        legend += ('<span><span class="key kb"></span>buy day</span>'
+                   '<span><span class="key ks"></span>sell day</span>')  # fmt: skip
     blob = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     rows = "".join(
         f"<tr><td>{d:%d %b %Y}</td><td class='r'>{aud(v)}</td><td class='r'>{_sp(b, 1)}</td></tr>"
@@ -476,7 +491,8 @@ def line_chart(pts: Sequence[tuple[date, float]], cls: str = "s3", lo: float | N
 
     path = " ".join(f"{'M' if i == 0 else 'L'}{xx(d):.1f},{yy(v):.1f}"
                     for i, (d, v) in enumerate(pts))  # fmt: skip
-    tdn = " down" if cls == "s1" and pts[-1][1] < pts[0][1] else ""
+    start = ref if ref is not None else pts[0][1]
+    tdn = " down" if cls == "s1" and pts[-1][1] < start else ""
     dots = "".join(
         f'<circle cx="{xx(d):.1f}" cy="{yy(v):.1f}" r="4" class="{c}"/>' for d, v, c in marks
     )
@@ -573,8 +589,8 @@ def waiting_card(x: Extras, demo: bool, now: datetime | None = None) -> str:
             f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">Review &amp; '
             "approve</a>"
             f'<a class="btn sec" href="{act_link(a="rf", b=w.batch_id)}">Refuse</a></div>'
-            '<p class="caption">Not approved by the deadline = not sent. '
-            f'<a href="/orders/{quote(w.batch_id)}" data-nav>See each order</a></p>'
+            f'<p class="caption"><a href="/orders/{quote(w.batch_id)}" data-nav>See each order'
+            "</a></p>"
         )
     return section("Needs your approval", "".join(out) + actions_note(x, demo), "waitcard")
 
@@ -670,22 +686,17 @@ def home(v: Any, x: Extras) -> str:
         rows.append(_srow("What if", "the market moves?", wi))
     rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
     status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>')
-    foot = (
-        "<footer>LIVE account: real money. Not shown to beat the index.</footer>"
-        if getattr(v, "live", False)
-        else "<footer>Paper: no real money. Not shown to beat the index.</footer>"
-    )
+    foot = "<footer>Not shown to beat the index.</footer>"
     col_a = (
         f'<div class="hero-wrap o1">{hero_html}</div>'
         + (f'<div class="o2">{wait}</div>' if urgent else "")
         + f'<div class="o3 perf" data-card="perf">{chart}</div>'
         + f'<div class="o5 homestats">{stats}</div>'
-    )
-    col_b = (
-        (f'<div class="o4">{wait}</div>' if wait and not urgent else "")
-        + f'<div class="o6">{status}</div>'
         + f'<div class="o7">{inbox_peek(x, v.book)}</div>'
     )
+    col_b = (
+        f'<div class="o4">{wait}</div>' if wait and not urgent else ""
+    ) + f'<div class="o6">{status}</div>'
     body = (
         f'<div class="home"><div class="col-a">{col_a}</div><div class="col-b">{col_b}</div></div>'
     )
@@ -705,7 +716,7 @@ def twins_card(v: Any, x: Extras) -> str:
     warn = " (below 10)" if v.twin_pct is not None and v.twin_pct < 10 else ""
     head = (
         f"<p>Twin vs {v.twin_n} random twins: <b>{v.twin_pct:.0f}th percentile</b>{warn}"
-        f'<span class="sub"> · L11 test (b) needs ≥ 10 · {e(v.twin_day)}</span></p>'
+        f'<span class="sub"> · the loss rule needs 10 or more · {e(day(v.twin_day))}</span></p>'
         if v.twin_pct is not None else ""
     )  # fmt: skip
     hist = (
@@ -775,9 +786,9 @@ def loss_card(v: Any) -> str:
     if v.value is None or lim is None:
         return ""
     val = float(v.value)
-    marks = [(float(lim.line), f"${float(lim.line) / 1000:.0f}k stop"),
-             (float(lim.halt), f"${float(lim.halt) / 1000:.0f}k pause"),
-             (float(lim.review), f"${float(lim.review) / 1000:.0f}k check")]  # fmt: skip
+    marks = [(float(lim.line), f"${float(lim.line) / 1000:.0f}k"),
+             (float(lim.halt), f"${float(lim.halt) / 1000:.0f}k"),
+             (float(lim.review), f"${float(lim.review) / 1000:.0f}k")]  # fmt: skip
     hi = max(val, float(v.capital_in or 0), float(lim.review)) * 1.05
     gap = val - float(lim.review)
     return section(
@@ -787,6 +798,9 @@ def loss_card(v: Any) -> str:
         "check</span></p>"
         + threshold_meter(val, marks, hi, f"Account value {val:,.0f} against the loss-rule "
                           "thresholds")
+        + f'<p class="caption">Below ${float(lim.review) / 1000:.0f}k: a check; below '
+        f"${float(lim.halt) / 1000:.0f}k: buys pause; below ${float(lim.line) / 1000:.0f}k: "
+        "the line stops.</p>"
         + f'<p class="small muted">{e(v.l11_text or "Normal")}</p>',
     )  # fmt: skip
 
@@ -817,8 +831,10 @@ def msg_summary(title: str, kind: str, book: str = "") -> str:
     if book:
         t = t.replace(book, "")
     t = _ISO.sub("", t)
+    t = re.sub(r"(\d+) order\(s\)", lambda m: plural(int(m.group(1)), "order"), t)
     t = re.sub(r"\s*-\s*(-\s*)+", " - ", t)
     t = re.sub(r"\s{2,}", " ", t).strip(" -:·;,")
+    t = re.sub(r"\s+([:;,])", r"\1", t)
     return (t[:1].upper() + t[1:]) if t else str(title)
 
 
@@ -1066,7 +1082,7 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
         '<div class="meter"><b style="width:'
         f'{min(100, (age or 0) / 6 * 100):.0f}%"></b></div>'
         + ("<p>In the top 40% of band C (keep zone): <b>"
-           + ("yes" if kz else "no") + f"</b> ({e(latest.get('as_of', ''))})</p>"
+           + ("yes" if kz else "no") + f"</b> ({e(day(latest.get('as_of', '')))})</p>"
            if latest is not None else "<p class='muted'>Keep zone: not recorded yet.</p>")
         + "<p class='small muted'>C6 sells only when both: 6 or more month-ends held and "
         "outside the keep zone.</p>"
@@ -1134,7 +1150,8 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
             items.append(
                 f'<li><a class="rowlink" href="/orders/{quote(b["batch_id"])}" data-nav>'
                 f'<span class="grow"><b>{d:%-d %b %Y}</b><div class="sub">'
-                f"{plural(len(its), 'order')} · {e(b['approval_mode'])}"
+                f"{plural(len(its), 'order')} · "
+                f"{e(MODE_WORDS.get(str(b['approval_mode']), str(b['approval_mode'])))}"
                 + (f" · strategy {e(ver[d])}" if d in ver else "")
                 + f"</div></span>{chip}{chev()}</a></li>"
             )
@@ -1156,6 +1173,10 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
     seg = ('<div class="seg"><a class="on" href="/orders" data-nav>Decisions</a>'
            '<a href="/calendar" data-nav>Calendar</a></div>')  # fmt: skip
     return shell(v, x, "Orders", seg + body, "orders")
+
+
+MODE_WORDS = {"per_order": "each order approved", "auto": "automatic",
+              "batch": "whole batch approved"}  # fmt: skip
 
 
 def _batch_chip(batch_id: str, its: Sequence[tuple[Any, str]], x: Extras) -> str:
@@ -1261,12 +1282,18 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
         for a in apps
     )
     total = sum((Decimal(str(it.value_at_ref)) for it, _ in its), Decimal(0))
+    mode = MODE_WORDS.get(str(b["approval_mode"]), str(b["approval_mode"]))
     head = (
-        backlink("/orders", "Orders") + f"<h1>{b['decision_date']:%-d %b %Y}</h1>"
-        f'<p class="summary">{plural(len(its), "order")} · ≈ {aud(total, dp=0)} '
-        f"{_batch_chip(batch_id, its, x)}</p>"
-        f'<p class="caption">{e(b["approval_mode"])} · execution '
-        f'{b["execution_date"] or "–"}</p><p class="mono">{e(batch_id)}</p>'
+        backlink("/orders", "Orders")
+        + f"<h1>{b['decision_date']:%-d %b %Y}</h1>"
+        + (
+            ""
+            if w is not None
+            else f'<p class="summary">{plural(len(its), "order")} · ≈ {aud(total, dp=0)} '
+            f"{_batch_chip(batch_id, its, x)}</p>"
+        )
+        + f'<p class="caption">{e(mode)} · execution '
+        f'{day(b["execution_date"]) if b["execution_date"] else "–"}</p><p class="mono">{e(batch_id)}</p>'
     )
     top = ""
     if w is not None:
@@ -1280,6 +1307,7 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
                 else STATUS_WORDS.get(st, st.lower()))  # fmt: skip
         if w is not None and st in OPEN_FOR_APPROVAL and it.seq not in ok:
             word = "waiting"
+        word = word[:1].upper() + word[1:]
         btn = ""
         if waiting:
             btn = (f'<div class="btns"><a class="btn sec sm" href="{act_link(a="ok", b=batch_id, n=str(it.seq))}">'
@@ -1299,13 +1327,28 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
             f"{px(it.ref_price)} · {e(it.reason)}</p>"
             + _steps(st, it.seq in ok)
             + _timeline(j, it.client_order_id, it, st)
-            + "</details>"
             + btn
-            + "</li>"
+            + "</details></li>"
         )
     body = head + top + section("Orders", f'<ul class="list">{"".join(cards)}</ul>')
-    body += (f'<p><a class="btn ter" href="/replay/{b["decision_date"]}" data-nav>Replay this '
-             "decision</a></p>")  # fmt: skip
+    still_open = [it for it, st in its if st in OPEN_FOR_APPROVAL and it.seq in ok]
+    rows = ""
+    if w is None and still_open:  # review item 5: an approval can still be withdrawn
+        rows += menu_row(
+            act_link(a="rf", b=batch_id),
+            "x",
+            "Refuse this batch",
+            "Approved, not sent yet: refuse before the deadline",
+            danger=True,
+        )
+    rows += menu_row(
+        f"/replay/{b['decision_date']}",
+        "play",
+        "Replay this decision",
+        "Ranked, picked, filtered, ordered",
+        nav=True,
+    )
+    body += section("", f'<ul class="menu">{rows}</ul>')
     if who:
         body += section("Approvals", f'<ul class="list small">{who}</ul>')
     return shell(v, x, "Batch", body, "orders")
@@ -1324,15 +1367,12 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
         for k, lab in FILTERS
     )
     rows = []
+    old: list[str] = []
     last_day = None
     today = v.now.astimezone(ASX_TZ).date()
     for r in x.inbox:
         k = str(r["kind"])
-        day = r["at"].astimezone(ASX_TZ).date() if r["at"] is not None else None
-        if day != last_day:
-            lab = ("Today" if day == today else f"{day:%A %d %B}") if day else "-"
-            rows.append(f'<li class="day">{lab}</li>')
-            last_day = day
+        d = r["at"].astimezone(ASX_TZ).date() if r["at"] is not None else None
         hide = kind != "all" and not (k == kind or (kind == "alerts" and k == "page"))
         link = str(r["link"] or "")
         go = (f'<a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""} aria-label="Open">Open</a>'
@@ -1340,11 +1380,29 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
         meta = f"{when(r['at'])} · from {e(r['source'])}" + (
             f" · phone alert: {e(r['push'])}" if r["push"] and r["push"] != "off" else ""
         )
-        rows.append(
+        li = (
             f'<li class="msg {e(k)}" id="m{int(r["id"])}" data-inbox-id="{int(r["id"])}" '
-            f'data-kind="{e(k)}"{" hidden" if hide else ""}>{_msg_head(r, v.book)}'
-            f"<details><summary class='small'>Show message</summary><pre>{e(r['body'])}</pre>"
+            f'data-kind="{e(k)}"{" hidden" if hide else ""}><details><summary>'
+            f'<span class="grow">{_msg_head(r, v.book)}</span>{chev()}</summary>'
+            f"<pre>{e(r['body'])}</pre>"
             f'<p class="meta">{meta}{" · " + go if go else ""}</p></details></li>'
+        )
+        # review item 18: quiet daily reports older than a week fold into one row
+        if k == "report" and "NORMAL" in str(r["title"]) and d is not None and (today - d).days > 7:
+            old.append(li)
+            continue
+        if d != last_day:
+            lab = ("Today" if d == today else f"{d:%A %d %B}") if d else "-"
+            rows.append(f'<li class="day">{lab}</li>')
+            last_day = d
+        rows.append(li)
+    if old:
+        rows.append(
+            '<li class="day">Older</li><li class="msg report grp" data-kind="report"'
+            f"{' hidden' if kind not in ('all', 'report') else ''}><details><summary>"
+            f'<span class="grow"><span class="mk">{plural(len(old), "daily report")}, all '
+            f'normal</span><span class="t">Older than a week</span></span>{chev()}</summary>'
+            f'<ul class="list">{"".join(old)}</ul></details></li>'
         )
     body = (f'<div class="chips">{chips}</div>'
             + section(f"Inbox · {len(x.inbox)}", f'<ul class="list">{"".join(rows)}</ul>' if rows
@@ -1361,13 +1419,13 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
 
 def health_card(v: Any, x: Extras) -> str:
     items = []
-    items.append("<li>Price store: " + (f"<b>{v.store_day:%a %d %b}</b>" if v.store_day else "<b>-</b>")
+    items.append("<li>Price store: " + (f"<b>{v.store_day:%a %d %b}</b>" if v.store_day else "<b>not refreshed yet</b>")
                  + (f" · refreshed {when(v.store_refreshed_at)}" if v.store_refreshed_at else "")
                  + "</li>")  # fmt: skip
     items.append(f"<li>Last daily report: <b>{when(v.report_at)}</b></li>")
     if v.recon:
         ok = "reconciled to the cent" if v.recon[1] else "BREAK - see Inbox"
-        items.append(f"<li>Broker check {e(v.recon[0])}: <b>{ok}</b></li>")
+        items.append(f"<li>Broker check {e(day(v.recon[0]))}: <b>{ok}</b></li>")
     if v.last_job:
         key, at, err = v.last_job
         items.append(f"<li>Last scheduled job: <b>{e(key.rsplit(':', 1)[1])}</b> {when(at)}"
@@ -1552,7 +1610,7 @@ def strategy_card(x: Extras) -> str:
     if int(u.get("ahead") or 0) > 0:
         strat = bool(u.get("strategy", True))
         card = (f'<p class="note"><b>{"Strategy update" if strat else "App-only update"} available</b>'
-                f" · {int(u['ahead'])} commit(s)" + (f" · {e(u['notes'].get('version', ''))}"
+                f" · {plural(int(u['ahead']), 'commit')}" + (f" · {e(u['notes'].get('version', ''))}"
                 if u.get("notes") else "") + "</p>" + _ci_line(u))  # fmt: skip
     return section("Strategy", head + card + '<a class="btn sec wide" href="/strategy" data-nav>'
                    "Strategy, updates and versions</a>")  # fmt: skip
@@ -1591,7 +1649,7 @@ def strategy(v: Any, x: Extras) -> str:
             "working, then an out-of-cycle decision for your approval" if x.update_mode == "immediate"
             else "next decision: an approved update takes effect at the next month-end decision")  # fmt: skip
     parts.append(section("Running now", f"<table><tbody>{rows}</tbody></table>"
-                         f"<p class='small'>Update mode: <b>{e(mode)}</b> (strategy.update_mode)</p>"
+                         f"<p class='small'>Update mode: <b>{e(mode)}</b></p>"
                          "<p class='small muted'>Live later: daily strategy changes increase trading "
                          "costs and tax; immediate mode on a live book will need an explicit, "
                          "acknowledged config change.</p>"))  # fmt: skip
@@ -1599,7 +1657,7 @@ def strategy(v: Any, x: Extras) -> str:
         strat = bool(u.get("strategy", True))
         n = u.get("notes") or {}
         body = (f'<p class="summary">{"Strategy update" if strat else "App-only update"} available</p>'
-                f"<p class='small muted'>{int(u['ahead'])} commit(s) · {e(u.get('subject', ''))}</p>"
+                f"<p class='small muted'>{plural(int(u['ahead']), 'commit')} · {e(u.get('subject', ''))}</p>"
                 + _ci_line(u))  # fmt: skip
         for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),
                        ("tested", "Tested"), ("takes_effect", "Takes effect")):  # fmt: skip
@@ -1636,8 +1694,8 @@ def strategy(v: Any, x: Extras) -> str:
                              "version that made it.</p>"))  # fmt: skip
     notes = "".join(
         f"<li class='rel'><p class='summary'>{e(c.get('version'))}</p>"
-        f"<p class='caption'>{e(c.get('date', ''))}</p><dl class='reld'>"
-        + "".join(f"<dt>{lab}</dt><dd>{e(c[k])}</dd>"
+        f"<p class='caption'>{e(day(c.get('date', '')))}</p><dl class='reld'>"
+        + "".join(f"<dt>{lab}</dt><dd>{e(str(c[k]).replace('A$', '$'))}</dd>"
                   for k, lab in (("what", "What"), ("why", "Why"), ("tested", "Tested"),
                                  ("takes_effect", "Takes effect")) if c.get(k))
         + "</dl></li>"
@@ -1802,18 +1860,18 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
             if key == "secrets"
             else (f'<p class="small muted">{e(status)}</p>' if status else "")
         )
-        btn = _ext(link, "Open IBKR" if "interactivebrokers" in link else "Open") if link else ""
+        btn = "" if not link or "interactivebrokers" in link else _ext(link, "Open")
         inner = f"<p class='small'>{e(how)}</p>{extra}{ticks}{btn}"
         if auto:  # BF-D73: a done step collapses to one line
             rows.append(
                 f'<li class="{cls}" data-item="{e(key)}"><details class="ord"><summary>'
-                f'<span class="grow"><b>{e(title)}</b></span>{st}{chev()}</summary>{inner}'
+                f'<span class="grow"><b>{e(title)}</b><br>{st}</span>{chev()}</summary>{inner}'
                 "</details></li>"
             )
         else:
             rows.append(
                 f'<li class="{cls}" data-item="{e(key)}"><div class="rowlink"><span class="grow">'
-                f"<b>{e(title)}</b></span>{st}</div>{inner}</li>"
+                f"<b>{e(title)}</b><br>{st}</span></div>{inner}</li>"
             )
     n = len(items)
     ring_html = (f'<div class="meter" role="img" aria-label="{auto_done} of {n} done">'
@@ -1828,7 +1886,8 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
             f"{ring_html}</div>"
             "<p class='small muted'>Automatic ticks come from the trader's own records. Your "
             "own ticks are kept on this phone only (not on the server), so they show here "
-            "and nowhere else.</p>",
+            "and nowhere else.</p>"
+            f"<p>{_ext(IBKR_LOGIN, 'Open IBKR (log in)')} {_ext(IBKR_HOME, 'IBKR website')}</p>",
         )
         + section("Checklist", f'<ul class="list setup">{"".join(rows)}</ul>')
         + "<footer>Links open IBKR's own site in a new tab; nothing here changes your "

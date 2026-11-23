@@ -22,6 +22,12 @@ const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   await page.click('button.danger');           // Kill -> Yes
   await page.waitForLoadState();
   out.kill = await text();
+  out.killBack = await page.evaluate(() => { const b = document.querySelector('main a.btn'); return b ? b.getAttribute('href') : null; });
+  // review fixes: the Refuse screen speaks of refusing; the Approve footnote is accurate
+  await page.goto(base + '/act/confirm?a=rf&b=EMG2_18_PAPER-2024-02-29-R');
+  out.refuseCopy = await page.evaluate(() => { const t = document.querySelector('main').innerText; return [t.includes('Refusing now means none of these are sent'), t.includes('Approve by')]; });
+  await page.goto(base + '/act/confirm?a=ok&b=EMG2_18_PAPER-2024-02-29-R&n=all');
+  out.approveCopy = await page.evaluate(() => document.querySelector('main').innerText.includes('Refuse the batch'));
   await page.goto(base + '/');
   await page.click('a.btn:has-text("Review")');   // BF-D73: Review & approve
   await page.waitForLoadState();
