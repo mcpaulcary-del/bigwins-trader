@@ -45,7 +45,7 @@ def test_BF_D63_setup_screen_lists_13_items_with_links_and_progress(tmp_path: Pa
     for a in re.findall(r"<a [^>]*https://www\.interactivebrokers[^>]*>", page):
         assert 'target="_blank"' in a and 'rel="noopener noreferrer"' in a
     assert "Settings" in page and "Market Data Subscriptions" in page
-    assert "A$250" in page and "A$2.5" in page  # the wholesale certificate note
+    assert "$250" in page and "$2.5" in page  # the wholesale certificate note
     assert "<form" not in page  # nothing to submit: manual ticks stay on the phone
 
 

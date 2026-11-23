@@ -19,7 +19,7 @@ from urllib.parse import quote
 from trader.constants import ASX_TZ
 from trader.journal import Journal
 from trader.orders import Side
-from trader.webui import e, section
+from trader.webui import backlink, e, icon, section
 
 REASON_WORDS = {
     "EMG2_OFF_LIST": "it was no longer on the buy list T",
@@ -190,7 +190,7 @@ def whatif(v: Any, j: Journal | None) -> str:
     mean = tr.get("mean")
     data = {
         "cash": float(v.cash or 0), "h": rows, "now": float(v.value),
-        "lines": [[float(lim.review), "A$7k check" if lim.review == 7000 else "check"],
+        "lines": [[float(lim.review), "$7k check" if lim.review == 7000 else "check"],
                   [float(lim.halt), "pause"], [float(lim.line), "stop"]],
         "trend": [lv[-1], float(mean)] if lv and mean is not None else None,
     }  # fmt: skip
@@ -203,7 +203,7 @@ def whatif(v: Any, j: Journal | None) -> str:
 
     ticks = "".join(
         f'<span class="wk" style="left:{pos(x):.1f}%"></span>'
-        f'<span class="wkl" style="left:{pos(x):.1f}%">A${x / 1000:.0f}k</span>'
+        f'<span class="wkl" style="left:{pos(x):.1f}%">${x / 1000:.0f}k</span>'
         for x in (float(lim.line), float(lim.halt), float(lim.review))
     )
     return section("What if the market moves?", (
@@ -212,11 +212,11 @@ def whatif(v: Any, j: Journal | None) -> str:
         '<input id="wi-r" type="range" min="-20" max="20" step="1" value="0" '
         'aria-label="Market move, per cent">'
         '<div class="wscale"><span>−20%</span><span>0</span><span>+20%</span></div>'
-        f'<p class="wv">Estimated value <b class="num" data-wi-v>A${float(v.value):,.0f}</b> '
+        f'<p class="wv">Estimated value <b class="num" data-wi-v>${float(v.value):,.0f}</b> '
         '<span class="sub" data-wi-d></span></p>'
         f'<div class="wbar" aria-hidden="true"><b data-wi-bar style="width:{pos(float(v.value)):.1f}%">'
         f"</b>{ticks}</div>"
-        '<p data-wi-s class="small">Above the A$7k check.</p><p data-wi-t class="small muted"></p>'
+        '<p data-wi-s class="small">Above the $7k check.</p><p data-wi-t class="small muted"></p>'
         f'<script type="application/json" data-wi-data>{_blob(data)}</script></div>'
         "<p class='small muted'><b>An estimate, not a forecast:</b> each holding moves by its "
         f"recent beta to {e(v.index_label)} × the market move ({known} of {len(rows)} with "
@@ -312,7 +312,7 @@ def calendar(v: Any, month: date, events: Sequence[Ev], today: date) -> str:
         f'<li data-cev="{x.day}" class="cev-{x.kind}"><span class="cdk cd-{x.kind}"></span>'
         f'<span class="grow"><b>{x.day:%a %d %b}</b> · {e(KIND_LABEL[x.kind])}'
         f'<div class="sub">{e(x.text)}</div></span>'
-        + (f'<a class="small" href="{e(x.href)}" data-nav>Open ›</a>' if x.href else "")
+        + (f'<a class="small" href="{e(x.href)}" data-nav>Open</a>' if x.href else "")
         + "</li>"
         for x in events
         if x.day.month == first.month
@@ -320,8 +320,8 @@ def calendar(v: Any, month: date, events: Sequence[Ev], today: date) -> str:
     legend = "".join(f'<span class="cl"><i class="cd-{k}"></i>{e(lab)}</span>'
                      for k, lab in KIND_LABEL.items())  # fmt: skip
     nav = (f'<div class="calnav"><a class="iconbtn" href="/calendar?m={prev:%Y-%m}" data-nav '
-           f'aria-label="Previous month">‹</a><h2 class="calt">{first:%B %Y}</h2>'
-           f'<a class="iconbtn" href="/calendar?m={nxt:%Y-%m}" data-nav aria-label="Next month">›'
+           f'aria-label="Previous month">{icon("chevron-left")}</a><h2 class="calt">{first:%B %Y}</h2>'
+           f'<a class="iconbtn" href="/calendar?m={nxt:%Y-%m}" data-nav aria-label="Next month">{icon("chevron-right")}'
            "</a></div>")  # fmt: skip
     return section("", (
         nav + f'<div class="cal" data-cal><div class="cwk">{head}</div><div class="cgrid">'
@@ -433,7 +433,7 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
         "LICs, funds and ETFs. Each got a score from momentum (s1) and two steadiness inputs "
         "(s2, s3), then a percentile (100 = best).</p>"
         f'<ul class="rbars">{"".join(bar(r) for r in band[:12])}</ul>'
-        + (f"<p class='small muted'>…and {n - 12} more.</p>" if n > 12 else "")
+        + (f"<p class='small muted'>And {n - 12} more.</p>" if n > 12 else "")
     )))  # fmt: skip
     steps.append(("Top fifth picked", (
         f"<p>The top 20% by score: <b>{len(top)}</b> shares. Only these can be bought "
@@ -454,14 +454,14 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
                  if r else "not in band C")  # fmt: skip
         if it.side is Side.BUY:
             why = (f"<b>Bought {e(it.entity)}</b>: {where}; on the buy list T and a slot was free "
-                   f"({it.qty} shares, ≈ A${float(it.value_at_ref):,.0f}).")  # fmt: skip
+                   f"({it.qty} shares, ≈ ${float(it.value_at_ref):,.0f}).")  # fmt: skip
         else:
             why = f"<b>Sold {e(it.entity)}</b>: {where}; {e(reason_words(it.reason))}."
         words.append(f'<li class="{"rbuy" if it.side is Side.BUY else "rsell"}">{why}</li>')
     steps.append(("Final orders", (
         f'<ul class="bul">{"".join(words)}</ul>' if words else
         "<p>No orders: the book already held enough of the list, or no slot was free.</p>"
-    ) + (f'<p><a href="/orders/{quote(batches[0]["batch_id"])}" data-nav>The batch ›</a></p>'
+    ) + (f'<p><a href="/orders/{quote(batches[0]["batch_id"])}" data-nav>The batch</a></p>'
          if batches else "")))  # fmt: skip
     dots = "".join(f'<button type="button" class="rdot{" on" if k == 0 else ""}" data-rgo="{k}" '
                    f'aria-label="Step {k + 1}: {e(t)}"></button>' for k, (t, _) in enumerate(steps))  # fmt: skip
@@ -470,11 +470,11 @@ def replay(v: Any, j: Journal, day: date) -> str | None:
         for k, (t, b) in enumerate(steps)
     )
     return (
-        f'<p><a href="/orders" data-nav>‹ Orders</a></p><h1>Replay: {day:%d %b %Y}</h1>'
+        backlink("/orders", "Orders") + f"<h1>Replay: {day:%d %b %Y}</h1>"
         + section("", (
             f'<div class="replay" data-replay><div class="rdots">{dots}</div>{panes}'
-            '<div class="btns rbtn"><button type="button" class="btn sec" data-rprev>‹ Back</button>'
-            '<button type="button" class="btn" data-rnext>Next ›</button></div>'
+            '<div class="btns rbtn"><button type="button" class="btn sec" data-rprev>Back</button>'
+            '<button type="button" class="btn" data-rnext>Next</button></div>'
             '<button type="button" class="chip" data-rplay>▶ Play</button></div>'
         ), "wide")
         + "<p class='small muted'>From the decision's stored ranks and scores (the list "
@@ -530,5 +530,5 @@ def month_milestone(v: Any) -> str:
     if not ms or not im or not base or not ibase:
         return ""
     if ms[-1][1] / base - 1 > im[-1] / ibase - 1:
-        return '<span class="vs mile">✓ ahead of the index this month</span>'
+        return '<span class="vs mile">Ahead of the index this month</span>'
     return ""

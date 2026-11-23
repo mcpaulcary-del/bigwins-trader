@@ -22,7 +22,7 @@ from trader import forecast as fc
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal
 from trader.orders import Side
-from trader.webui import e, section
+from trader.webui import backlink, chev, e, section
 
 SKEW = ("Most picks end near or a bit behind the market; the strategy's gains come from a "
         "minority of big winners — that's why it holds 18 shares.")  # fmt: skip
@@ -837,7 +837,7 @@ def shares_list(ctx: ShareCtx, held: Sequence[str]) -> str:
             f'<li data-kind="{info.status}"><a class="rowlink" href="/shares/{quote(info.code)}" '
             f'data-nav data-sheet="1"><span class="grow"><b>{e(info.code)}</b> '
             f'<span class="pill st-{info.status}">{STATUS_LABEL[info.status]}</span>'
-            f'<div class="sub">{e(sub)}</div></span><span class="chev" aria-hidden="true">›</span>'
+            f'<div class="sub">{e(sub)}</div></span>{chev()}'
             "</a></li>"
         )
     body = (
@@ -857,7 +857,7 @@ def share_detail(ctx: ShareCtx, code: str) -> str | None:
     if info is None:
         return None
     return (
-        f'<p><a href="/shares" data-nav>‹ Shares</a></p><h1>{e(code)} '
+        backlink("/shares", "Shares") + f"<h1>{e(code)} "
         f'<span class="pill st-{info.status}">{STATUS_LABEL[info.status]}</span></h1>'
         + (f'<p class="coname">{e(ctx.names[code])}</p>' if code in ctx.names else "")
         + detail_sections(ctx, code, info)
@@ -931,5 +931,5 @@ def method_page(config_dir: Path | None) -> str:
         text = ""
     if not text:
         return "<h1>Forecast bands</h1><p class='muted'>The method note is not on this server.</p>"
-    return ('<p><a href="/shares" data-nav>‹ Shares</a></p><div class="doc">'
+    return (backlink("/shares", "Shares") + '<div class="doc">'
             + md_to_html(text) + "</div>")  # fmt: skip

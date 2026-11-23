@@ -155,7 +155,7 @@ def hero(value: Decimal | None, label: str, change: str, change_tone: str, extra
         data = ""
     else:
         q = Decimal(str(value)).quantize(Decimal("0.01"))
-        big = f"A${q:,.2f}"
+        big = f"${q:,.2f}"
         data = f' data-countup="{q}"'
     return (
         f'<div class="hero"><div class="hl">{e(label)}</div>'

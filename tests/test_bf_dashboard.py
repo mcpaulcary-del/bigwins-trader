@@ -118,7 +118,7 @@ def test_BF_D37_stale_mark_is_flagged(tmp_path: Path) -> None:
     from trader.app_pages import Extras, holdings, server
 
     assert "PAUSED" in render(v)
-    assert "old price" in holdings(v, Extras(), None)
+    assert "Old price" in holdings(v, Extras(), None)
     assert "failed: ValueError" in server(v, Extras())
 
 

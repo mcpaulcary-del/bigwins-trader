@@ -84,9 +84,9 @@ SAFETY_WORDS = {
 }
 L11_WORDS = (
     "Normal",
-    "Stage 1: value below A${review}, checked",
-    "Stage 2: value below A${halt}, buys paused to the next decision",
-    "Stage 3: value below A${line}, needs your /continue",
+    "Stage 1: value below ${review}, checked",
+    "Stage 2: value below ${halt}, buys paused to the next decision",
+    "Stage 3: value below ${line}, needs your /continue",
 )
 SCHED_KEY = re.compile(r"^\d{4}-\d{2}-\d{2}:\d{2}:\d{2}:[a-z_]+$")
 
@@ -599,7 +599,7 @@ MANIFEST = {
     "start_url": "/",
     "scope": "/",
     "display": "standalone",
-    "background_color": ICON_BG,
+    "background_color": "#0b1220",  # BF-D73: the dark page background (splash)
     "theme_color": ICON_BG,
     "icons": [
         {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},

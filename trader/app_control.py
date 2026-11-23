@@ -576,7 +576,7 @@ class Control:
                 "once, ask the server for it (needs your 6-digit code); then come back here "
                 "within 10 minutes.</p>"
                 '<a class="btn wide" href="/act/confirm?a=srv:backup_key">Ask the server for '
-                "the key…</a>")))  # fmt: skip
+                "the key</a>")))  # fmt: skip
         return ("<h1>Backup recovery key</h1>" + section("", (
             "<p class='note'>The server has sent the key. It is shown <b>once</b>: have your "
             "password manager open, then tap the button.</p>"
@@ -634,16 +634,16 @@ class Control:
         out.append(section(
             "Stop or slow the trader",
             self._form(token, {"a": "pa"},
-                       '<button class="btn wide warnb">⏸ Pause buying now</button>')
+                       '<button class="btn wide warnb">Pause buying now</button>')
             + '<p class="small muted">Pause is one tap: buys stop, registered sells go on.</p>'
-            '<div class="btns"><a class="btn danger" href="/act/confirm?a=ki">🛑 Kill…</a>'
-            '<a class="btn sec" href="/act/confirm?a=so">✋ Stop (L11)…</a></div>',
+            '<div class="btns"><a class="btn danger" href="/act/confirm?a=ki">Kill</a>'
+            '<a class="btn sec" href="/act/confirm?a=so">Stop (loss rule)</a></div>',
         ))  # fmt: skip
         out.append(section(
             "Re-arm (needs your code)",
-            '<div class="btns"><a class="btn sec" href="/act/confirm?a=re">▶️ Resume…</a>'
-            '<a class="btn sec" href="/act/confirm?a=co">✔️ Continue (L11)…</a></div>'
-            + self._form(token, {"a": "st"}, '<button class="btn sec wide">📊 Status</button>'),
+            '<div class="btns"><a class="btn sec" href="/act/confirm?a=re">Resume</a>'
+            '<a class="btn sec" href="/act/confirm?a=co">Continue (loss rule)</a></div>'
+            + self._form(token, {"a": "st"}, '<button class="btn sec wide">Status</button>'),
         ))  # fmt: skip
         waiting = self.waiting_batches(now)
         rows = "".join(
@@ -658,7 +658,7 @@ class Control:
         ))  # fmt: skip
         out.append(section("Code changes (BF-D19)", self._idmap_html()))
         out.append(
-            '<p class="small muted"><a href="/act/alerts">Alerts on this phone…</a> · '
+            '<p class="small muted"><a href="/act/alerts">Alerts on this phone</a> · '
             '<a href="/server" data-nav>Server</a></p>'
         )
         return "".join(out)
@@ -669,9 +669,9 @@ class Control:
             f"<li><b>{e(r['old_code'])} → {e(r['new_code'])}</b>"
             + (f" ratio {e(r['ratio'])}" if r.get("ratio") else "")
             + f'<div class="btns"><a class="btn sec" href="/act/confirm?a=idmap&amp;old='
-            f'{e(r["old_code"])}&amp;new={e(r["new_code"])}">Confirm…</a>'
+            f'{e(r["old_code"])}&amp;new={e(r["new_code"])}">Confirm</a>'
             f'<a class="btn sec" href="/act/confirm?a=idmap_reject&amp;old={e(r["old_code"])}">'
-            "Undo…</a></div></li>"
+            "Undo</a></div></li>"
             for r in recs
         )
         manual = (
@@ -682,7 +682,7 @@ class Control:
             'placeholder="new code" maxlength="6" required></div>'
             '<input class="code" style="font-size:16px;letter-spacing:1px" name="ratio" '
             'placeholder="ratio, e.g. 1:10 (optional)" maxlength="12">'
-            '<button class="btn sec wide" style="margin-top:8px">Record a code change…</button>'
+            '<button class="btn sec wide" style="margin-top:8px">Record a code change</button>'
             "</form>"
         )
         return (f'<ul class="list">{items}</ul>' if items else
@@ -946,7 +946,7 @@ class Control:
                 'maxlength="6" autocomplete="one-time-code" placeholder="6-digit code">'
                 '<button class="btn wide" style="margin-top:8px" id="alerts-on" type="button" '
                 f'data-key="{e(self.vapid_public)}" data-csrf="{e(token)}">'
-                "🔔 Turn on alerts</button>"
+                "Turn on alerts</button>"
                 '<p class="small muted" id="alerts-state"></p>',
             )
             + section(

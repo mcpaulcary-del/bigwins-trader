@@ -120,7 +120,7 @@ def test_BF_D68_milestone_is_subtle_and_only_when_ahead() -> None:
     ahead = SimpleNamespace(series=[(d0, Decimal(100)), (d1, Decimal(101)), (d2, Decimal(105))],
                             index=[(d0, 100.0), (d1, 100.0), (d2, 102.0)])  # fmt: skip
     behind = SimpleNamespace(series=ahead.series, index=[(d0, 100.0), (d2, 110.0)])
-    assert "ahead of the index this month" in app_more.month_milestone(ahead)
+    assert "Ahead of the index this month" in app_more.month_milestone(ahead)
     assert app_more.month_milestone(behind) == ""
 
 

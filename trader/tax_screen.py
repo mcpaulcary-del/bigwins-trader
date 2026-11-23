@@ -35,7 +35,7 @@ from trader.tax_report import (
     fy_of,
     run_engine,
 )
-from trader.webui import e, section, tile
+from trader.webui import e, icon, section, tile
 
 LABEL = "Estimate for your records — not tax advice. Paper account: no real tax."
 LIVE_LABEL = "Estimate for your records — not tax advice. Live account: check with your accountant."
@@ -207,7 +207,7 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         f"{c.acquired:%d %b %y} → {c.disposed:%d %b %y}</div></td>"
         f"<td class='r'>{aud(c.proceeds)}<div class='sub'>cost {aud(c.cost_base)}</div></td>"
         f"<td class='r {tone(c.gain)}'>{aud(c.gain, True)}<div class='sub'>"
-        f"{'discount' if c.long else 'no discount'}{' ⚠ near the line' if c.near_line else ''}"
+        f"{'discount' if c.long else 'no discount'}{' (near the line)' if c.near_line else ''}"
         "</div></td></tr>"
         for c in r.cgt if c.acquired is not None
     ) + "".join(
@@ -256,7 +256,9 @@ def screen(v: Any, x: Extras, src: Any, qs: Mapping[str, str]) -> str:
         + section("If you sold today", un_html)
         + section("Accountant checklist", f'<ul class="list">{chk}</ul>')
         + (section("Check with your accountant", f'<ul class="list">{fl}</ul>') if fl else "")
-        + f'<a class="btn sec wide" href="/tax.csv?fy={fy_label(y)}" download>⬇ EOFY CSV for '
+        + f'<a class="btn sec wide" href="/tax.csv?fy={fy_label(y)}" download>'
+        + icon("download")
+        + "EOFY CSV for "
         "your accountant / myTax</a>"
         f"<footer>{e(NOT_ADVICE)} {e(label(src))}</footer>"
     )

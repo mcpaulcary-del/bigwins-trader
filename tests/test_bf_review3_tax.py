@@ -131,7 +131,7 @@ def test_F8_estimate_subtracts_tfn_withholding() -> None:
                   today=lambda: date(2026, 7, 10), tax_params=P12, marginal_rate=D("0.30"))  # fmt: skip
     page = screen(collect(src), _x(), src, {"fy": "2025-26"})
     # 300 x 30% = 90, less the 141 withheld = -51 (a refund)
-    assert "TFN amounts withheld \u2013 claimable credit" in page and "\u2212A$51.00" in page
+    assert "TFN amounts withheld \u2013 claimable credit" in page and "\u2212$51.00" in page
 
 
 def _x() -> Any:

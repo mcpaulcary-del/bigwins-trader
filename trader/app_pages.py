@@ -26,7 +26,7 @@ from trader.approval import OPEN_FOR_APPROVAL, approved_seqs, deadline
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal, Status, broker_orders, events
 from trader.orders import Side
-from trader.webui import e, page, section, tile
+from trader.webui import backlink, chev, e, icon, page, plural, section, tile
 
 CENT = Decimal("0.01")
 MINUS = "−"
@@ -65,18 +65,28 @@ def safe(fn: Callable[[], T], default: T) -> T:
 
 
 def aud(x: Decimal | float | None, sign: bool = False, dp: int = 2) -> str:
+    """Money (BF-D73): ``$`` with separators; every amount is in AUD, said once in
+    Settings and the footer. A missing amount is an en dash."""
     if x is None:
-        return "-"
+        return "–"
     q = Decimal(str(x)).quantize(Decimal(1) if dp == 0 else CENT)
     s = f"{abs(q):,.{dp}f}"
     if sign:
-        return ("+" if q >= 0 else MINUS) + "A$" + s
-    return (MINUS if q < 0 else "") + "A$" + s
+        return ("+" if q >= 0 else MINUS) + "$" + s
+    return (MINUS if q < 0 else "") + "$" + s
+
+
+def px(x: Decimal | float | None) -> str:
+    """A share price: 2 dp at $2 and above, 3 dp below; trailing zeros kept."""
+    if x is None:
+        return "–"
+    q = Decimal(str(x))
+    return f"${q.quantize(CENT if abs(q) >= 2 else Decimal('0.001')):,}"
 
 
 def pct(x: float | None, sign: bool = True) -> str:
     if x is None or not math.isfinite(x):
-        return "-"
+        return "–"
     s = f"{abs(x) * 100:.1f}%"
     return (("+" if x >= 0 else MINUS) + s) if sign else s
 
@@ -464,22 +474,25 @@ def histogram(values: Sequence[float], me: float | None) -> str:
 
 
 def shell(v: Any, x: Extras, title: str, body: str, active: str) -> str:
-    sub = f"{v.book} · updated {when(v.now)}"
+    live = getattr(v, "live", False)
+    sub = (f"Updated {when(v.now)} · {v.book} · "
+           + ("LIVE: real money" if live else "Paper: no real money") + " · amounts in AUD")  # fmt: skip
     notes = list(v.notes)
     if x.lockout is not None:
         notes.append(f"Code actions are locked until {x.lockout.astimezone(ASX_TZ):%H:%M} "
                      "(too many wrong codes).")  # fmt: skip
     return page(title, body, active, demo=v.demo, subtitle=sub, notes=notes,
-                latest_inbox=x.latest_inbox, live=getattr(v, "live", False),
-                inbox_ids=[int(r["id"]) for r in x.inbox[:99]])  # fmt: skip
+                latest_inbox=x.latest_inbox, live=live,
+                inbox_ids=[int(r["id"]) for r in x.inbox[:99]],
+                waiting=sum(w.n for w in x.waiting))  # fmt: skip
 
 
 def actions_note(x: Extras, demo: bool) -> str:
     if demo:
-        return '<p class="small muted">DEMO: buttons open simulated screens.</p>'
+        return ""
     if not x.action_logins:
         return ('<p class="note">Actions are off: no Tailscale log-in is allowed to act. On the '
-                'server: <code>bigwins</code> › "Allow my phone to act".</p>')  # fmt: skip
+                'server: <code>bigwins</code>, then "Allow my phone to act".</p>')  # fmt: skip
     if not x.can_act:
         return (f'<p class="note">This log-in ({e(x.viewer or "none")}) may view but not act.'
                 "</p>")  # fmt: skip
@@ -496,11 +509,11 @@ def waiting_card(x: Extras, demo: bool, now: datetime | None = None) -> str:
             f'<p class="summary">{w.n} order(s) waiting for your approval</p>'
             f'<p class="muted small">{e(w.batch_id)} · ≈ {aud(w.total, dp=0)} · by '
             f"{w.by:%a %d %b %H:%M}. Orders not approved are not sent.</p>"
-            f'<p class="cd">⏱ <span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until '
+            f'<p class="cd">{icon("clock")}<span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until '
             f"{w.by:%H:%M}</span></p>"
             '<div class="btns">'
-            f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">✅ Approve all</a>'
-            f'<a class="btn sec" href="{act_link(a="rf", b=w.batch_id)}">❌ Refuse</a></div>'
+            f'<a class="btn" href="{act_link(a="ok", b=w.batch_id, n="all")}">Approve all</a>'
+            f'<a class="btn sec" href="{act_link(a="rf", b=w.batch_id)}">Refuse</a></div>'
             f'<a href="/orders/{quote(w.batch_id)}" data-nav class="small">See each order ›</a>'
         )
     return section("Waiting for you", "".join(out) + actions_note(x, demo), "waitcard")
@@ -573,8 +586,8 @@ def home(v: Any, x: Extras) -> str:
         "cards (this phone only).</p>"
     )
     body += (
-        '<div class="btns"><a class="btn sec" href="/act">⚙️ Controls</a>'
-        '<a class="btn sec" href="/holdings" data-nav>📈 Holdings</a></div>'
+        '<div class="btns"><a class="btn sec" href="/act">Controls</a>'
+        '<a class="btn sec" href="/holdings" data-nav>Holdings</a></div>'
         + (
             "<footer>LIVE account - real money. Not shown to beat the index.</footer>"
             if getattr(v, "live", False)
@@ -594,7 +607,7 @@ def twins_card(v: Any, x: Extras) -> str:
         if v.sim_value is not None:
             return section("Twin", f"<p>Simulated twin value: <b>{aud(v.sim_value)}</b></p>")
         return ""
-    warn = " ⚠ below 10" if v.twin_pct is not None and v.twin_pct < 10 else ""
+    warn = " (below 10)" if v.twin_pct is not None and v.twin_pct < 10 else ""
     head = (
         f"<p>Twin vs {v.twin_n} random twins: <b>{v.twin_pct:.0f}th percentile</b>{warn}"
         f'<span class="sub"> · L11 test (b) needs ≥ 10 · {e(v.twin_day)}</span></p>'
@@ -658,7 +671,7 @@ def safety_card(v: Any) -> str:
     else:
         items.append("<li>Trend shield (L15): not decided yet</li>")
     return section("Safety", f'<ul class="list">{"".join(items)}</ul>'
-                   '<a class="small" href="/act">Pause, Kill, Stop, Resume ›</a>')  # fmt: skip
+                   '<a class="small" href="/act">Pause, stop or kill</a>')  # fmt: skip
 
 
 def loss_card(v: Any) -> str:
@@ -667,9 +680,9 @@ def loss_card(v: Any) -> str:
     if v.value is None or lim is None:
         return ""
     val = float(v.value)
-    marks = [(float(lim.line), f"A${float(lim.line) / 1000:.0f}k stop"),
-             (float(lim.halt), f"A${float(lim.halt) / 1000:.0f}k pause"),
-             (float(lim.review), f"A${float(lim.review) / 1000:.0f}k check")]  # fmt: skip
+    marks = [(float(lim.line), f"${float(lim.line) / 1000:.0f}k stop"),
+             (float(lim.halt), f"${float(lim.halt) / 1000:.0f}k pause"),
+             (float(lim.review), f"${float(lim.review) / 1000:.0f}k check")]  # fmt: skip
     hi = max(val, float(v.capital_in or 0), float(lim.review)) * 1.05
     gap = val - float(lim.review)
     return section(
@@ -704,7 +717,7 @@ def inbox_peek(x: Extras) -> str:
         f'<li class="msg {e(r["kind"])}" data-inbox-id="{int(r["id"])}"><a class="rowlink" '
         f'href="/inbox#m{int(r["id"])}" data-nav><span class="grow"><span class="t">'
         f'{e(r["title"])}</span><div class="sub">{when(r["at"])}</div></span>'
-        '<span class="chev">›</span></a></li>'
+        f"{chev()}</a></li>"
         for r in rows
     )
     return section("Latest messages", f'<ul class="list">{items}</ul>')
@@ -747,7 +760,7 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     max_gain = max((abs(float(h.gain_pct or 0)) for h in v.holdings), default=0) or 1.0
     rows = []
     for h in ordered:
-        flag = ' <span class="warn">⚠ old price</span>' if h.stale else ""
+        flag = ' <span class="pill amber">Old price</span>' if h.stale else ""
         mark = f"{h.mark}" if h.mark is not None else "no price"
         g = float(h.gain_pct or 0)
         w_ = float(h.value or 0) / float(total or 1) * 100
@@ -769,7 +782,7 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
             f'{w_:.1f}% of shares</div></span><span class="chev" aria-hidden="true">›</span></a></li>'
         )
     stale = sum(1 for h in v.holdings if h.stale)
-    note = (f'<p class="warn small">⚠ {stale} share(s) had no price on the last report day; '
+    note = (f'<p class="note">{plural(stale, "share")} had no price on the last report day; '
             "valued at their last price.</p>" if stale else "")  # fmt: skip
     tiles = (tile("Shares", aud(total), f"{len(v.holdings)} holdings")
              + tile("Unrealised", aud(gain, True), "", tone(gain)))  # fmt: skip
@@ -800,7 +813,7 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     from trader import app_more
 
     body += app_more.treemap(v.holdings, hist)
-    body += '<a class="btn sec wide" href="/compare" data-nav>Compare holdings ›</a>'
+    body += '<a class="btn sec wide" href="/compare" data-nav>Compare holdings</a>'
     return shell(v, x, "Holdings", body, "holdings")
 
 
@@ -838,7 +851,8 @@ def holding_detail(  # noqa: PLR0912, PLR0915 - one block per part of the screen
     if px:
         marks = [m for m in marks if m[0] >= px[0][0]]
     parts = [
-        f'<p><a href="/holdings" data-nav>‹ Holdings</a></p><h1>{e(code)}</h1>'
+        backlink("/holdings", "Holdings")
+        + f"<h1>{e(code)}</h1>"
         + (f'<p class="coname">{e(x.names[code])}</p>' if code in x.names else "")
     ]
     if h is not None:
@@ -978,7 +992,7 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
                 f'<span class="grow"><b>{d:%d %b %Y}</b> · {len(its)} order(s)'
                 f'<div class="sub">{e(b["batch_id"])}</div><div class="sub">{e(summ)}</div>'
                 + (f'<div class="sub">strategy {e(ver[d])}</div>' if d in ver else "")
-                + '</span><span class="chev">›</span></a></li>'
+                + f"</span>{chev()}</a></li>"
             )
     hist = (
         f'<ul class="list">{"".join(items)}</ul>'
@@ -986,7 +1000,7 @@ def orders(v: Any, x: Extras, j: Journal) -> str:
         else '<p class="muted">No orders yet.</p>'
     )
     days = sorted(set(groups) | set(_list_days(j)), reverse=True)[:12]
-    rp = "".join(f'<a class="chip" href="/replay/{d}" data-nav>▶ {d:%b %Y}</a>' for d in days)
+    rp = "".join(f'<a class="chip" href="/replay/{d}" data-nav>{d:%b %Y}</a>' for d in days)
     body += section("Decisions", nd + hist)
     if rp:
         body += section("Replay a decision", '<div class="seg">' + rp + "</div><p class='small "
@@ -1022,7 +1036,7 @@ def _timeline(j: Journal, coid: str, it: Any, st: str) -> str:
         bo = c.execute(select(broker_orders).where(broker_orders.c.client_order_id == coid)).first()
     fl: list[FillRecord] = safe(lambda: j.fills(coid=coid), [])
     for f in fl:
-        rows.append((_aware(f.executed_at), f"filled {f.qty} @ {f.price} (brokerage A${f.commission})",
+        rows.append((_aware(f.executed_at), f"filled {f.qty} @ {f.price} (brokerage ${f.commission})",
                      "done"))  # fmt: skip
     rows.sort(key=lambda r: r[0])
     li = "".join(
@@ -1079,7 +1093,7 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
         for a in apps
     )
     head = (
-        f'<p><a href="/orders" data-nav>‹ Orders</a></p><h1>{b["decision_date"]:%d %b %Y}</h1>'
+        backlink("/orders", "Orders") + f"<h1>{b['decision_date']:%d %b %Y}</h1>"
         f'<p class="muted small">{e(batch_id)} · {e(b["approval_mode"])} · execution '
         f"{b['execution_date'] or '-'}</p>"
     )
@@ -1088,10 +1102,10 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
         top = section("Waiting for you", (
             f'<p class="summary">{w.n} order(s) · ≈ {aud(w.total, dp=0)}</p>'
             '<div class="btns">'
-            f'<a class="btn" href="{act_link(a="ok", b=batch_id, n="all")}">✅ Approve all</a>'
-            f'<a class="btn sec" href="{act_link(a="rf", b=batch_id)}">❌ Refuse</a></div>'
+            f'<a class="btn" href="{act_link(a="ok", b=batch_id, n="all")}">Approve all</a>'
+            f'<a class="btn sec" href="{act_link(a="rf", b=batch_id)}">Refuse</a></div>'
             f'<p class="small muted">Deadline {w.by:%a %d %b %H:%M}.</p>'
-            f'<p class="cd">⏱ <span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until {w.by:%H:%M}</span></p>'
+            f'<p class="cd">{icon("clock")}<span data-deadline="{w.by.isoformat()}" data-now="{now_iso}">until {w.by:%H:%M}</span></p>'
             + actions_note(x, v.demo)), "waitcard")  # fmt: skip
     cards = []
     for it, st in its:
@@ -1116,7 +1130,7 @@ def batch_detail(v: Any, x: Extras, j: Journal, batch_id: str) -> str | None:
             + "</li>"
         )
     body = head + top + section("Orders", f'<ul class="list">{"".join(cards)}</ul>')
-    body += (f'<a class="btn sec wide" href="/replay/{b["decision_date"]}" data-nav>▶ Replay this '
+    body += (f'<a class="btn sec wide" href="/replay/{b["decision_date"]}" data-nav>Replay this '
              "decision</a>")  # fmt: skip
     if who:
         body += section("Approvals", f'<ul class="list small">{who}</ul>')
@@ -1145,7 +1159,7 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
             last_day = day
         hide = kind != "all" and not (k == kind or (kind == "alerts" and k == "page"))
         link = str(r["link"] or "")
-        go = (f' <a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""}>Open ›</a>'
+        go = (f' <a href="{e(link)}"{" data-nav" if not link.startswith("/act") else ""}>Open</a>'
               if link and link != "/inbox" else "")  # fmt: skip
         rows.append(
             f'<li class="msg {e(k)}" id="m{int(r["id"])}" data-inbox-id="{int(r["id"])}" '
@@ -1162,7 +1176,7 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
             + section(f"Inbox ({len(x.inbox)})", f'<ul class="list">{"".join(rows)}</ul>' if rows
                       else '<p class="muted">No messages yet. Daily reports, approval requests '
                       "and alerts appear here (and as phone alerts once you turn them on).</p>")
-            + '<p class="small"><a href="/act/alerts">🔔 Alerts on this phone ›</a></p>')  # fmt: skip
+            + '<p class="small"><a href="/act/alerts">Alerts on this phone</a></p>')  # fmt: skip
     return shell(v, x, "Inbox", body, "inbox")
 
 
@@ -1216,7 +1230,7 @@ def server(v: Any, x: Extras) -> str:
             lvl = "crit" if p >= 90 else ("hi" if p >= 75 else "")
             cls = "badt" if lvl == "crit" else ("warn2" if lvl else "good")
             return (f"<div class='ht {cls}'><div class='tl'>{e(label)}<span>"
-                    f"{'⚠' if lvl else '✓'}</span></div><div class='tv'>{p:.0f}%</div>"
+                    f"{'High' if lvl else ''}</span></div><div class='tv'>{p:.0f}%</div>"
                     f"<div class='meter {lvl}'><b style='width:{min(100.0, p):.0f}%'></b></div></div>")  # fmt: skip
 
         up = hs.get("uptime_s")
@@ -1249,10 +1263,10 @@ def server(v: Any, x: Extras) -> str:
                                  f'<div class="logs">{e(chr(10).join(hs["log"]))}</div>'))  # fmt: skip
     parts.append(health_card(v, x))
     btns = "".join(
-        f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="srv:" + k)}">{e(lab)}…</a>'
+        f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="srv:" + k)}">{e(lab)}</a>'
         for k, lab in SERVER_ACTIONS.items()
     )
-    btns += f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="refresh")}">Refresh prices now…</a>'
+    btns += f'<a class="btn sec wide" style="margin:4px 0" href="{act_link(a="refresh")}">Refresh prices now</a>'
     parts.append(section("Run the server", btns + "<p class='small muted'>Each asks for your "
                          "6-digit code; restart and update are refused while the ASX is open "
                          "unless you tick “Do it anyway”.</p>" + actions_note(x, v.demo)))  # fmt: skip
@@ -1262,7 +1276,7 @@ def server(v: Any, x: Extras) -> str:
             f"{e(r['status'])}</span><div class='sub'>{when(r['requested_at'])} · "
             f"{e(str(r['result']).strip().splitlines()[-1] if str(r['result']).strip() else '')}</div>"
             + (
-                f' <a class="small" href="{act_link(a="cancel", job=str(r["id"]))}">Cancel…</a>'
+                f' <a class="small" href="{act_link(a="cancel", job=str(r["id"]))}">Cancel</a>'
                 if r["status"] == "PENDING"
                 else ""
             )
@@ -1276,19 +1290,19 @@ def server(v: Any, x: Extras) -> str:
         "(<code>claude remote-control</code>); you talk to it in the official Claude app, signed "
         "in with your Claude account. This app never runs Claude or any command itself.</p>"
         '<div class="btns">'
-        f'<a class="btn sec" href="{act_link(a="srv:claude_remote")}">Start / check…</a>'
-        f'<a class="btn sec" href="{act_link(a="srv:claude_stop")}">Stop…</a></div>'
+        f'<a class="btn sec" href="{act_link(a="srv:claude_remote")}">Start / check</a>'
+        f'<a class="btn sec" href="{act_link(a="srv:claude_stop")}">Stop</a></div>'
         '<a class="btn wide" href="https://claude.ai/code" target="_blank" rel="noopener noreferrer">'
-        "Open Claude ↗</a><p class='small muted'>First time only: sign in once on the server "
+        f"Open Claude {icon('external')}</a><p class='small muted'>First time only: sign in once on the server "
         "(Termius: <code>tmux attach -t remote</code>).</p>")))  # fmt: skip
-    parts.append('<a class="btn sec wide" href="/act">⚙️ Trader controls (pause, kill…)</a>')
+    parts.append('<a class="btn sec wide" href="/act">Trader controls (pause, stop, kill)</a>')
     parts.append(
-        '<div class="btns"><a class="btn sec" href="/backups" data-nav>💾 Backups</a>'
-        '<a class="btn sec" href="/accounts" data-nav>🔑 Accounts</a></div>'
+        '<div class="btns"><a class="btn sec" href="/backups" data-nav>Backups</a>'
+        '<a class="btn sec" href="/accounts" data-nav>Accounts</a></div>'
     )
     parts.append(
         '<a class="btn sec wide" style="margin-top:10px" href="/setup" data-nav>'
-        "✅ Setup &amp; IBKR checklist</a>"
+        "Setup &amp; IBKR checklist</a>"
     )
     return shell(v, x, "Server", "".join(parts), "server")
 
@@ -1302,7 +1316,7 @@ def _ci_line(u: Mapping[str, Any]) -> str:
         )
     what = "FAILED" if ci == "red" else "not known yet"
     return (
-        f"<p class='note'>⚠ GitHub CI for this commit: <b>{what}</b>. Wait for a green "
+        f"<p class='note'>GitHub CI for this commit: <b>{what}</b>. Wait for a green "
         "run before approving (the tests and checks have not passed).</p>"
     )
 
@@ -1319,7 +1333,7 @@ def strategy_card(x: Extras) -> str:
                 f" · {int(u['ahead'])} commit(s)" + (f" · {e(u['notes'].get('version', ''))}"
                 if u.get("notes") else "") + "</p>" + _ci_line(u))  # fmt: skip
     return section("Strategy", head + card + '<a class="btn sec wide" href="/strategy" data-nav>'
-                   "Strategy, updates and versions ›</a>")  # fmt: skip
+                   "Strategy, updates and versions</a>")  # fmt: skip
 
 
 def version_perf(v: Any, x: Extras) -> list[tuple[str, date, date, float | None, float | None]]:
@@ -1343,7 +1357,7 @@ def version_perf(v: Any, x: Extras) -> list[tuple[str, date, date, float | None,
 def strategy(v: Any, x: Extras) -> str:
     run = x.running
     u = x.update
-    parts = ['<p><a href="/server" data-nav>‹ Server</a></p><h1>Strategy</h1>']
+    parts = [backlink("/server", "Server") + "<h1>Strategy</h1>"]
     rows = "".join(
         f"<tr><td>{e(k)}</td><td class='r'><b>{e(run.get(key, '-') or '-')}</b></td></tr>"
         for k, key in (("Version", "version"), ("Version id", "id"), ("Config hash", "config"),
@@ -1371,7 +1385,7 @@ def strategy(v: Any, x: Extras) -> str:
             body += "<p class='small'>Screens, alerts or server scripts only: the trading rules do not change.</p>"
         elif u.get("reasons"):
             body += "<p class='small muted'>" + e("; ".join(u["reasons"][:6])) + "</p>"
-        body += f'<a class="btn wide" href="{act_link(a="srv:update")}">Approve update…</a>'
+        body += f'<a class="btn wide" href="{act_link(a="srv:update")}">Approve update</a>'
         parts.append(section("Update available", body))
     else:
         parts.append(section("Updates", "<p class='muted'>Up to date with the branch on GitHub "
@@ -1384,7 +1398,7 @@ def strategy(v: Any, x: Extras) -> str:
         parts.append(section("Go back", (
             f"<p>Previous version: commit <b>{e(str(u['previous'])[:10])}</b> (the one running "
             "before the last update).</p>"
-            f'<a class="btn sec wide" href="{act_link(a="srv:rollback")}">Go back to the previous version…</a>')))  # fmt: skip
+            f'<a class="btn sec wide" href="{act_link(a="srv:rollback")}">Go back to the previous version</a>')))  # fmt: skip
     perf = version_perf(v, x)
     if perf:
         rows2 = "".join(
@@ -1429,7 +1443,7 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
     body = (
         "<h1>Settings</h1>"
         + section("Alerts", f'<ul class="list">{rows}</ul><a class="btn wide" href="/act/alerts">'
-                  "🔔 Turn on alerts / choose which</a>")
+                  "Turn on alerts / choose which</a>")
         + section("Who may act", f"<p>Allowed log-ins: <b>{e(who)}</b></p>"
                   f"<p class='small muted'>You are: {e(x.viewer or 'unknown (not through Tailscale)')}"
                   "</p><p class='small muted'>Changed on the server only (bigwins menu).</p>")
@@ -1438,15 +1452,17 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
                   f'<ul class="list">{ck}</ul><p class="small muted">This build is PAPER ONLY; '
                   "going live is a separate, reviewed owner step.</p>")
         + section("Setup", '<a class="btn sec wide" href="/setup" data-nav>Setup &amp; IBKR '
-                  "checklist ›</a>")
+                  "checklist</a>")
         + section("This phone", (
-            '<p>Card density</p><div class="seg" role="group" aria-label="Density">'
+            '<p>Card density</p><div class="chips" role="group" aria-label="Density">'
             '<button type="button" class="chip" data-density="comfortable">Comfortable</button>'
             '<button type="button" class="chip" data-density="compact">Compact</button></div>'
             '<div class="btns"><button type="button" class="btn sec" data-tour-replay>Replay the '
             'tour</button><button type="button" class="btn sec" data-home-reset>Reset Home cards'
             "</button></div><p class='small muted'>Kept on this phone only.</p>"))
-        + section("About", f"<p>App version <b>{e(version)}</b></p>")
+        + section("About", f"<p>App version <b>{e(version)}</b></p><p class='small muted'>All amounts are in "
+                  "Australian dollars (AUD). Tip: on Home, press and hold a card title to move or "
+                  "hide cards (this phone only).</p>")
     )  # fmt: skip
     return shell(v, x, "Settings", body, "")
 
@@ -1465,7 +1481,7 @@ IBKR_SECRETS = ("tws_password", "ibkr_flex_token", "ibkr_flex_query_id")
 
 def _ext(href: str, label: str) -> str:
     return (f'<a class="btn sec" href="{e(href)}" target="_blank" rel="noopener noreferrer">'
-            f"{e(label)} ↗</a>")  # fmt: skip
+            f"{e(label)} {icon('external')}</a>")  # fmt: skip
 
 
 def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str:
@@ -1494,8 +1510,8 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
     items: list[tuple[str, str, str, str, bool | None, str]] = [
         ("app", "1. Application approved (retail or wholesale)",
          "Your IBKR application is approved. Retail is the usual choice. Wholesale needs a "
-         "qualified accountant's certificate: gross income of A$250,000 or more in each of the "
-         "last 2 financial years, or net assets of A$2.5 million or more.", IBKR_HOME, None, ""),
+         "qualified accountant's certificate: gross income of $250,000 or more in each of the "
+         "last 2 financial years, or net assets of $2.5 million or more.", IBKR_HOME, None, ""),
         ("paper", "2. Paper account enabled, its id set",
          "Client Portal: Settings → Account Settings → Paper Trading Account. Put the DU… id in "
          "config/bfast.local.yaml on the server (broker.account_id).", IBKR_LOGIN, paper_ok,
@@ -1503,9 +1519,9 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
         ("pricing", "3. Tiered pricing",
          "Client Portal: Settings → Account Settings → Configuration → Commission Type → "
          "Tiered.", IBKR_LOGIN, None, ""),
-        ("precautions", "4. Order precautions: Total Value Limit above A$10,000",
+        ("precautions", "4. Order precautions: Total Value Limit above $10,000",
          "Client Portal (paper now, live later): Settings → Account Settings → Order "
-         "Precautions; set the Total Value Limit above A$10,000 (GO_LIVE_GUIDE A4).",
+         "Precautions; set the Total Value Limit above $10,000 (GO_LIVE_GUIDE A4).",
          IBKR_LOGIN, None, ""),
         ("data", "5. Market data (bid/ask) for ASX",
          "Client Portal: Settings → User Settings → Market Data Subscriptions → ASX Total "
@@ -1539,7 +1555,7 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
     rows = []
     for key, title, how, link, auto, status in items:
         if auto:
-            st = '<span class="pill ok">✓ automatic</span>'
+            st = '<span class="pill ok">Automatic</span>'
             cls = "sitem done auto"
         elif auto is False:
             st = '<span class="pill amber">not yet</span>'
@@ -1572,7 +1588,8 @@ def setup(v: Any, x: Extras, facts: Mapping[str, Any], j: Journal | None) -> str
     n = len(items)
     ring_html = ring(auto_done / n, f"{auto_done}/{n}", "done", f"{auto_done} of {n} done")
     body = (
-        '<p><a href="/server" data-nav>‹ Server</a></p><h1>Setup &amp; IBKR</h1>'
+        backlink("/server", "Server")
+        + "<h1>Setup &amp; IBKR</h1>"
         + section(
             "",
             f'<div class="rings" id="setup-ring" data-total="{n}">{ring_html}'
@@ -1617,7 +1634,7 @@ def _int(x: object) -> int:
 def backups(v: Any, x: Extras) -> str:
     host = x.host[0] if x.host else {}
     od = host.get("onedrive")
-    parts = ['<p><a href="/server" data-nav>‹ Server</a></p><h1>Backups</h1>']
+    parts = [backlink("/server", "Server") + "<h1>Backups</h1>"]
     b = x.backup
     if b is None:
         last = "<p class='muted'>No backup yet. The first runs tonight at 23:30, or tap Back up now.</p>"
@@ -1626,10 +1643,10 @@ def backups(v: Any, x: Extras) -> str:
         loc, rem = r.get("local") or {}, r.get("remote")
         last = (
             f"<div class='htiles'><div class='ht {'good' if r.get('ok') else 'badt'}'><div class='tl'>"
-            f"On the server<span>{'✓' if loc.get('ok', r.get('ok')) else '⚠'}</span></div>"
+            f"On the server<span>{'OK' if loc.get('ok', r.get('ok')) else 'Check'}</span></div>"
             f"<div class='tv'>{e(_size(loc.get('size')))}</div><div class='sub'>{when(at)}</div></div>"
             f"<div class='ht {'good' if rem and rem.get('ok') else 'warn2'}'><div class='tl'>OneDrive"
-            f"<span>{'✓' if rem and rem.get('ok') else '–'}</span></div><div class='tv'>"
+            f"<span>{'OK' if rem and rem.get('ok') else '–'}</span></div><div class='tv'>"
             f"{'copied' if rem and rem.get('ok') else 'not copied'}</div><div class='sub'>"
             f"{e(str((rem or {}).get('error', '')) or ('' if rem else 'not connected'))}</div></div></div>"
             + (f"<p class='bad note'>Last backup failed: {e(r.get('error'))}</p>" if not r.get("ok") else "")
@@ -1648,7 +1665,7 @@ def backups(v: Any, x: Extras) -> str:
     key_html = (
         f"<p class='small'>Recovery key fingerprint: <code>{e(fp)}</code>"
         + (" <span class='pill ok'>shown and saved</span></p>" if saved else
-           "</p><p class='note'>⚠ The recovery key with this fingerprint has not been shown in "
+           "</p><p class='note'>The recovery key with this fingerprint has not been shown in "
            "the app yet: tap <b>Show recovery key</b> and save it in your password manager. "
            "Without it the backups cannot be opened.</p>")
     ) if fp else ""  # fmt: skip
@@ -1658,9 +1675,9 @@ def backups(v: Any, x: Extras) -> str:
                          "monthly in OneDrive. A restore test runs every Sunday.</p>"))  # fmt: skip
     parts.append(section("Actions", (
         '<div class="btns">'
-        f'<a class="btn" href="{act_link(a="srv:backup_now")}">💾 Back up now…</a>'
-        f'<a class="btn sec" href="{act_link(a="srv:restore_test")}">🧪 Restore test…</a></div>'
-        '<a class="btn sec wide" href="/act/backup-key">🔐 Show recovery key…</a>'
+        f'<a class="btn" href="{act_link(a="srv:backup_now")}">Back up now</a>'
+        f'<a class="btn sec" href="{act_link(a="srv:restore_test")}">Restore test</a></div>'
+        '<a class="btn sec wide" href="/act/backup-key">Show recovery key</a>'
         "<p class='small muted'>Back up now and the restore test only need a confirm. The "
         "recovery key needs your 6-digit code and is shown once; save it in your password "
         "manager: with it and the backup files, the whole server can be rebuilt.</p>"
@@ -1675,7 +1692,7 @@ def backups(v: Any, x: Extras) -> str:
         "a Command Prompt in that folder and run <code>rclone authorize \"onedrive\"</code>.</li>"
         "<li>Sign in to Microsoft in the browser window and allow access.</li>"
         "<li>Copy the whole token line it prints (it starts with <code>{\"access_token\"</code>).</li>"
-        "<li>On the server (Termius): <code>bigwins</code> › 14) Connect OneDrive, and paste the "
+        "<li>On the server (Termius): <code>bigwins</code>, then 14) Connect OneDrive, and paste the "
         "token when asked. The token stays on the server, root only.</li></ol>"
         "<p class='small muted'>A phone alone cannot do step 1 (rclone needs a computer with "
         "a browser, once).</p>"
@@ -1686,7 +1703,7 @@ def backups(v: Any, x: Extras) -> str:
         f"{e('Restore test' if h.get('kind') == 'restore_test' else 'Backup')} · "
         f"{e(str(h.get('recorded', ''))[:16].replace('T', ' '))}"
         f"<span class='sub'> · {_size((h.get('local') or {}).get('size'))}"
-        f"{' · OneDrive ✓' if (h.get('remote') or {}).get('ok') else ''}</span></li>"
+        f"{' · OneDrive OK' if (h.get('remote') or {}).get('ok') else ''}</span></li>"
         for h in x.backup_history[:30]
     )  # fmt: skip
     if hist:
@@ -1720,7 +1737,7 @@ SERVICES: tuple[tuple[str, str, str, str], ...] = (
     ("healthchecks", "healthchecks.io", "https://healthchecks.io/",
      "Emails you if the server goes quiet. Check period, alerts and contacts there."),
     ("claude", "Claude", "https://claude.ai/code",
-     "Claude Code on the server for questions and maintenance (Server › Ask Claude)."),
+     "Claude Code on the server for questions and maintenance (Server, Ask Claude)."),
 )  # fmt: skip
 
 
@@ -1746,11 +1763,11 @@ def accounts(v: Any, x: Extras) -> str:
                               ("ok", "last ping OK") if hb.get("ok") else ("bad", "ping failed"))  # fmt: skip
     status["claude"] = ("", "open when you need it")
     actions = {
-        "github": f'<a class="btn sec" href="{act_link(a="srv:fetch")}">Check for updates…</a>',
-        "eodhd": f'<a class="btn sec" href="{act_link(a="refresh")}">Test EODHD key (refresh prices)…</a>',
-        "healthchecks": f'<a class="btn sec" href="{act_link(a="srv:hc_ping")}">Test ping…</a>',
-        "onedrive": '<a class="btn sec" href="/backups" data-nav>Backups ›</a>',
-        "ibkr": '<a class="btn sec" href="/setup" data-nav>Setup &amp; IBKR ›</a>',
+        "github": f'<a class="btn sec" href="{act_link(a="srv:fetch")}">Check for updates</a>',
+        "eodhd": f'<a class="btn sec" href="{act_link(a="refresh")}">Test EODHD key (refresh prices)</a>',
+        "healthchecks": f'<a class="btn sec" href="{act_link(a="srv:hc_ping")}">Test ping</a>',
+        "onedrive": '<a class="btn sec" href="/backups" data-nav>Backups</a>',
+        "ibkr": '<a class="btn sec" href="/setup" data-nav>Setup &amp; IBKR</a>',
     }  # fmt: skip
     rows = []
     for key, name, url, how in SERVICES:
@@ -1763,15 +1780,15 @@ def accounts(v: Any, x: Extras) -> str:
             f'data-remind="{e(key)}" aria-label="{e(name)} renewal date"></label>'
             f'<p class="small warn" data-remind-out="{e(key)}"></p>'
             f'<div class="btns"><a class="btn sec" href="{e(url)}" target="_blank" '
-            f'rel="noopener noreferrer">Open {e(name.split(" (")[0])} ↗</a>{actions.get(key, "")}</div></li>'
+            f'rel="noopener noreferrer">Open {e(name.split(" (")[0])} {icon("external")}</a>{actions.get(key, "")}</div></li>'
         )
     body = (
-        '<p><a href="/server" data-nav>‹ Server</a></p><h1>Accounts &amp; services</h1>'
+        backlink("/server", "Server") + "<h1>Accounts &amp; services</h1>"
         + section("", "<p class='small'>For your safety, changes to your broker and server "
                   "accounts are made on their own sites: this app never stores your IBKR, "
                   "Tailscale or BinaryLane log-ins or API keys, so nobody can use the app to "
                   "change them. The tests below only use what the server already has.</p>"
-                  '<a class="btn sec wide" href="/setup" data-nav>✅ Setup &amp; IBKR checklist ›</a>')
+                  '<a class="btn sec wide" href="/setup" data-nav>Setup &amp; IBKR checklist</a>')
         + section("Services", f'<ul class="list">{"".join(rows)}</ul>')
     )  # fmt: skip
     return shell(v, x, "Accounts", body, "server")
