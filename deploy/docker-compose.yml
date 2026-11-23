@@ -111,6 +111,9 @@ services:
       - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
       # BF-D78: the private info archive (written by the host job, read here for the digest)
       - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
+      # BF-D81 (S3 b): the previous-version twins' own volume (written by the worker's
+      # throwaway dry runs, never the live output), read here for the app
+      - twins:/data/twins:ro
       - traderout:/app/out
     # internal: gateway + db; egress: EODHD, IBKR Flex, Web Push, healthchecks (and Telegram
     # when on); control: the dashboard forwards the app's /act/... requests (BF-D39)
@@ -209,6 +212,8 @@ networks:
 volumes:
   pgdata: {}
   traderout: {}
+  twins:
+    name: bigwins_twins  # BF-D81: a fixed name, so the worker's dry runs find it (N6)
 
 secrets:
   tws_password: {file: ./secrets/tws_password}

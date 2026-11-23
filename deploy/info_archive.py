@@ -35,7 +35,10 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import date, timedelta
 from typing import Any
 
 UA = {"User-Agent": "Mozilla/5.0 (private personal research; low rate)"}
@@ -55,18 +58,48 @@ ROW = re.compile(
     re.S,
 )
 MIN_ROWS = 50  # fewer means the page format changed: stop, never store a partial day
+ASIC_DAYS = 90  # BF-D81 (review S5): only the recent short positions (the app shows these)
+ASX_HOSTS = ("asx.com.au",)  # the owner's exception covers these hosts only
+ASIC_HOSTS = ("download.asic.gov.au",)
 _last = [0.0]
 
 
-def get(url: str) -> bytes:
+def host_ok(url: str, hosts: tuple[str, ...]) -> bool:
+    """https on one of ``hosts`` (or a sub-domain of it), nothing else."""
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    h = (u.hostname or "").lower()
+    return u.scheme == "https" and any(h == x or h.endswith("." + x) for x in hosts)
+
+
+class _Pinned(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an allowed host (BF-D81: no off-host redirects)."""
+
+    def __init__(self, hosts: tuple[str, ...]) -> None:
+        self.hosts = hosts
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any,
+                         newurl: str) -> Any:  # fmt: skip
+        if not host_ok(newurl, self.hosts):
+            raise urllib.error.HTTPError(newurl, code, "redirect to another host refused",
+                                         headers, fp)  # fmt: skip
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def get(url: str, hosts: tuple[str, ...] = ASX_HOSTS) -> bytes:
+    if not host_ok(url, hosts):
+        raise ValueError(f"not an allowed host: {urllib.parse.urlsplit(url).hostname}")
     wait = GAP - (time.time() - _last[0])
     if wait > 0:
         time.sleep(wait)
+    opener = urllib.request.build_opener(_Pinned(hosts))
     err: Exception | None = None
     for attempt in range(3):
         try:
-            req = urllib.request.Request(url, headers=UA)  # noqa: S310 - fixed https hosts
-            with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310
+            req = urllib.request.Request(url, headers=UA)  # noqa: S310 - pinned https hosts
+            with opener.open(req, timeout=60) as r:
                 _last[0] = time.time()
                 return bytes(r.read(50_000_000))
         except Exception as e:  # retried, then raised
@@ -107,10 +140,12 @@ def asx_notices(out: str) -> dict[str, Any]:
     if len(rows) < MIN_ROWS:
         raise ValueError(f"{day}: only {len(rows)} rows parsed - page format changed?")
     os.makedirs(os.path.join(d, "pdf"), exist_ok=True)
-    with open(os.path.join(d, "list.csv"), "w", newline="", encoding="utf-8") as f:
+    lst = os.path.join(d, "list.csv")
+    with open(lst + ".part", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+    os.replace(lst + ".part", lst)
     got = fail = 0
     for r in rows:
         if not r["kept"] or not r["ids_id"]:
@@ -122,15 +157,20 @@ def asx_notices(out: str) -> dict[str, Any]:
             terms = get(f"{BASE}/asx/v2/statistics/displayAnnouncement.do?display=pdf"
                         f"&idsId={r['ids_id']}").decode("utf-8", "replace")  # fmt: skip
             m = re.search(r'name="pdfURL" value="([^"]+)"', terms)
-            if not m or not m.group(1).startswith("https://"):
-                raise ValueError("no PDF link")
-            b = get(m.group(1))
+            pdf_url = html.unescape(m.group(1)) if m else ""
+            if not host_ok(pdf_url, ASX_HOSTS):  # BF-D81: the PDF only from an ASX host
+                raise ValueError("no PDF link on an ASX host")
+            b = get(pdf_url)
             if not b.startswith(b"%PDF"):
                 raise ValueError("not a PDF")
-            with open(p, "wb") as fh:
+            with open(p + ".part", "wb") as fh:  # a part-written file is never kept
                 fh.write(b)
-            subprocess.run(["pdftotext", "-layout", p, p[:-4] + ".txt"], timeout=60,  # noqa: S603, S607
+            txt = p[:-4] + ".txt"
+            subprocess.run(["pdftotext", "-layout", p + ".part", txt + ".part"], timeout=60,  # noqa: S603, S607
                            check=False, capture_output=True)  # fmt: skip
+            if os.path.exists(txt + ".part"):
+                os.replace(txt + ".part", txt)
+            os.replace(p + ".part", p)
             got += 1
         except Exception as e:  # one notice failing never stops the day
             fail += 1
@@ -142,14 +182,16 @@ def asx_notices(out: str) -> dict[str, Any]:
     return {"day": day, **summary}
 
 
-def asic_short(out: str, limit: int | None) -> dict[str, Any]:
+def asic_short(out: str, limit: int | None, today: date | None = None) -> dict[str, Any]:
     d = os.path.join(out, "asic_short")
     os.makedirs(d, exist_ok=True)
-    idx = json.loads(get(ASIC_INDEX))
+    idx = json.loads(get(ASIC_INDEX, ASIC_HOSTS))
+    day0 = today or date.today()  # noqa: DTZ011 - the server runs on Sydney time
+    since = (day0 - timedelta(days=ASIC_DAYS)).strftime("%Y%m%d")
     new = 0
     for e in idx:
         date_, ver = str(e.get("date", "")), str(e.get("version", ""))
-        if not (date_.isdigit() and ver.isdigit()):
+        if not (date_.isdigit() and len(date_) == 8 and ver.isdigit()) or date_ < since:
             continue
         name = f"RR{date_}-{ver}-SSDailyAggShortPos.csv"
         p = os.path.join(d, name + ".gz")
@@ -158,7 +200,7 @@ def asic_short(out: str, limit: int | None) -> dict[str, Any]:
         if limit is not None and new >= limit:
             break
         try:
-            b = get(ASIC_BASE + name)
+            b = get(ASIC_BASE + name, ASIC_HOSTS)
         except Exception as ex:
             print("asic fail", name, type(ex).__name__, file=sys.stderr)
             continue

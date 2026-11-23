@@ -381,6 +381,7 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
     BACKUP_AGE_H="$(backup_age_h)" KEY_FP="$(key_fp)" \
     DAILY_PING_SET="$(daily_url >/dev/null && echo 1 || echo 0)" \
     DAILY_PING="$(cat "$STATE/daily_ping_day" 2>/dev/null | head -c 10)" \
+    TIMERS="$(command -v systemctl >/dev/null && timer_states)" \
     python3 "$DEPLOY/host_status.py"
 }
 
@@ -603,6 +604,13 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
   if [ -s "$STATE/last_backup.json" ]; then  # a result recorded while the trader was down
     dc exec -T trader trader-bf server-jobs backup < "$STATE/last_backup.json" >/dev/null 2>&1 && rm -f "$STATE/last_backup.json"
   fi
+  local kept  # BF-D81 (S5): archive / twin results kept while the trader was down
+  for kept in info-archive prev-twin; do
+    if [ -s "$STATE/last_$kept.json" ]; then
+      dc exec -T trader trader-bf server-jobs "$kept" < "$STATE/last_$kept.json" >/dev/null 2>&1 && rm -f "$STATE/last_$kept.json"
+    fi
+  done
+  ensure_timers
   local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
   id=$(printf '%s' "$job" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)
@@ -645,35 +653,52 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     backup_key) out=$(python3 "$DEPLOY/gitops.py" seal "$SECRETS/worker_job_key" "$BKEY" | dc exec -T trader trader-bf server-jobs reveal --fp "$(key_fp)" 2>&1); rc=$?;;
     fetch) rm -f "$STATE/last_fetch"; out=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>&1); rc=$?;;
     hc_ping) out=$(u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null); case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" && echo "ping ok";; *) echo "heartbeat is off (healthchecks_url is none)";; esac 2>&1); rc=$?;;
-    info_archive) out=$(do_info_archive 2>&1); rc=$?;;
-    prev_twin) out=$(do_prev_twin 2>&1); rc=$?;;
+    info_archive) out=$(start_unit info do_info_archive 2>&1); rc=$?;;  # BF-D81: never blocks
+    prev_twin) out=$(start_unit twin do_prev_twin 2>&1); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
   esac
   if [ "$rc" = 0 ]; then finish_job "$id" DONE "$out"; else finish_job "$id" FAILED "$out"; fi
 }
 
-# ---------------------------------------------------------------- BF-D78 / BF-D80
-info_enabled() {  # BF-D78: info_archive.archive_enabled (the local file wins); off by default
-  local c=""
-  [ -f "$LOCAL" ] && c=$(sed -n 's/^  archive_enabled: *\([a-z]*\).*/\1/p' "$LOCAL" | head -1)
-  [ -n "$c" ] || c=$(sed -n 's/^  archive_enabled: *\([a-z]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -1)
-  [ "$c" = true ]
+# ---------------------------------------------------------------- BF-D78 / BF-D80 (BF-D81 fixes)
+start_unit() {  # unit fn: run a long job through its systemd unit (the worker is not blocked)
+  if [ -f "/etc/systemd/system/bigwins-$1.service" ]; then
+    systemctl start --no-block "bigwins-$1.service" && echo "started: the result shows on Server > Health in a few minutes"
+  else
+    "$2"
+  fi
+}
+
+record_result() {  # op json: to the app; kept on the host while the trader is down (S5)
+  printf '%s' "$2" | dc exec -T trader trader-bf server-jobs "$1" >/dev/null 2>&1 \
+    || printf '%s\n' "$2" > "$STATE/last_$1.json"
+}
+
+info_enabled() {  # BF-D81 (S5): the app's own config loader decides (one source of truth)
+  docker run --rm --network none --read-only -v "$REPO/config:/app/config:ro" \
+    "$IMAGE:local" trader-bf archive-enabled >/dev/null 2>&1
 }
 
 info_dir() { local d; d=$(envval INFO_ARCHIVE_DIR); echo "${d:-/var/lib/bigwins/info}"; }
 
 do_info_archive() {  # BF-D78: the private info archive, as the trader's uid (never root)
-  local d res
+  local d res log="$STATE/info_archive.log"
+  mkdir -p "$STATE"
+  exec 8>"$STATE/info_archive.lock"
+  flock -n 8 || { echo "the archive is already running"; return 0; }  # timer and manual run
   if ! info_enabled; then
     echo "info archive is switched off (info_archive.archive_enabled: false)"; return 0
   fi
   d=$(info_dir)
   mkdir -p "$d" && chown 10001:10001 "$d" && chmod 755 "$d"
   command -v pdftotext >/dev/null || y "pdftotext is missing (apt install poppler-utils): PDFs are kept without text"
+  if [ -f "$log" ] && [ "$(stat -c %s "$log")" -gt 1048576 ]; then  # N5: keep the log small
+    tail -c 200000 "$log" > "$log.new" && mv -f "$log.new" "$log"
+  fi
   res=$(setpriv --reuid=10001 --regid=10001 --clear-groups \
-        python3 -I "$INFO_SCRIPT" --out "$d" --asic-limit 400 2>>"$STATE/info_archive.log" | tail -1)
+        python3 -I "$INFO_SCRIPT" --out "$d" --asic-limit 400 2>>"$log" | tail -1)
   case "$res" in "{"*) ;; *) res='{"ok":false,"error":"the archive script failed (see deploy/.worker/info_archive.log)"}';; esac
-  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs info-archive >/dev/null 2>&1
+  record_result info-archive "$res"
   echo "$res"
   case "$res" in *'"ok": true'*|*'"ok":true'*) return 0;; *) return 1;; esac
 }
@@ -697,8 +722,22 @@ store_days() {  # the price store's bulk days, oldest first (YYYY-MM-DD)
   ls "$fs/raw/bulk_eod" 2>/dev/null | sed -n 's/^AU_\([0-9-]\{10\}\).*/\1/p' | sort -u
 }
 
+TWINS_VOL=bigwins_twins  # BF-D81 (S3 b, N6): the twins' own volume, never the trader's output
+
+run_twin() {  # image config-dir out-name since to: one dry-run replay, no network, no secrets
+  local fs ref rec
+  fs=$(envval FORWARD_STORE); ref=$(envval REF_DIR); rec=$(envval RECORD_DIR)
+  docker run --rm --network none -u 10001:10001 --memory 1200m -e TZ=Australia/Sydney \
+    -v "$2:/app/config:ro" -v "$fs:/data/forward/eodhd:ro" -v "$ref:/data/ref:ro" \
+    -v "$rec:/data/forward/record:ro" -v "$TWINS_VOL:/twins" "$1" sh -c \
+    "rm -rf /twins/$3 && mkdir -p /twins/$3 && cp /app/config/strategy_changelog.yaml /twins/$3/ 2>/dev/null; trader-bf dry-run --start $4 --to $5 --out /twins/$3 >/dev/null 2>&1; ls /twins/$3/dryrun_*.sqlite3 >/dev/null"
+}
+
 do_prev_twin() {  # BF-D80: replay the previous and the current version from the update day
-  local pf="$STATE/prev_version" prev since to tmp fs ref rec vol res
+  local pf="$STATE/prev_version" prev since to tmp res
+  mkdir -p "$STATE"
+  exec 9>"$STATE/prev_twin.lock"
+  flock -n 9 || { echo "the twin run is already running"; return 0; }
   [ -s "$pf" ] || { echo "no previous version yet: it starts after the next strategy update"; return 0; }
   read -r prev since < "$pf"
   [[ "$prev" =~ ^[0-9a-f]{40}$ && "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad $pf"; return 1; }
@@ -709,26 +748,53 @@ do_prev_twin() {  # BF-D80: replay the previous and the current version from the
   fi
   res='{"ok":false,"since":"'"$since"'","error":"the previous version image is missing"}'
   if docker image inspect "$IMAGE:prev" >/dev/null 2>&1; then
-    fs=$(envval FORWARD_STORE); ref=$(envval REF_DIR); rec=$(envval RECORD_DIR)
-    vol=$(docker volume ls -q | grep -m1 '_traderout$')
+    docker volume create "$TWINS_VOL" >/dev/null
+    docker run --rm -u 0 --network none -v "$TWINS_VOL:/twins" "$IMAGE:local" chown 10001:10001 /twins
     tmp=$(mktemp -d)
-    git -C $REPO archive "$prev" config | tar -x -C "$tmp"
-    run_twin() {  # image config-dir out-name
-      docker run --rm --network none -u 10001:10001 --memory 1200m -e TZ=Australia/Sydney \
-        -v "$2:/app/config:ro" -v "$fs:/data/forward/eodhd:ro" -v "$ref:/data/ref:ro" \
-        -v "$rec:/data/forward/record:ro" -v "$vol:/app/out" "$1" sh -c \
-        "rm -rf /app/out/twins/$3 && mkdir -p /app/out/twins/$3 && cp /app/config/strategy_changelog.yaml /app/out/twins/$3/ 2>/dev/null; trader-bf dry-run --start $since --to $to --out /app/out/twins/$3 >/dev/null 2>&1; ls /app/out/twins/$3/dryrun_*.sqlite3 >/dev/null"
-    }
-    if run_twin "$IMAGE:local" "$REPO/config" new && run_twin "$IMAGE:prev" "$tmp/config" prev; then
+    # S3 e: both versions with their committed config only (no server-local settings)
+    mkdir -p "$tmp/new" "$tmp/prev"
+    git -C $REPO archive HEAD config | tar -x -C "$tmp/new"
+    git -C $REPO archive "$prev" config | tar -x -C "$tmp/prev"
+    if run_twin "$IMAGE:local" "$tmp/new/config" new "$since" "$to" \
+       && run_twin "$IMAGE:prev" "$tmp/prev/config" prev "$since" "$to"; then
       res='{"ok":true,"since":"'"$since"'"}'
     else
       res='{"ok":false,"since":"'"$since"'","error":"a twin run failed (see bigwins prev-twin)"}'
     fi
     rm -rf "$tmp"
   fi
-  printf '%s' "$res" | dc exec -T trader trader-bf server-jobs prev-twin >/dev/null 2>&1
+  record_result prev-twin "$res"
   echo "$res"
   case "$res" in *'"ok":true'*) return 0;; *) return 1;; esac
+}
+
+EXTRA_UNITS="info|info-archive|private info archive (BF-D78; off unless switched on)|Tue..Sat *-*-* 07:40:00
+twin|prev-twin|previous-version twin (BF-D80)|Tue..Sat *-*-* 01:20:00"
+
+write_extra_units() {  # BF-D78 / BF-D80: the archive the morning after each trading day; the twins
+  local n c d t
+  while IFS='|' read -r n c d t; do
+    [ -n "$n" ] || continue
+    printf '[Unit]\nDescription=Big Wins %s\nAfter=docker.service\n\n[Service]\nType=oneshot\nExecStart=%s %s\nTimeoutStartSec=7200\n' \
+      "$d" "$DEPLOY/bigwins.sh" "$c" > "/etc/systemd/system/bigwins-$n.service"
+    printf '[Unit]\nDescription=Big Wins %s\n\n[Timer]\nOnCalendar=%s Australia/Sydney\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' \
+      "$d" "$t" > "/etc/systemd/system/bigwins-$n.timer"
+  done <<<"$EXTRA_UNITS"
+}
+
+ensure_timers() {  # BF-D81 (review S7): after an update the worker adds missing timers itself
+  [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/bigwins-worker.timer ] || return 0
+  [ -f /etc/systemd/system/bigwins-info.timer ] && [ -f /etc/systemd/system/bigwins-twin.timer ] && return 0
+  write_extra_units && systemctl daemon-reload \
+    && systemctl enable --now bigwins-info.timer bigwins-twin.timer >/dev/null 2>&1
+}
+
+timer_states() {  # "worker:1 backup:1 ..." for the app's Health screen (BF-D81 S7)
+  local n out=""
+  for n in worker backup weekly info twin; do
+    if systemctl is-enabled "bigwins-$n.timer" >/dev/null 2>&1; then out="$out $n:1"; else out="$out $n:0"; fi
+  done
+  echo "$out"
 }
 
 cmd_install_worker() {  # BF-D42: the systemd timer that runs `bigwins worker` every 30 s
@@ -801,15 +867,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  local u  # BF-D78: the info archive the morning after each trading day; BF-D80: the twins
-  for u in "info|info-archive|private info archive (BF-D78; off unless switched on)|Tue..Sat *-*-* 07:40:00" \
-           "twin|prev-twin|previous-version twin (BF-D80)|Tue..Sat *-*-* 01:20:00"; do
-    IFS='|' read -r n c d t <<<"$u"
-    printf '[Unit]\nDescription=Big Wins %s\nAfter=docker.service\n\n[Service]\nType=oneshot\nExecStart=%s %s\nTimeoutStartSec=7200\n' \
-      "$d" "$DEPLOY/bigwins.sh" "$c" > "/etc/systemd/system/bigwins-$n.service"
-    printf '[Unit]\nDescription=Big Wins %s\n\n[Timer]\nOnCalendar=%s Australia/Sydney\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' \
-      "$d" "$t" > "/etc/systemd/system/bigwins-$n.timer"
-  done
+  write_extra_units
   systemctl daemon-reload  # review F19: before enabling the new units
   systemctl enable --now bigwins-backup.timer bigwins-weekly.timer >/dev/null 2>&1 || y "Backup timers not started."
   systemctl enable --now bigwins-info.timer bigwins-twin.timer >/dev/null 2>&1 || y "Info / twin timers not started."

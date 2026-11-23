@@ -46,6 +46,9 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         # BF-D77 (b): is the optional daily-cycle check set up, and the last day it pinged
         "daily_ping_set": env.get("DAILY_PING_SET") == "1",
         "daily_ping": env.get("DAILY_PING", ""),
+        # BF-D81 (S7): which Big Wins timers are installed ("name:1 name:0 ...")
+        "timers": {k: v == "1" for k, _, v in
+                   (x.partition(":") for x in env.get("TIMERS", "").split()) if k},
         # BF-D63: which secret files exist (names only; the worker tests -s, never reads)
         "secrets": {**dict.fromkeys(env.get("SECRETS_PRESENT", "").split(), True),
                     **dict.fromkeys(env.get("SECRETS_MISSING", "").split(), False)},
