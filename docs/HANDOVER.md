@@ -85,7 +85,9 @@ Real money around March 2027.
    director trades and short positions on each share's page from the private info
    archive (host job, **off** until after 30 Nov); the weekly digest in the Inbox
    (Fridays after the close); the previous-version simulated twin (runs after the next
-   strategy update).
+   strategy update). Review fixes BF-D81 (one scoreboard for app and digest, "before tax"
+   when no tax rate, cash-flow-dated A200, exact research book names, safer archive and
+   twin jobs). Deploy before the paper trader's first decision (GO_LIVE_GUIDE C7).
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book

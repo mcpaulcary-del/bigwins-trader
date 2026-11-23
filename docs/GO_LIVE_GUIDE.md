@@ -462,9 +462,10 @@ the app is down. The app itself pages when the last good backup is over 26 hours
 when the server worker has been silent for 5 minutes, when the disk is over 80% full
 and when less than 10% of memory is free.
 
-**Daily-cycle check (optional but recommended, BF-D77)**: one more free check that
-says "the trader finished its day", so you hear about a missed day even when the server
-and the app are both down. Set it up **after the paper trader has started** (before
+**Daily-cycle check (strongly recommended, BF-D77 / BF-D81)**: one more free check
+that says "the trader finished its day". The app's own alarm runs inside the trader, so
+if the trader or the whole server stops, this outside check is the only thing that can
+tell you. Set it up **after the paper trader has started** (before
 that there is no daily cycle, and the check would alarm):
 
 1. On healthchecks.io, **Add Check**, name it "Big Wins daily cycle". Choose
@@ -527,11 +528,23 @@ outside ASX hours (10:00-16:15 Sydney):
    the trader if the record checks fail (`trader-bf golden-check`, when the record's
    price store is on the server) and pages instead.
 
-7. **After the scoreboard / Health / announcements update (24 Nov 2026, BF-D75..BF-D80)**:
-   `git -C /srv/asx-trader pull --ff-only && bigwins update`, then `sudo bigwins
-   install-worker` once (it adds two timers: the announcements archive at 07:40 and the
-   previous-version twin at 01:20, Tuesday to Saturday). Nothing else is needed; the
-   archive stays off until part C10. Optional: the daily-cycle check (C5).
+7. **After the scoreboard / Health / announcements update (24 Nov 2026, BF-D75..BF-D81)**:
+   `git -C /srv/asx-trader pull --ff-only && bigwins update`. The server worker adds its
+   two new timers by itself within a minute (the announcements archive at 07:40 and the
+   previous-version twin at 01:20, Tuesday to Saturday); Server > Health says "Timer not
+   installed" if it could not, and then `sudo bigwins install-worker` fixes it. The archive
+   stays off until part C10. Strongly recommended: the daily-cycle check (C5).
+
+   **This update counts as a trading / infrastructure update** (BF-D81): it changes files
+   the trader runs (`trader/bfast_cli.py`, the action server, the config schema, deploy
+   scripts), so the app shows it as a strategy update and the strategy id changes, although
+   no trading rule or parameter changes (the strategy hash and the strategy settings hash
+   stay the same). Deploy it **before the paper trader's first decision (30 Nov)**: before
+   the trader has started there is no book, so nothing happens. If the paper trader is
+   already running in `update_mode: immediate`, an out-of-cycle decision follows the update
+   (same rules, so the same list; its orders still need your approval, and you may refuse
+   them), and "Results by strategy version" starts a new segment with the same version
+   name.
 
 ### C8. Backups (server + OneDrive) and the recovery key
 
@@ -597,7 +610,8 @@ moves to this server (after 30 Nov; Claude does the move with you). Then:
    info_archive:
      archive_enabled: true
    ```
-3. `bigwins` > 4) Restart the trader. From the next morning (07:40, Tuesday to Saturday)
+3. `bigwins` > 4) Restart the trader (this restarts the app too, which is needed: the app
+   reads the switch when it starts). From the next morning (07:40, Tuesday to Saturday)
    the server collects the previous trading day; Server > Health shows the last day
    stored and any missed trading days; each share's page shows its last 90 days of
    headlines, director trades and the short position. Server > Run on the server >
