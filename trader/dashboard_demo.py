@@ -20,7 +20,7 @@ import numpy as np
 
 from trader.app_control import Control
 from trader.app_notify import AppNotifier, classify
-from trader.app_store import set_state
+from trader.app_store import get_state, set_state
 from trader.approval import ApprovalBot, FakeTransport, Markup, TotpVerifier
 from trader.bf_app import AppSettings, BfApp, dry_run, mock_auction, owner_approves_all
 from trader.broker.ibkr import IbkrPaperBroker, IbkrSettings
@@ -178,6 +178,7 @@ def build_demo(path: Path, days: int = 45, random_twins: int = 20) -> Demo:
                   "record replay (example).", "takes_effect": "Tonight's out-of-cycle decision "
                   "(immediate mode), orders for your approval."},
     }, now - timedelta(minutes=5))  # fmt: skip
+    demo_dr(j, now, nxt)  # BF-D82..BF-D86
     held = sorted(c for c, q in j.positions(s.book).items() if q)
     vals = [(k.rsplit(":", 1)[1], str(r["value"])) for k, r in j.job_records(f"value:{s.book}:")]
     info_dir = path.parent / "demo_info"
@@ -308,6 +309,20 @@ def demo_ops(j: Journal, info_dir: Path, scorecard: Path, held: list[str],
                                    "new": new, "prev": prev, "new_label": "EMG2-18 C6 v1.1 (demo)",
                                    "prev_label": "EMG2-18 C6 v1.0 (demo)"},
                   now - timedelta(hours=9))  # fmt: skip
+
+
+def demo_dr(j: Journal, now: datetime, nxt: date) -> None:
+    """BF-D82..BF-D86 (DEMO): the presence clock, the passphrase state, renewal dates."""
+    set_state(j, "presence-since", {"at": (now - timedelta(days=30)).isoformat()}, now)
+    set_state(j, "owner-presence", {"last": (now - timedelta(days=3, hours=2)).isoformat(),
+                                    "what": "Approve all (DEMO)"}, now)  # fmt: skip
+    set_state(j, "app-passphrase", {"set": False}, now)
+    set_state(j, "reminders", {"flex_token": (nxt + timedelta(days=21)).isoformat(),
+                               "card": (nxt + timedelta(days=140)).isoformat()}, now)  # fmt: skip
+    hs = get_state(j, "host-status")
+    if hs is not None:
+        set_state(j, "host-status", {**hs[0], "signing": "warn", "presence_ping_set": True,
+                                     "presence_ping": str(nxt)}, hs[1])  # fmt: skip
 
 
 def demo_control(j: Journal, demo: Demo) -> Control:

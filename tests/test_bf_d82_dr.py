@@ -644,8 +644,13 @@ def test_BF_D82_health_and_home_show_presence_lock_and_passphrase_nag() -> None:
     x.passphrase_set = False
     v: Any = type("V", (), {"now": T0 + timedelta(days=11), "live": False, "demo": False})()
     html = presence_section(v, x)
-    assert "11</b> days since your last action" in html and "15 Mar 2027" in html
-    assert "I'm here" in html and "paper" in html and "Opening a page does not count" in html
+    assert "11</b>&nbsp;days since your last action" in html and "15 Mar 2027" in html
+    assert (
+        "I'm here" in html
+        and "owner presence · paper" in html
+        and "&lt;span" not in html
+        and "Opening a page does not count" in html
+    )
     nag = phone_safety_section(x)
     assert "not set" in nag and "bigwins secret app_passphrase" in nag
     rows = "".join(dr_rows(v, x))

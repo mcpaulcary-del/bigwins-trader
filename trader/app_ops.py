@@ -388,7 +388,7 @@ def presence_section(v: Any, x: Extras) -> str:
     """BF-D82 (owner decision 24 Nov 2026, option b): days since the last owner action,
     the day buying would pause, the I'm-here button."""
     p = x.presence
-    paper = " <span class='pill amber'>paper</span>" if not getattr(v, "live", False) else ""
+    paper = " · paper" if not getattr(v, "live", False) else ""  # a title: plain text
     if p is None or not p.tracking or p.last is None or p.pause_at is None:
         body = ("<p class='muted'>Starts when the paper trader runs: after "
                 f"{p.days if p is not None else 14} days without any action of yours in the app, "
@@ -400,9 +400,9 @@ def presence_section(v: Any, x: Extras) -> str:
     past = now >= p.pause_at
     warn = p.warn_at is not None and now >= p.warn_at
     tone_ = "bad" if past else ("wait" if warn else "ok")
-    head = (f'<p class="statusline"><span class="sd {tone_}"></span><b class="num">{n}</b> '
-            f"day{'s' if n != 1 else ''} since your last action <span class='sub'>({e(p.what)}, "
-            f"{when(p.last)})</span></p>")  # fmt: skip
+    head = (f'<p class="statusline"><span class="sd {tone_}"></span><b class="num">{n}</b>&nbsp;'
+            f"day{'s' if n != 1 else ''} since your last action</p>"
+            f"<p class='caption'>Last: {e(p.what)}, {when(p.last)}</p>")  # fmt: skip
     if past:
         msg = (f"<p class='note bad'>No action for {p.days} days: buying is paused (HALTED_BUYS) and "
                "your second contact was told. Nothing is sold automatically. To re-arm: Controls &gt; "
