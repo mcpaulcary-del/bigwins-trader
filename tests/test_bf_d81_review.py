@@ -61,20 +61,22 @@ def test_BF_D81_M1_display_files_are_ui_only_in_both_classifiers() -> None:
 
 
 def test_BF_D81_M1_this_build_changes_no_strategy_file_or_setting() -> None:
-    """c162146..HEAD: no strategy file (``STRATEGY_FILES``) and no strategy setting changed;
-    the trading paths it does change are engineering files, listed here on purpose."""
+    """c162146..218a167 (the BF-D75..D81 build): no strategy file (``STRATEGY_FILES``) and no
+    strategy setting changed; the trading paths it does change are engineering files, listed
+    here on purpose. Later builds have their own test (BF-D82..: test_bf_d82_dr.py)."""
     from trader.strategy_version import STRATEGY_FILES, config_hash, is_trading_path
     from trader.yamlio import load_yaml
 
     try:
-        files = subprocess.run(["git", "-C", str(REPO), "diff", "--name-only", "c162146", "HEAD"],
+        files = subprocess.run(["git", "-C", str(REPO), "diff", "--name-only", "c162146", "218a167"],
                                capture_output=True, text=True, check=True).stdout.split()  # fmt: skip
         old = subprocess.run(["git", "-C", str(REPO), "show", "c162146:config/bfast.yaml"],
                              capture_output=True, text=True, check=True).stdout  # fmt: skip
     except (subprocess.CalledProcessError, FileNotFoundError):
         pytest.skip("the base commit is not in this checkout (shallow clone)")
     assert not [f for f in files for s in STRATEGY_FILES if f.startswith(s)]
-    new = (REPO / "config" / "bfast.yaml").read_text()
+    new = subprocess.run(["git", "-C", str(REPO), "show", "218a167:config/bfast.yaml"],
+                         capture_output=True, text=True, check=True).stdout  # fmt: skip
     assert config_hash(load_yaml(old) or {}) == config_hash(load_yaml(new) or {})
     engineering = {
         "trader/bfast_cli.py", "trader/bfast_config.py", "trader/app_control.py",

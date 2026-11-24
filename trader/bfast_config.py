@@ -305,6 +305,17 @@ class AppCfg(_M):
     # must be exactly this host. Written to bfast.local.yaml by `bigwins login`.
     public_host: str = ""
     push_subject: str = "mailto:bigwins-paper-trader@users.noreply.github.com"
+    # BF-D82 (owner decision 24 Nov 2026, option b): after this many days without an owner
+    # action the safety level is raised to HALTED_BUYS (never lowered) and the second
+    # contact is told through healthchecks.io; a warning push after presence_warn_days
+    presence_days: int = Field(default=14, ge=3, le=90)
+    presence_warn_days: int = Field(default=10, ge=1, le=89)
+
+    @model_validator(mode="after")
+    def _presence(self) -> AppCfg:
+        if self.presence_warn_days >= self.presence_days:
+            raise ValueError("app.presence_warn_days must be smaller than app.presence_days")
+        return self
 
     @field_validator("push_subject")
     @classmethod

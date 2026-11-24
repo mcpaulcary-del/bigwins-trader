@@ -42,14 +42,14 @@ def _num(x: Any) -> float | None:
         return None
 
 
-def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
+def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - one rule per key
     out: dict[str, Any] = {}
     for k in ("load1", "load5", "cpus", "mem_used_pct", "disk_used_pct", "uptime_s",
               "disk_free_gb", "backup_age_h"):  # fmt: skip
         v = _num(raw.get(k))
         if v is not None:
             out[k] = v
-    for k in ("tailscale", "code_version", "asx", "worker_at", "serve", "key_fp"):
+    for k in ("tailscale", "code_version", "asx", "worker_at", "serve", "key_fp", "claude_remote"):
         if k in raw:
             out[k] = clean_line(str(raw[k]))[:120]
     cont = raw.get("containers")
@@ -70,6 +70,13 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:
         dp = str(raw.get("daily_ping") or "")
         if len(dp) == 10 and dp[4] == "-" and dp[7] == "-" and dp.replace("-", "").isdigit():
             out["daily_ping"] = dp
+    if raw.get("signing") in ("enforce", "warn", "nokey"):  # BF-D84
+        out["signing"] = str(raw["signing"])
+    if "presence_ping_set" in raw:  # BF-D82: the outside presence check (never its URL)
+        out["presence_ping_set"] = bool(raw.get("presence_ping_set"))
+        pp = str(raw.get("presence_ping") or "")
+        if len(pp) == 10 and pp[4] == "-" and pp[7] == "-" and pp.replace("-", "").isdigit():
+            out["presence_ping"] = pp
     sec = raw.get("secrets")
     if isinstance(sec, Mapping):  # BF-D63: known secret NAMES -> present?; never a value
         from trader.secrets import KNOWN_SECRETS

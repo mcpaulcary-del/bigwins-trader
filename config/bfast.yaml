@@ -121,6 +121,10 @@ app:                            # BF-D39: actions in the phone app (approve, pau
   control_bind_host: trader-control  # BF-D46: the trader listens only on its control-network address
   public_host: ""               # BF-D46: your app's host (bigwins.<tailnet>.ts.net); set on the server
                                 #   by `bigwins login`; with it, an action's Origin must be this host
+  presence_days: 14             # BF-D82 (owner, 24 Nov 2026): no owner action for this many days ->
+                                #   buying pauses (HALTED_BUYS, never lowers a stricter level) and the
+                                #   second contact is told (healthchecks_presence_url)
+  presence_warn_days: 10        #   a warning push to the owner this many days after the last action
 strategy:                       # BF-D45: strategy updates from the app (Server > Strategy)
   update_mode: immediate        # immediate (paper, early stage): applied once the ASX is closed and no
                                 #   order is working, then an out-of-cycle decision for your approval |

@@ -43,8 +43,9 @@ def test_BF_D33_good_files_pass_without_reading_them(
         assert check_secrets(STACK_SECRETS, d) == []
     assert main(["check-secrets", "--all", "--dir", str(d)]) == 0
     out = capsys.readouterr().out
-    assert "ok: 11 secret file(s)" in out and "not-a-real-value" not in out
-    assert "tws_password" not in TRADER_SECRETS and len(TRADER_SECRETS) == 9
+    # BF-D83: + app_passphrase ("none" until the owner sets it)
+    assert "ok: 12 secret file(s)" in out and "not-a-real-value" not in out
+    assert "tws_password" not in TRADER_SECRETS and len(TRADER_SECRETS) == 10
 
 
 @pytest.mark.parametrize(
@@ -60,10 +61,10 @@ def test_BF_D33_wrong_mode_is_a_clear_error(
 ) -> None:
     d = _dir(tmp_path, mode)
     bad = check_secrets(TRADER_SECRETS, d)
-    assert len(bad) == 9 and all(words in b and "chmod 444 secrets/*" in b for b in bad)
+    assert len(bad) == 10 and all(words in b and "chmod 444 secrets/*" in b for b in bad)
     assert main(["check-secrets", "--dir", str(d)]) == 2
     err = capsys.readouterr().err
-    assert err.count("SECRET CHECK FAILED: secret ") == 9 and "not-a-real-value" not in err
+    assert err.count("SECRET CHECK FAILED: secret ") == 10 and "not-a-real-value" not in err
 
 
 def test_BF_D33_missing_or_empty(tmp_path: Path) -> None:

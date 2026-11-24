@@ -180,6 +180,11 @@ class Extras:
     backup_history: list[dict[str, Any]] = field(default_factory=list)
     names: dict[str, str] = field(default_factory=dict)  # code -> company name (price store)
     ops: Any = None  # BF-D75..BF-D80: trader.app_ops.Ops (scoreboard, jobs, costs, research)
+    # BF-D82..BF-D86 (disaster recovery): owner presence, Lock actions, passphrase, renewals
+    presence: Any = None  # trader.presence.Presence
+    actions_locked: bool = False
+    passphrase_set: bool | None = None  # None = not known yet (the trader has not started)
+    reminders: dict[str, date] = field(default_factory=dict)
 
     @property
     def latest_inbox(self) -> int:
@@ -292,6 +297,14 @@ def collect_extras(
     if lk and isinstance(lk[0], dict) and lk[0].get("until"):
         until = datetime.fromisoformat(str(lk[0]["until"]))
         x.lockout = until if until > now else None
+    from trader import presence as pr
+
+    x.presence = safe(lambda: pr.status(j), None)  # the days are set by the caller
+    al2 = safe(lambda: get_state(j, "actions-lock"), None)
+    x.actions_locked = bool(al2 and isinstance(al2[0], dict) and al2[0].get("locked"))
+    ps = safe(lambda: get_state(j, "app-passphrase"), None)
+    x.passphrase_set = bool(ps[0].get("set")) if ps and isinstance(ps[0], dict) else None
+    x.reminders = safe(lambda: pr.reminder_dates(j), {})
     return x
 
 
@@ -628,6 +641,9 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
             "(the daily report at 22:45 Sydney).</p>" + nd,
         )
         body += safety_card(v) + inbox_peek(x) + health_card(v, x)
+        body = (
+            lock_note(x) + body + section("You", f'<ul class="srows">{"".join(dr_rows(v, x))}</ul>')
+        )
         if x.ops is not None:  # BF-D75 / BF-D77
             from trader import app_ops
 
@@ -709,10 +725,12 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
             rows.append(fr)
         research = app_ops.research_section(ops, v.now.astimezone(ASX_TZ).date(), compact=True)
     rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
+    rows += dr_rows(v, x)  # BF-D82 / BF-D83
     status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>' + research)
     foot = "<footer>Not shown to beat the index.</footer>"
     col_a = (
-        jobs_note
+        lock_note(x)
+        + jobs_note
         + (f'<div class="o0">{score}</div>' if score else "")
         + f'<div class="hero-wrap o1">{hero_html}</div>'
         + (f'<div class="o2">{wait}</div>' if urgent else "")
@@ -772,6 +790,40 @@ SAFETY_WORDS = {
     "HALTED_INTEGRITY": "Halted: a check failed, no orders until re-armed",
     "KILLED": "Killed: no new orders",
 }
+
+
+def lock_note(x: Extras) -> str:
+    """BF-D83: a red line while the owner's Lock is on."""
+    if not x.actions_locked:
+        return ""
+    return (f'<a class="note bad notelink" href="/act/confirm?a=unlock">{icon("lock")}Actions are '
+            "locked: approvals and re-arming wait until you unlock (code"
+            + (" and passphrase" if x.passphrase_set else "") + "). Tap to unlock.</a>")  # fmt: skip
+
+
+def dr_rows(v: Any, x: Extras) -> list[str]:
+    """BF-D82 I'm here (days since the last owner action) and BF-D83 Lock actions."""
+    out = []
+    p = x.presence
+    if p is not None and p.tracking and p.last is not None and p.pause_at is not None:
+        n = p.days_since(v.now)
+        warn = p.warn_at is not None and v.now >= p.warn_at
+        past = v.now >= p.pause_at
+        val = f"{n} day{'s' if n != 1 else ''} since your last action · " + (
+            "buying paused" if past else f"pauses {p.pause_at.astimezone(ASX_TZ):%d %b}"
+        )
+        out.append(_srow("I'm here", e(val), href="/act/confirm?a=here",
+                         tone="bad" if past else ("wait" if warn else "ok")))  # fmt: skip
+    else:
+        out.append(_srow("I'm here", "Tap to tell the server you are fine",
+                         href="/act/confirm?a=here"))  # fmt: skip
+    if x.actions_locked:
+        out.append(_srow("Actions", "Locked · tap to unlock", href="/act/confirm?a=unlock",
+                         tone="bad"))  # fmt: skip
+    else:
+        out.append(_srow("Lock actions", "One tap: approvals and re-arming need Unlock",
+                         href="/act/confirm?a=lock"))  # fmt: skip
+    return out
 
 
 def safety_card(v: Any) -> str:
@@ -1623,17 +1675,33 @@ def _ops_rows(x: Extras) -> str:
 
 
 def _ci_line(u: Mapping[str, Any]) -> str:
-    """Review F13: the GitHub CI result of the update's commit; anything but green warns."""
+    """Review F13: the GitHub CI result of the update's commit; anything but green warns.
+    BF-D84: the ``ci-ok/`` tags live in the same repository, so anyone who can push can
+    fake them: information only, never a security check (the signature line is)."""
     ci = str(u.get("ci") or "unknown")
     if ci == "green":
-        return (
-            "<p class='small'><span class='pill ok'>CI passed</span> on GitHub for this commit</p>"
-        )
-    what = "FAILED" if ci == "red" else "not known yet"
-    return (
-        f"<p class='note'>GitHub CI for this commit: <b>{what}</b>. Wait for a green "
-        "run before approving (the tests and checks have not passed).</p>"
-    )
+        out = ("<p class='small'><span class='pill ok'>CI passed</span> on GitHub for this commit "
+               "<span class='sub'>(information only)</span></p>")  # fmt: skip
+    else:
+        what = "FAILED" if ci == "red" else "not known yet"
+        out = (f"<p class='note'>GitHub CI for this commit: <b>{what}</b>. Wait for a green "
+               "run before approving (the tests and checks have not passed).</p>")  # fmt: skip
+    return out + _sig_line(u)
+
+
+def _sig_line(u: Mapping[str, Any]) -> str:
+    """BF-D84: the commit signature the server checked (git verify-commit, root-only key)."""
+    sig = str(u.get("signed") or "")
+    if sig == "good":
+        return ("<p class='small'><span class='pill ok'>Signed</span> by the engineer's key "
+                "(checked on the server)</p>")  # fmt: skip
+    if sig == "bad":
+        return ("<p class='note bad'><b>Not signed by the engineer's key.</b> Do not approve it "
+                "unless your engineer confirms it; with signing enforced the server refuses it.</p>")  # fmt: skip
+    if sig == "none":
+        return ("<p class='small muted'>Signature: no signing key on the server yet (to be set "
+                "up before real money).</p>")  # fmt: skip
+    return ""
 
 
 def strategy_card(x: Extras) -> str:

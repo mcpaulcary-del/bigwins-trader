@@ -78,18 +78,23 @@ from trader.webui import SECURITY_HEADERS, chev, e, icon, page, plural, section
 
 CODE_ACTS = frozenset({"ok", "ap", "rf", "veto", "re", "co", "idmap", "idmap_reject"})
 CONFIRM_ACTS = frozenset({"ki", "so", "cancel"})
-RISK_REDUCING = frozenset({"pa", "ki", "so"})
+RISK_REDUCING = frozenset({"pa", "ki", "so", "lock"})
 # BF-D64 / BF-D65: low-risk server jobs: a confirm screen, no code (they change nothing the
 # trader trades with); still signed for the worker, still only for allowed log-ins
 NO_CODE_SERVER = frozenset(
     {"backup_now", "restore_test", "fetch", "hc_ping", "info_archive", "prev_twin"}
 )  # allowed even when the app's address changed
-ONE_TAP = frozenset({"pa", "st"})
+ONE_TAP = frozenset({"pa", "st", "here", "lock"})
+# BF-D83 (DR review M2): the riskiest actions also need the memorised passphrase (once set)
+PASS_ACTS = frozenset({"re", "co", "srv:update", "srv:rollback", "srv:backup_key",
+                       "srv:claude_remote", "unlock"})  # fmt: skip
+LOCK_STATE = "actions-lock"  # BF-D83: "Lock actions" (approvals and re-arms need Unlock first)
 CONFIRM_TITLE = {
     "ok": "Approve orders", "ap": "Approve orders", "rf": "Refuse orders", "veto": "Veto order",
     "re": "Resume trading", "co": "Continue (loss rule)", "idmap": "Code change",
     "idmap_reject": "Undo code change", "pa": "Pause buying", "ki": "Kill switch",
     "so": "Stop (loss rule)", "st": "Status", "cancel": "Cancel job",
+    "here": "I'm here", "lock": "Lock actions", "unlock": "Unlock actions",
 }  # fmt: skip
 # BF-D73: the Kill screen says exactly what /kill does (execution.kill + risk BLOCKS_ALL):
 # the KILLED latch refuses every new order (buys and sells) at the send-time check and asks
@@ -142,6 +147,7 @@ ACTION_LABEL = {
     "re": "Resume", "co": "Continue", "idmap": "Confirm code change",
     "idmap_reject": "Undo code change", "pa": "Pause", "ki": "KILL", "so": "STOP",
     "st": "Status", "cancel": "Cancel the queued job",
+    "here": "I'm here", "lock": "Lock actions now", "unlock": "Unlock",
 }  # fmt: skip
 
 
@@ -222,6 +228,8 @@ class Control:
     worker_key: bytes | None = None  # BF-D48: signs server jobs for the host worker
     live: bool = False  # BF-D50: labels from the broker mode (always paper in this build)
     max_devices: int = MAX_DEVICES
+    passphrase: str | None = None  # BF-D83: the stored passphrase hash; None = not set
+    presence_days: int = 14  # BF-D82: app.presence_days (for the I'm-here answer)
     _key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     _q: queue.Queue[_Req] = field(default_factory=queue.Queue, repr=False)
     _wake: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -260,6 +268,7 @@ class Control:
     def _run(self, r: _Req) -> None:
         try:
             r.result = self._execute(r)
+            self._presence(r)
         except Exception as ex:  # an action never stops the trader
             r.result = f"failed: {type(ex).__name__}"
         finally:
@@ -284,12 +293,57 @@ class Control:
             self._code_busy = True
             return True
 
+    def _presence(self, r: _Req) -> None:
+        """BF-D82: an action the server accepted is an owner action (a request refused for
+        a wrong code or passphrase, or by a lock, is not)."""
+        from trader.presence import record_action
+
+        res = str(r.result or "")
+        if self.demo or res.startswith(("refused", "failed", "unknown", "ignored")):
+            return
+        if r.kind == "bot" and res.startswith("refused"):
+            return
+        record_action(self.journal, self.clock(), str(r.data.get("shown") or r.kind)[:60])
+
+    def actions_locked(self) -> bool:
+        """BF-D83: "Lock actions" is on (code actions refused until Unlock)."""
+        if self.demo:
+            return False
+        st = get_state(self.journal, LOCK_STATE)
+        return bool(st and isinstance(st[0], dict) and st[0].get("locked"))
+
+    def _verify_pass(self, r: _Req) -> str | None:
+        """BF-D83: the passphrase, checked in the main loop before the code; a wrong one
+        counts in the same lock-out as a wrong code (BF-D47 / BF-D58). Never logged."""
+        if not r.data.get("needs_pass") or self.passphrase is None:
+            return None
+        from trader.passphrase import verify
+
+        if self.locked(self.clock()):
+            return "refused: code actions are locked (too many wrong codes)"
+        if not verify(self.passphrase, str(r.data.get("pp") or "")):
+            self._count(True, r.at, r.login)
+            return "refused: wrong passphrase"
+        return None
+
+    def telegram_gate(self, cmd: str) -> str | None:
+        """BF-D83: Telegram (when on) follows the lock and the passphrase rule: with a
+        passphrase set, re-arming is done in the app only (a passphrase is never typed into a
+        chat); while actions are locked, no code command is taken."""
+        coded = {"/ok", "/veto", "/approve", "/refuse", "/resume", "/continue", "/idmap",
+                 "/idmap_reject"}  # fmt: skip
+        if cmd in coded and self.actions_locked():
+            return "refused: actions are locked in the app; unlock there (Controls > Unlock)"
+        if cmd in ("/resume", "/continue") and self.passphrase is not None:
+            return "refused: with a passphrase set, re-arm in the app (Controls > Resume)"
+        return None
+
     def locked(self, now: datetime) -> datetime | None:
         with self._lock:
             u = self._locked_until
         return u if u is not None and now < u else None
 
-    def _execute(self, r: _Req) -> str:  # noqa: PLR0911, PLR0912 - one branch per kind
+    def _execute(self, r: _Req) -> str:  # noqa: PLR0911, PLR0912, PLR0915 - one branch per kind
         src = f"app:{r.login}"
         if r.kind == "bot":
             if self.bot is None:
@@ -297,6 +351,11 @@ class Control:
             coded = bool(r.data.get("code_bearing"))
             if coded and self.locked(self.clock()):  # checked again where the code is used
                 return "refused: code actions are locked (too many wrong codes)"
+            if coded and self.actions_locked():  # BF-D83: checked again in the main loop
+                return "refused: actions are locked; unlock first (Controls > Unlock)"
+            why = self._verify_pass(r)
+            if why is not None:
+                return why
             before = self.bot.verifier.failures
             ok_before = self.bot.verifier.successes
             m = Incoming(APP_CHAT, str(r.data["command"]), r.at, source="app", login=r.login)
@@ -311,7 +370,11 @@ class Control:
                     self._count(False, r.at, r.login)
             return reply
         if r.kind == "subscribe":
+            if self.actions_locked():
+                return "refused: actions are locked; unlock first (Controls > Unlock)"
             return self._subscribe_exec(r, src)
+        if r.kind in ("here", "lock", "unlock"):
+            return self._lock_exec(r, src)
         if r.kind == "unsubscribe":
             return "ok" if drop_push_sub(self.journal, str(r.data["endpoint"])) else "not found"
         if r.kind == "unsubscribe_all":
@@ -333,6 +396,11 @@ class Control:
             add_inbox(self.journal, self.clock(), "action", "You (app): alert settings changed",
                       json.dumps(r.data), "/settings", src, "off")  # fmt: skip
             return "alert settings saved"
+        if r.kind == "reminders":  # BF-D86: renewal dates (reminders only; nothing trades)
+            set_state(self.journal, "reminders", dict(r.data), r.at)
+            add_inbox(self.journal, self.clock(), "action", "You (app): renewal dates changed",
+                      json.dumps(r.data), "/health", src, "off")  # fmt: skip
+            return "renewal dates saved"
         if r.kind == "costs":  # BF-D76: display only (the scoreboard and Costs screens)
             # BF-D81 (N1): each change applies from the day it was made; history is kept
             st = get_state(self.journal, "running-costs")
@@ -390,8 +458,39 @@ class Control:
                         "here at high priority.", "info", "/settings", src, True)  # fmt: skip
         return "ok"
 
+    def _lock_exec(self, r: _Req, src: str) -> str:
+        """BF-D82 I'm here; BF-D83 Lock (one tap, risk-reducing) and Unlock (code, and the
+        passphrase when set)."""
+        at = self.clock()
+        if r.kind == "here":
+            until = (at + timedelta(days=self.presence_days)).astimezone(ASX_TZ)
+            reply = (f"Thank you: noted. The automatic pause would now start on {until:%a %d %b} "
+                     "if there is no other action before then.")  # fmt: skip
+            add_inbox(self.journal, at, "action", "You (app): I'm here", reply, "/health", src,
+                      "off")  # fmt: skip
+            return reply
+        if r.kind == "lock":
+            set_state(self.journal, LOCK_STATE, {"locked": True, "by": r.login}, at)
+            reply = ("Actions locked: approvals, refusals, re-arming and server jobs are refused "
+                     "until you unlock (Controls > Unlock, with your code"
+                     + (" and passphrase" if self.passphrase else "") + "). Pause, Kill and Stop "
+                     "still work.")  # fmt: skip
+            add_inbox(self.journal, at, "action", "You (app): actions locked", reply, "/act", src,
+                      "off")  # fmt: skip
+            return reply
+        why = self._verify_pass(r) or self._verify_code(r)
+        if why is not None:
+            return why
+        set_state(self.journal, LOCK_STATE, {"locked": False, "by": r.login}, at)
+        add_inbox(self.journal, at, "action", "You (app): actions unlocked",
+                  "Approvals and re-arming work again.", "/act", src, "off")  # fmt: skip
+        return "unlocked: approvals and re-arming work again"
+
     def _server(self, r: _Req, src: str) -> str:
-        why = self._verify_code(r)
+        why = None
+        if self.actions_locked():
+            why = "refused: actions are locked; unlock first (Controls > Unlock)"
+        why = why or self._verify_pass(r) or self._verify_code(r)
         if why is not None:
             reply = why
         elif r.kind == "refresh":
@@ -505,6 +604,8 @@ class Control:
             return self._alerts_post(form, login, hdrs)
         if p == "/act/costs":
             return self._costs_post(form, login, hdrs)
+        if p == "/act/reminders":  # BF-D86
+            return self._reminders_post(form, login, hdrs)
         if p == "/act/backup-key":  # BF-D64: one view of the sealed recovery key
             if self.demo:
                 return self._result(hdrs, "DEMO: there is no key to show.", True)
@@ -640,6 +741,8 @@ class Control:
             return self._html(200, hdrs, "Alerts", self._alerts_page(token), "server")
         if p == "/act/costs":  # BF-D76: the fixed running costs (no code: adds no risk)
             return self._html(200, hdrs, "Running costs", self._costs_page(token), "server")
+        if p == "/act/reminders":  # BF-D86: renewal dates (no code: adds no risk)
+            return self._html(200, hdrs, "Renewal dates", self._reminders_page(token), "server")
         if p == "/act/backup-key":
             return self._html(200, hdrs, "Recovery key", self._key_intro(token), "server")
         if p == "/act/backup-key/view":
@@ -735,6 +838,12 @@ class Control:
                 f'<p class="note">Code actions are locked until {lock.astimezone(ASX_TZ):%H:%M} '
                 "(too many wrong codes). Pause, Kill and Stop still work.</p>"
             )
+        locked = self.actions_locked()
+        if locked:  # BF-D83
+            out.append(
+                f'<a class="note bad notelink" href="/act/confirm?a=unlock">{icon("lock")}'
+                "Actions are locked: approvals and re-arming are refused. Tap to unlock.</a>"
+            )
 
         def row(href: str, ic: str, label: str, desc: str, cls: str = "") -> str:
             return (
@@ -761,7 +870,7 @@ class Control:
             '</span><span class="md">Shows the safety level</span></span></button>',
         )  # fmt: skip
         out.append(section(
-            "Re-arm · needs your code",
+            "Re-arm · needs your code" + (" and passphrase" if self.passphrase else ""),
             '<ul class="menu">'
             + row("/act/confirm?a=re", "play", "Resume", "Back to normal trading")
             + row("/act/confirm?a=co", "check", "Continue (loss rule)",
@@ -778,6 +887,20 @@ class Control:
         out.append(section(
             "Waiting for approval",
             f'<ul class="menu">{rows}</ul>' if rows else '<p class="muted">Nothing waiting.</p>',
+        ))  # fmt: skip
+        lock_row = (
+            row("/act/confirm?a=unlock", "lock", "Unlock actions",
+                "Needs your code" + (" and passphrase" if self.passphrase else ""))
+            if locked else
+            row("/act/confirm?a=lock", "lock", "Lock actions",
+                "One tap: approvals and re-arming need Unlock first")
+        )  # fmt: skip
+        out.append(section(
+            "Phone safety",
+            '<ul class="menu">' + lock_row
+            + row("/act/confirm?a=here", "user-check", "I'm here",
+                  f"Resets the {self.presence_days}-day automatic pause")
+            + "</ul>",
         ))  # fmt: skip
         out.append(section(
             "More",
@@ -858,6 +981,23 @@ class Control:
             return None, "", SERVER_ACTIONS[act]
         if a == "refresh":
             return None, "", "refresh the price store now (the day's EODHD bulk file)"
+        if a == "here":  # BF-D82
+            return (
+                None,
+                "",
+                (
+                    f"tell the server you are here (the automatic pause after "
+                    f"{self.presence_days} days without an owner action starts again)"
+                ),
+            )
+        if a == "lock":  # BF-D83
+            return None, "", ("lock approvals, refusals, re-arming and server jobs until you "
+                              "unlock with your code" + (" and passphrase" if self.passphrase
+                                                         else ""))  # fmt: skip
+        if a == "unlock":
+            if not self.actions_locked():
+                return "the actions are not locked", "", ""
+            return None, "", "unlock approvals and re-arming"
         args = [x for x in (qs.get("b", ""), qs.get("n", "")) if x]
         if a in ("idmap", "idmap_reject"):
             args = [x for x in (qs.get("old", ""), qs.get("new", ""), qs.get("ratio", "")) if x]
@@ -907,7 +1047,7 @@ class Control:
                 return dl
         return ""
 
-    def _confirm(self, qs: Mapping[str, str], token: str) -> str:  # noqa: PLR0912
+    def _confirm(self, qs: Mapping[str, str], token: str) -> str:  # noqa: PLR0911, PLR0912, PLR0915
         now = self.clock()
         a = qs.get("a", "")
         why, _cmd, what = self._preview(qs, now)
@@ -982,6 +1122,14 @@ class Control:
                 f"<p>Code actions are locked until {lock.astimezone(ASX_TZ):%H:%M} "
                 "(too many wrong codes).</p>",
             )
+        if a != "unlock" and self.actions_locked():  # BF-D83
+            return head + section(
+                "Actions are locked",
+                "<p>You locked approvals, re-arming and server jobs. Unlock them first (needs "
+                "your code" + (" and passphrase" if self.passphrase else "") + "). Pause, Kill "
+                "and Stop work without unlocking.</p>"
+                '<a class="btn wide" href="/act/confirm?a=unlock">Unlock</a>' + cancel,
+            )
         extra = self._update_html(a[4:], now) if a.startswith("srv:") else ""
         if (
             a.startswith("srv:")
@@ -1020,7 +1168,8 @@ class Control:
             extra + '<label class="flabel" for="code">6-digit code from your authenticator</label>'
             '<input class="code" id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" '
             'maxlength="6" autocomplete="one-time-code" required autofocus placeholder="••••••">'
-            f'<button class="{cls}" style="margin-top:12px">{e(go)}</button>'
+            + (PP_INPUT_HTML if self.passphrase is not None and a in PASS_ACTS else "")
+            + f'<button class="{cls}" style="margin-top:12px">{e(go)}</button>'
         )
         return head + section("", self._form(token, fields, inner) + cancel + after)
 
@@ -1037,7 +1186,7 @@ class Control:
             return False
         return bool(self.update_state().get("strategy", True))
 
-    def _update_html(self, act: str, now: datetime) -> str:
+    def _update_html(self, act: str, now: datetime) -> str:  # noqa: PLR0912 - one line per fact
         """BF-D45: what an update / rollback changes and when it takes effect."""
         from trader.strategy_version import update_block
 
@@ -1056,6 +1205,12 @@ class Control:
                     rows.append(f"<p class='small'><b>{lab}:</b> {e(notes[k])}</p>")
             if u.get("reasons"):
                 rows.append("<p class='small muted'>" + e("; ".join(u["reasons"][:6])) + "</p>")
+            sig = str(u.get("signed") or "")  # BF-D84: checked on the server, root-only key
+            if sig == "good":
+                rows.append("<p class='small'><b>Signed</b> by the engineer's key.</p>")
+            elif sig == "bad":
+                rows.append("<p class='warn'><b>Not signed by the engineer's key.</b> Approve only "
+                            "if your engineer confirms this update.</p>")  # fmt: skip
         else:
             prev = str(u.get("previous") or "")
             rows.append(
@@ -1136,7 +1291,7 @@ class Control:
         )
 
     # ------------------------------------------------------------ POST actions
-    def _do(  # noqa: PLR0911 - one refusal per rule
+    def _do(  # noqa: PLR0911, PLR0912 - one refusal per rule
         self, form: Mapping[str, str], login: str, hdrs: dict[str, str]
     ) -> tuple[int, dict[str, str], bytes]:
         now = self.clock()
@@ -1154,15 +1309,21 @@ class Control:
         if nocode_srv and form.get("confirm") != "yes":
             return self._result(hdrs, "Not done: it needs the Yes button of its confirm screen.",
                                 False)  # fmt: skip
-        needs_code = a in CODE_ACTS or (a.startswith("srv:") and not nocode_srv) or a == "refresh"
+        needs_code = (a in CODE_ACTS or (a.startswith("srv:") and not nocode_srv)
+                      or a in ("refresh", "unlock"))  # fmt: skip
         code = form.get("code", "").strip()
         if needs_code:
             if self.locked(now):
                 return self._result(
                     hdrs, "Not done: code actions are locked (too many wrong codes).", False
                 )
+            if a != "unlock" and self.actions_locked():  # BF-D83
+                return self._result(hdrs, "Not done: actions are locked. Unlock first: Controls "
+                                    "> Unlock, with your code.", False)  # fmt: skip
             if not (len(code) == 6 and code.isdigit()):
                 return self._result(hdrs, "Not done: enter your 6-digit code.", False)
+        if self.passphrase is not None and a in PASS_ACTS and not form.get("pp", ""):
+            return self._result(hdrs, "Not done: enter your passphrase as well.", False)
         if self.demo:
             return self._result(
                 hdrs, f"DEMO: nothing was done. In the real app this would {what}.", True
@@ -1174,6 +1335,9 @@ class Control:
         if a == "cancel":
             reply = self._submit(_Req("cancel", login, now, {"job": form.get("job", "0")}))
             return self._result(hdrs, reply or "queued", bool(reply and "cancelled" in reply))
+        if a in ("here", "lock"):  # BF-D82 / BF-D83: one tap
+            reply = self._submit(_Req(a, login, now, {"shown": what}))
+            return self._result(hdrs, reply or "queued", bool(reply))
         if needs_code and not self._claim_code_slot():
             return self._result(hdrs, "Not done: another code request is still being checked; "
                                 "wait for its answer.", False)  # fmt: skip
@@ -1205,7 +1369,13 @@ class Control:
         self, a: str, form: Mapping[str, str], login: str, hdrs: dict[str, str], now: datetime,
         cmd: str, what: str, needs_code: bool, code: str,
     ) -> tuple[int, dict[str, str], bytes]:  # fmt: skip
-        if a.startswith("srv:") or a == "refresh":
+        pp = form.get("pp", "") if self.passphrase is not None and a in PASS_ACTS else ""
+        need_pp = self.passphrase is not None and a in PASS_ACTS
+        if a == "unlock":
+            data = {"code": code, "pp": pp, "needs_pass": need_pp, "shown": what,
+                    "code_bearing": True}  # fmt: skip
+            reply = self._submit(_Req("unlock", login, now, data))
+        elif a.startswith("srv:") or a == "refresh":
             from trader.strategy_version import update_block
 
             act = a[4:] if a.startswith("srv:") else "refresh"
@@ -1239,11 +1409,13 @@ class Control:
                     flags |= FORCE_MIGRATION
             kind = "refresh" if a == "refresh" else "server"
             data = {"action": act, "force": flags, "code": code, "shown": what,
-                    "commit": commit, "code_bearing": True}  # fmt: skip
+                    "commit": commit, "code_bearing": True, "pp": pp,
+                    "needs_pass": need_pp}  # fmt: skip
             reply = self._submit(_Req(kind, login, now, data))
         else:
             command = f"{cmd} {code}" if needs_code else cmd
-            data = {"command": command, "shown": what, "code_bearing": needs_code}
+            data = {"command": command, "shown": what, "code_bearing": needs_code, "pp": pp,
+                    "needs_pass": need_pp}  # fmt: skip
             reply = self._submit(_Req("bot", login, now, data))
         if reply is None:
             return self._result(hdrs, "Sent to the trader, which is busy with a job; the answer "
@@ -1345,6 +1517,49 @@ class Control:
         r = self._submit(_Req("costs", login, self.clock(), vals))
         return self._result(hdrs, r or "queued", True)
 
+    def _reminders_page(self, token: str) -> str:
+        """BF-D86: the renewal dates (the Flex token, cards) for Health and reminders."""
+        from trader.presence import REMINDERS, reminder_dates
+
+        cur = {} if self.demo else reminder_dates(self.journal)
+        fields = "".join(
+            f'<label class="flabel" for="r-{k}">{e(lab)}</label>'
+            f'<input class="field" id="r-{k}" name="{k}" type="date" value="{e(cur.get(k, ""))}">'
+            for k, lab in REMINDERS
+        )
+        return (
+            '<a class="back" href="/health" data-nav>' + icon("chevron-left") + "Health</a>"
+            "<h1>Renewal dates</h1>"
+            + section("When things run out", (
+                "<p class='small'>The app reminds you 30 days, 7 days and 1 day before each date. "
+                "Leave a box empty for no reminder. No code is needed: nothing trades on these.</p>"
+                f'<form method="post" action="/act/reminders"><input type="hidden" name="csrf" '
+                f'value="{e(token)}">{fields}<button class="btn wide" style="margin-top:16px">'
+                "Save</button></form>"))
+        )  # fmt: skip
+
+    def _reminders_post(
+        self, form: Mapping[str, str], login: str, hdrs: dict[str, str]
+    ) -> tuple[int, dict[str, str], bytes]:
+        from trader.presence import REMINDERS
+
+        vals: dict[str, str] = {}
+        for k, lab in REMINDERS:
+            raw = (form.get(k) or "").strip()
+            if not raw:
+                continue
+            try:
+                d = date.fromisoformat(raw)
+            except ValueError:
+                return self._result(hdrs, f"Not saved: {lab} is not a date.", False)
+            if not date(2020, 1, 1) <= d <= date(2100, 12, 31):
+                return self._result(hdrs, f"Not saved: {lab} is out of range.", False)
+            vals[k] = d.isoformat()
+        if self.demo:
+            return self._result(hdrs, "DEMO: renewal dates not saved.", True)
+        r = self._submit(_Req("reminders", login, self.clock(), vals))
+        return self._result(hdrs, r or "queued", True)
+
     def _alerts_post(
         self, form: Mapping[str, str], login: str, hdrs: dict[str, str]
     ) -> tuple[int, dict[str, str], bytes]:
@@ -1383,6 +1598,14 @@ class Control:
         status = 200 if r == "ok" or r is None else 403
         return status, hdrs, (r or "queued").encode()
 
+
+# BF-D83: the memorised passphrase (never autofilled or stored by the browser)
+PP_INPUT_HTML = (  # the HTML of the input field, not a password
+    '<label class="flabel" for="pp" style="margin-top:12px">Your passphrase (the one you keep '
+    "in your head)</label>"
+    '<input class="field" id="pp" name="pp" type="password" autocomplete="off" '
+    'autocapitalize="off" spellcheck="false" maxlength="200" required>'
+)
 
 ACTIONS_OFF = (
     "<p>Viewing works, but approving, pausing and the other actions are switched off "

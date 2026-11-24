@@ -387,6 +387,10 @@ class ApprovalBot:
     code_window_s: int = 180  # BF-D38: a code completes a tap within 3 minutes
     confirm_window_s: int = 60  # BF-D38: Kill / Stop need a second tap within 1 minute
     allowed_logins: frozenset[str] = frozenset()  # BF-D39: app actions (Tailscale log-ins)
+    # BF-D83: Telegram follows the app's Lock and passphrase rule (Control.telegram_gate)
+    gate: Callable[[str], str | None] | None = None
+    # BF-D82: a Telegram command the bot accepted is an owner action (the app records its own)
+    on_owner: Callable[[datetime, str], None] | None = None
     _pending: dict[int, _Pending] = field(default_factory=dict, init=False, repr=False)
     _confirm: dict[int, tuple[str, datetime]] = field(default_factory=dict, init=False, repr=False)
 
@@ -643,7 +647,27 @@ class ApprovalBot:
             self._quiet(lambda: bt.edit_text(m.chat_id, mid, f"{body}\n\nDONE: {reply}"))
         return reply
 
-    def _dispatch(self, m: Incoming) -> str:  # noqa: PLR0911, PLR0912 - one return per command
+    def _dispatch(self, m: Incoming) -> str:
+        """BF-D82 / BF-D83: the Telegram gate first, then the command; an accepted Telegram
+        command counts as an owner action."""
+        parts = m.text.strip().split()
+        cmd = parts[0].lower().split("@")[0] if parts else ""
+        if m.source != "app" and self.gate is not None and cmd:
+            why = self.gate(cmd)
+            if why is not None:
+                return why
+        reply = self._command(m)
+        if (
+            m.source != "app"
+            and self.on_owner is not None
+            and cmd
+            and not reply.startswith(("refused", "unknown", "empty", "usage"))
+        ):
+            with contextlib.suppress(Exception):
+                self.on_owner(m.at, cmd)
+        return reply
+
+    def _command(self, m: Incoming) -> str:  # noqa: PLR0911, PLR0912 - one return per command
         parts = m.text.strip().split()
         if not parts:
             return "empty command"

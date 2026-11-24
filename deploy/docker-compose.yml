@@ -35,7 +35,7 @@ services:
     restart: "no"
     secrets: [tws_password, db_password, totp_seed, eodhd_api_token, healthchecks_url,
               ibkr_flex_token, ibkr_flex_query_id, vapid_private_key, app_proxy_key,
-              worker_job_key, db_dashboard_password]
+              worker_job_key, db_dashboard_password, app_passphrase]
     volumes:
       - ../config:/app/config:ro  # notify.channel decides which secrets are needed (BF-D40)
     command: ["trader-bf", "check-secrets", "--all"]
@@ -99,7 +99,8 @@ services:
               ibkr_flex_query_id,  # BF-D27: Flex download (read at each pull)
               vapid_private_key,   # BF-D40: Web Push to the phone app
               app_proxy_key,       # BF-D46: checks the dashboard's signature on app actions
-              worker_job_key]      # BF-D48: signs server jobs for the root host worker
+              worker_job_key,      # BF-D48: signs server jobs for the root host worker
+              app_passphrase]      # BF-D83: hash of the memorised passphrase ("none" = not set)
     volumes:
       - ../config:/app/config:ro
       # BF-D31: writable, the daily refresh appends the EODHD bulk files the decision reads
@@ -227,3 +228,4 @@ secrets:
   app_proxy_key: {file: ./secrets/app_proxy_key}            # BF-D46: made by `bigwins update`
   worker_job_key: {file: ./secrets/worker_job_key}          # BF-D48: made by `bigwins update`
   db_dashboard_password: {file: ./secrets/db_dashboard_password}  # BF-D52: made by `bigwins update`
+  app_passphrase: {file: ./secrets/app_passphrase}          # BF-D83: "none" until `bigwins secret app_passphrase`

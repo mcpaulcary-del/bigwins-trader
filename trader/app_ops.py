@@ -281,6 +281,8 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
         )
         or "<li class='muted'>No journal yet.</li>"
     )
+    parts.append(presence_section(v, x))  # BF-D82
+    parts.append(phone_safety_section(x))  # BF-D83 / BF-D84
     parts.append(section("Scheduled jobs", f'<ul class="list">{rows}</ul><p class="caption">A late '
                          "or failed job sends one alert to your phone per incident.</p>"))  # fmt: skip
     # disk
@@ -359,8 +361,14 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
            + "</li>" if host.get("daily_ping_set")
            else "<li>Daily-cycle check: <b>not set up</b> <span class='sub'>(optional, see the "
            "guide, part C5)</span></li>")
+        + ("<li>Owner-presence check (second contact): <b>set up</b>"
+           + (f" · last ping {e(day(host.get('presence_ping')))}" if host.get("presence_ping") else "")
+           + "</li>" if host.get("presence_ping_set")
+           else "<li>Owner-presence check (second contact): <b>not set up</b> <span class='sub'>"
+           "(before real money; guide F8)</span></li>")
         + "</ul><p class='caption'>If the server goes silent, healthchecks.io tells your phone; "
           "the app cannot, because it runs on the same server.</p>")))  # fmt: skip
+    parts.append(renewals_section(x, v.now.astimezone(ASX_TZ).date()))  # BF-D86
     # versions
     run = x.running
     parts.append(section("Versions", (
@@ -371,6 +379,100 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
         f"<tr><td class='sub'>Strategy id</td><td class='r mono'>{e(run.get('id', '–'))}</td></tr>"
         "</tbody></table>")))  # fmt: skip
     return shell(v, x, "Health", "".join(parts), "server")
+
+
+# ---------------------------------------------------------------- disaster recovery (BF-D82..D86)
+
+
+def presence_section(v: Any, x: Extras) -> str:
+    """BF-D82 (owner decision 24 Nov 2026, option b): days since the last owner action,
+    the day buying would pause, the I'm-here button."""
+    p = x.presence
+    paper = " <span class='pill amber'>paper</span>" if not getattr(v, "live", False) else ""
+    if p is None or not p.tracking or p.last is None or p.pause_at is None:
+        body = ("<p class='muted'>Starts when the paper trader runs: after "
+                f"{p.days if p is not None else 14} days without any action of yours in the app, "
+                "buying pauses by itself and your second contact is told.</p>")  # fmt: skip
+        return section("You · owner presence" + paper, body)
+    now = v.now
+    n = p.days_since(now)
+    pause = p.pause_at.astimezone(ASX_TZ)
+    past = now >= p.pause_at
+    warn = p.warn_at is not None and now >= p.warn_at
+    tone_ = "bad" if past else ("wait" if warn else "ok")
+    head = (f'<p class="statusline"><span class="sd {tone_}"></span><b class="num">{n}</b> '
+            f"day{'s' if n != 1 else ''} since your last action <span class='sub'>({e(p.what)}, "
+            f"{when(p.last)})</span></p>")  # fmt: skip
+    if past:
+        msg = (f"<p class='note bad'>No action for {p.days} days: buying is paused (HALTED_BUYS) and "
+               "your second contact was told. Nothing is sold automatically. To re-arm: Controls &gt; "
+               "Resume with your code.</p>")  # fmt: skip
+    else:
+        msg = (f"<p>Buying pauses by itself on <b>{pause:%a %d %b %Y}</b> ({pause:%H:%M}) if you "
+               f"do nothing in the app before then; your second contact is told the next day. A "
+               f"warning comes on day {p.warn_days}.</p>")  # fmt: skip
+    btn = ('<a class="btn wide" href="/act/confirm?a=here">' + icon("user-check") + "I'm here</a>"
+           if x.can_act or getattr(v, "demo", False) else "")  # fmt: skip
+    cap = ("<p class='caption'>Counts: any action you take in the app (approve, refuse, Pause, "
+           "Status, settings, I'm here). Opening a page does not count. "
+           + ("Paper account: active now as practice for the real-money rule." if paper else "")
+           + "</p>")  # fmt: skip
+    return section("You · owner presence" + paper, head + msg + btn + cap)
+
+
+def phone_safety_section(x: Extras) -> str:
+    """BF-D83 the passphrase and Lock actions; BF-D84 commit signatures."""
+    host = x.host[0] if x.host else {}
+    items = []
+    if x.passphrase_set is None:
+        items.append("<li>Passphrase: <b>not known yet</b> <span class='sub'>(shown once the "
+                     "trader runs)</span></li>")  # fmt: skip
+    elif x.passphrase_set:
+        items.append("<li>Passphrase: <span class='pill ok'>set</span> <span class='sub'>asked for "
+                     "re-arming, updates, rollback, the backup key, Claude remote</span></li>")  # fmt: skip
+    else:
+        items.append("<li class='warn'>Passphrase: <span class='pill bad'>not set</span><div class="
+                     "'sub'>Someone with your unlocked phone has both your log-in and your codes. A "
+                     "passphrase you keep in your head stops them re-arming or updating. On the "
+                     "server: <code>bigwins secret app_passphrase</code> (needed before real "
+                     "money).</div></li>")  # fmt: skip
+    items.append("<li>Actions: " + ("<span class='pill bad'>locked</span> <a href='/act/confirm?a=unlock'>"
+                 "Unlock</a>" if x.actions_locked else "<span class='pill ok'>unlocked</span> <a "
+                 "href='/act/confirm?a=lock'>Lock now</a> <span class='sub'>(one tap; Pause, Kill "
+                 "and Stop always work)</span>") + "</li>")  # fmt: skip
+    sm = str(host.get("signing") or "")
+    sig = {"enforce": ("ok", "enforced: unsigned updates are refused"),
+           "warn": ("amber", "warn only: unsigned updates are applied with a warning"),
+           "nokey": ("amber", "no signing key on the server yet (before real money)")}.get(sm)  # fmt: skip
+    if sig:
+        items.append(f"<li>Update signatures: <span class='pill {sig[0]}'>{e(sm)}</span> "
+                     f"<span class='sub'>{e(sig[1])}</span></li>")  # fmt: skip
+    cr = str(host.get("claude_remote") or "")
+    items.append("<li>Claude remote control: " + (f"<b>on</b> since {e(cr)} <span class='sub'>(stops "
+                 "by itself, 2 hours by default)</span>" if cr else "<b>off</b>") + "</li>")  # fmt: skip
+    return section("Phone and update safety", f"<ul class='list'>{''.join(items)}</ul>")
+
+
+def renewals_section(x: Extras, today: date) -> str:
+    """BF-D86: the dates the owner keeps here (edited like the running costs)."""
+    from trader.presence import REMINDERS
+
+    rows = []
+    for k, label in REMINDERS:
+        d = x.reminders.get(k)
+        if d is None:
+            rows.append(f"<li>{e(label)}: <span class='sub'>no date yet</span></li>")
+            continue
+        left = (d - today).days
+        pill = ("bad", "expired") if left < 0 else ("bad", f"{left} days") if left <= 7 else (
+            ("amber", f"{left} days") if left <= 30 else ("ok", f"{left} days"))  # fmt: skip
+        rows.append(f"<li>{e(label)}: <b>{d:%d %b %Y}</b> <span class='pill {pill[0]}'>"
+                    f"{e(pill[1])}</span></li>")  # fmt: skip
+    return section("Renewal dates", (
+        f"<ul class='list'>{''.join(rows)}</ul>"
+        '<a class="btn sec wide" href="/act/reminders">Edit the dates</a>'
+        "<p class='caption'>You get a reminder 30 days, 7 days and 1 day before each date. Copy "
+        "them onto the emergency card for your second contact too.</p>"))  # fmt: skip
 
 
 # ---------------------------------------------------------------- Costs (BF-D76)

@@ -372,7 +372,10 @@ def _app_wiring(
             public_host=cfg.app.public_host,
             worker_key=key_bytes(read_secret("worker_job_key")),  # BF-D48
             live=cfg.mode != "paper",  # BF-D50
+            passphrase=_passphrase(j),  # BF-D83
+            presence_days=cfg.app.presence_days,  # BF-D82
         )  # fmt: skip
+        app.bot.gate = ctl.telegram_gate  # BF-D83: Telegram follows the lock / passphrase rule
         start_control_when_resolvable(ctl, cfg.app.control_bind_host, cfg.app.control_port)
         hooks.append(lambda now: ctl.process())
         hooks.append(lambda now: tell_server_jobs(j, notifier))
@@ -385,7 +388,40 @@ def _app_wiring(
     hooks.append(hb.tick)
     if notifier is not None:  # BF-D77 missed-job alarm, BF-D79 weekly digest
         hooks.append(ops_hooks(cfg, j, app, notifier).tick)
+    hooks.append(presence_hook(cfg, j, app, notifier).tick)  # BF-D82, BF-D84, BF-D86
     return hooks, sleep
+
+
+def presence_hook(cfg: BfastConfig, j: Journal, app: BfApp, notifier: AppNotifier | None) -> Any:
+    """BF-D82: the incapacity default (owner decision 24 Nov 2026, option b), the renewal
+    reminders and the new-code alert. A Telegram command counts as an owner action."""
+    from trader.presence import PresenceHook, record_action
+
+    app.bot.on_owner = lambda at, cmd: record_action(j, at, f"Telegram {cmd}")
+
+    def say(text: str, kind: str, link: str) -> None:
+        if notifier is not None:
+            notifier.notify(text, kind, link)
+        else:
+            app.say(text)
+
+    return PresenceHook(j, say, cfg.app.presence_days, cfg.app.presence_warn_days,
+                        paper=cfg.mode == "paper")  # fmt: skip
+
+
+def _passphrase(j: Journal) -> str | None:
+    """BF-D83: the stored passphrase hash (None until the owner sets it); the app shows
+    only whether it is set (Health nags while it is not)."""
+    from trader.app_store import set_state
+    from trader.passphrase import stored_hash
+    from trader.secrets import SecretError, read_secret
+
+    try:
+        h = stored_hash(read_secret("app_passphrase"))
+    except SecretError:
+        h = None
+    set_state(j, "app-passphrase", {"set": h is not None}, datetime.now(ASX_TZ))
+    return h
 
 
 def ops_hooks(cfg: BfastConfig, j: Journal, app: BfApp, notifier: AppNotifier) -> Any:
@@ -638,6 +674,13 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912,
         ok_day = cycle_ok_day(j, book, _sessions(now.date()), now)
         if ok_day is not None:
             print(f"cycle-ok {ok_day}")
+        # BF-D82: the owner acted within app.presence_days (or the clock has not started):
+        # the worker pings the optional healthchecks_presence_url once a day
+        from trader.presence import status as presence_status
+
+        days = load_bfast_config(args.config).app.presence_days if args.config.is_file() else 14
+        if presence_status(j, days).ok(now):
+            print("presence-ok")
         return 0
     if args.op == "info-archive":  # BF-D78: the host's info-archive result
         from trader.ops_hooks import record_archive
@@ -704,6 +747,10 @@ def update_info(u: dict[str, object], old_config: str | None) -> dict[str, objec
         "previous": h(u.get("previous")), "strategy": cls["strategy"], "reasons": cls["reasons"],
         "previous_migrations": bool(u.get("previous_migrations")),
         "ci": str(u.get("ci")) if u.get("ci") in ("green", "red", "unknown") else "unknown",
+        # BF-D84: the remote commit's signature (git verify-commit on the server) and how
+        # long the server has known it (the live minimum age is checked by the worker)
+        "signed": str(u.get("signed")) if u.get("signed") in ("good", "bad", "none") else "unknown",
+        "seen_h": int(str(u.get("seen_h"))) if str(u.get("seen_h") or "").isdigit() else None,
         "files": files[:40], "subject": clean_line(str(u.get("subject") or ""))[:200],
         "notes": {k: clean_line(str(v))[:600] for k, v in notes[0].items()} if notes else {},
     }  # fmt: skip
@@ -894,6 +941,8 @@ def _ops_sources(cfg: BfastConfig) -> dict[str, Any]:
         "info_dir": cfg.info_archive.app_dir,
         "info_enabled": cfg.info_archive.archive_enabled,
         "eodhd_budget": sr.calls_per_day if sr is not None else 100000,
+        "presence_days": cfg.app.presence_days,  # BF-D82
+        "presence_warn_days": cfg.app.presence_warn_days,
     }
 
 
@@ -921,8 +970,37 @@ def _checklist(cfg: BfastConfig, j: Journal) -> list[tuple[str, bool | None]]:
         ("Paper account id set", cfg.broker.account_id is not None),
         ("Trader has run at least one trading day", started),
         ("Phone app can act (allowed log-in set)", bool(cfg.app.allowed_logins)),
+        *_dr_checklist(j),  # BF-D82..BF-D86: the disaster-recovery items the app can see
         ("Go-live checklist signed (part E)", None),
     ]
+
+
+def _dr_checklist(j: Journal) -> list[tuple[str, bool | None]]:
+    """BF-D82..BF-D86 (GO_LIVE_GUIDE E2): what the app can see of the DR items; the rest
+    (second-server drill, break-glass password, IBKR trading-only user, Telegram token
+    revoked) is the owner's own tick."""
+    from trader.app_store import get_state
+
+    def st(key: str) -> dict[str, Any]:
+        try:
+            got = get_state(j, key) if _has_tables(j) else None
+        except Exception:
+            got = None
+        return dict(got[0]) if got and isinstance(got[0], dict) else {}
+
+    pp, host = st("app-passphrase"), st("host-status")
+    return [
+        ("App passphrase set (bigwins secret app_passphrase)",
+         bool(pp.get("set")) if pp else None),
+        ("Update signatures enforced (bigwins signing enforce)",
+         host.get("signing") == "enforce" if host.get("signing") else None),
+        ("Owner-presence check set up (second contact told)",
+         bool(host.get("presence_ping_set")) if host else None),
+        ("Second-server restore drill done and timed (part F4)", None),
+        ("Break-glass root password tested in the BinaryLane console (F3)", None),
+        ("IBKR trading-only user for the gateway (F7)", None),
+        ("Old Telegram bot token revoked", None),
+    ]  # fmt: skip
 
 
 def _has_tables(j: Journal) -> bool:

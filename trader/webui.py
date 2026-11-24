@@ -64,6 +64,9 @@ ICONS = {
     "activity": '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
     "swap": '<path d="M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/>',
     "chart": '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
+    # BF-D82 / BF-D83: Lock actions, I'm here
+    "lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    "user-check": '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M16 11l2 2 4-4"/>',
 }
 
 CSP = (

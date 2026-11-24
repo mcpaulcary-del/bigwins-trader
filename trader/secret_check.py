@@ -35,8 +35,9 @@ BASE_SECRETS: tuple[str, ...] = (
 def stack_secrets(channel: str = "app") -> tuple[str, ...]:
     """Every secret file the stack needs for ``notify.channel`` = ``channel``."""
     extra: list[str] = []
-    if channel in ("app", "both"):  # BF-D40, BF-D46, BF-D48: all three made by bigwins
-        extra += ["vapid_private_key", "app_proxy_key", "worker_job_key"]
+    if channel in ("app", "both"):  # BF-D40, BF-D46, BF-D48: all made by bigwins
+        # BF-D83: app_passphrase holds "none" (made by bigwins) until the owner sets it
+        extra += ["vapid_private_key", "app_proxy_key", "worker_job_key", "app_passphrase"]
     if channel in ("telegram", "both"):
         extra.append("telegram_bot_token")
     return (*BASE_SECRETS, *extra)

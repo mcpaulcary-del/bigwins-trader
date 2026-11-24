@@ -235,6 +235,8 @@ class Sources:
     info_dir: Path | None = None  # the private info archive (read-only)
     info_enabled: bool = False
     eodhd_budget: int = 100000
+    presence_days: int = 14  # BF-D82: app.presence_days
+    presence_warn_days: int = 10
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -824,6 +826,11 @@ class Dashboard:
         ) if _has_journal(j) else Extras(viewer=viewer, action_logins=self.action_logins,
                                          channel=self.channel)  # fmt: skip
         x.update_mode = self.update_mode
+        if x.presence is not None:  # BF-D82: the configured days
+            from dataclasses import replace as _replace
+
+            warn = min(src.presence_warn_days, src.presence_days - 1)
+            x.presence = _replace(x.presence, days=src.presence_days, warn_days=warn)
         x.names = self.names(v)
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
