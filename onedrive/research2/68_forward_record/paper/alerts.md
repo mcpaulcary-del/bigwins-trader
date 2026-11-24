@@ -57,3 +57,12 @@
 - 2026-11-23 23:20Z HOLDING MOVE TEA +9.9% on day (quote 8.36, last close 7.61)
 - 2026-11-23 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL', 'JHX'] leaving ['DDR', 'TWE']
 - 2026-11-23 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['BHP', 'MMS', 'NXL', 'SHL', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']
+- 2026-11-24 01:20Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-24 01:20Z HOLDING MOVE TEA +8.4% on day (quote 8.25, last close 7.61)
+- 2026-11-24 01:20Z HOLDING MOVE VMM +9.9% on day (quote 2.78, last close 2.53)
+- 2026-11-24 01:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['JHX', 'RWC'] leaving ['DDR', 'TWE']
+- 2026-11-24 01:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'MMS', 'NXL', 'SHL', 'SHV', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']
+- 2026-11-24 03:20Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-24 03:20Z HOLDING MOVE TEA +10.5% on day (quote 8.41, last close 7.61)
+- 2026-11-24 03:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RWC'] leaving ['DDR', 'TWE']
+- 2026-11-24 03:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'MMS', 'SHL', 'SHV', 'SIQ', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']
