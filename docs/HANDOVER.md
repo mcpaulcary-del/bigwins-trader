@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 24 Nov 2026)
+# HANDOVER — read this first (state on 24 Nov 2026, disaster-recovery build BF-D82..D87)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -55,6 +55,14 @@ about the end of February 2027). The owner approves every order.
   cut-off; Kill/Stop need confirm; only the owner's Tailscale login may act; lock-outs after
   wrong codes; root host worker runs only whitelisted, signed, commit-pinned jobs.
   Reviewed twice independently (BF-D46..BF-D61).
+- **Disaster recovery (24 Nov 2026, BF-D82..BF-D87)**: owner decision, option (b): after
+  14 days without an owner action buying pauses (HALTED_BUYS, never lowers a stricter
+  level; nothing sold) and a second contact is emailed by healthchecks.io ("owner
+  presence" check, secret `healthchecks_presence_url`); I'm here button; a memorised
+  passphrase (`app_passphrase`) for re-arm / update / rollback / backup key / Claude
+  remote; one-tap Lock actions; `bigwins new-totp`; update signatures checked on the
+  server (warn until `bigwins signing enforce`); Claude remote stops after 2 hours.
+  Emergencies: GO_LIVE_GUIDE part F; printable card `docs/EMERGENCY_CARD.md`.
 - Strategy updates: `update_mode: immediate` while paper (owner wants fast iteration); every
   decision is stamped with its version; rollback in the app. **Research must still pass the full
   tests before a change reaches the app** — fast mode speeds applying, not testing.
@@ -96,7 +104,13 @@ Real money around March 2027.
    in A200" comparison include `costs.fixed_aud_per_year` (default A$600).
 6. **The research record moves to the server after 30 Nov 2026** (the coordinator does it);
    the golden checks of each update need it there (BF-D71).
-7. Owner to-dos: 2-step verification on Google/GitHub/BinaryLane/IBKR/Claude/EODHD; authenticator
+7. **Disaster-recovery set-up from the phone (GO_LIVE_GUIDE F0)**: passphrase, the
+   owner-presence check with the second contact, Tailscale device approval and SSH limit
+   (F10), break-glass root password tested (F3), `bigwins offsite2`, renewal dates in
+   Health, the emergency card filled in by hand. Before real money also: signing enforced
+   (F5b, needs the engineer's key), the timed second-server drill from the phone (F4), an
+   IBKR trading-only gateway user (F7). Then deploy with C7 step 8.
+   Owner to-dos: 2-step verification on Google/GitHub/BinaryLane/IBKR/Claude/EODHD; authenticator
    QR on the laptop with a backup of the seed; rotate the Telegram token or delete the bot;
    TFN to IBKR; IBKR mobile app as the emergency fallback; delete the old `bigwins-fast-wip`
    remote branch.
