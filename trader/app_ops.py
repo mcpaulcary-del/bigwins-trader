@@ -31,7 +31,7 @@ from trader.app_pages import (
 )
 from trader.app_viz import spark
 from trader.constants import ASX_TZ
-from trader.webui import backlink, e, icon, plural, section, stat
+from trader.webui import backlink, chev, e, icon, plural, section, stat
 
 TWO_GB = 2 * 1024**3
 
@@ -52,6 +52,8 @@ class Ops:
     tax_note: str = ""
     store_days: list[date] = field(default_factory=list)
     shared: ov.Score | None = None  # the one scoreboard the digest uses too (BF-D81 M4)
+    know: str = ""  # BF-D89: Home's "What we know" card
+    research_status: Any = None  # BF-D89: app_research.Status for Health
 
 
 _TAX: dict[str, tuple[float, tuple[Decimal | None, str]]] = {}
@@ -93,6 +95,10 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
     o.fixed = ov.fixed_costs(j if journal_ok else None, getattr(src, "fixed_items", None),
                              Decimal(str(getattr(src, "fixed_total", 600))))  # fmt: skip
     o.research = safe(lambda: ov.research_lines(getattr(src, "scorecard", None), today), None)
+    from trader import app_research as ar
+
+    o.know = safe(lambda: ar.home_card_for(src, v), "")
+    o.research_status = safe(lambda: ar.status_for(src, v), None)
     o.archive = safe(lambda: iv.status(o.info_dir, sess, today, v.now), iv.ArchiveStatus())
     if src.store_root is not None:
         files: list[Path] = safe(
@@ -213,8 +219,9 @@ def fresh_row(o: Ops) -> str:
     return _srow("Jobs", e(val), href="/health", tone="bad" if bad else "ok")
 
 
-def research_section(o: Ops, today: date, compact: bool = False) -> str:
-    """Research (information only): the kept paper lines, unranked, each labelled."""
+def research_section(o: Ops, today: date) -> str:
+    """Research (information only): the kept paper lines, unranked, each labelled (the
+    Strategy screen; Home links to Research > Testing instead, BF-D89)."""
     lines = o.research
     intro = ("<p class='caption'>Other paper strategies, tracked for research only. Listed in the "
              "registered order, not ranked: over a few months any difference is "
@@ -245,10 +252,29 @@ def research_section(o: Ops, today: date, compact: bool = False) -> str:
     if ov.retired_shown(today):
         body += (f"<p class='caption'>Retired 31 Dec 2026: {e(', '.join(ov.RETIRED_LINES))} "
                  "(history kept in the record).</p>")  # fmt: skip
-    if compact:
-        return ('<details class="about rsec"><summary>Research lines (information only)</summary>'
-                + intro + body + "</details>")  # fmt: skip
+    body += f'<a class="rmore" href="/research/testing" data-nav>More in Research{chev()}</a>'
     return section("Research (information only)", intro + body)
+
+
+def testing_row() -> str:
+    """BF-D89: Home's one row to the research lines (their figures live in Testing)."""
+    return _srow("Research", "What we're testing", href="/research/testing")
+
+
+RESEARCH_PILL = {"ok": ("ok", "up to date"), "due": ("amber", "due a re-check"),
+                 "behind": ("amber", "behind"), "error": ("bad", "could not read")}  # fmt: skip
+
+
+def research_health(o: Ops) -> str:
+    """BF-D89: Health's "Research content" row (ok / due / behind / could not read)."""
+    st = o.research_status
+    if st is None:
+        return ""
+    cls, word = RESEARCH_PILL.get(st.state, ("", st.state))
+    return section("Research content", (
+        f'<ul class="list"><li class="frow"><span class="grow"><b>Highlights and library</b>'
+        f'<span class="sub">{e(st.text)}</span></span><span class="pill {cls}">{word}</span></li></ul>'
+        '<p class="caption"><a href="/research" data-nav>Research</a></p>'))  # fmt: skip
 
 
 # ---------------------------------------------------------------- Health (BF-D77)
@@ -369,6 +395,7 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
         + "</ul><p class='caption'>If the server goes silent, healthchecks.io tells your phone; "
           "the app cannot, because it runs on the same server.</p>")))  # fmt: skip
     parts.append(renewals_section(x, v.now.astimezone(ASX_TZ).date()))  # BF-D86
+    parts.append(research_health(o))  # BF-D89
     # versions
     run = x.running
     parts.append(section("Versions", (
@@ -579,7 +606,8 @@ def digest_page(src: Any, v: Any, x: Extras, o: Ops, qs: dict[str, str]) -> str:
         + block("Main strategy against A200", dg.main)
         + section("Research lines (information only, unranked)",
                   "<p class='caption'>Each " + e(ov.LUCK) + ".</p><ul class='list'>"
-                  + "".join(f"<li>{e(t)}</li>" for t in dg.research) + "</ul>")
+                  + "".join(f"<li>{e(t)}</li>" for t in dg.research) + "</ul>"
+                  + f"<a class='rmore' href='/research/testing' data-nav>What we're testing{chev()}</a>")
         + block("Data collected", dg.data)
         + block("Alerts this week", dg.alerts, "No alerts.")
         + block("Needs you", dg.needs, "Nothing needs you.")

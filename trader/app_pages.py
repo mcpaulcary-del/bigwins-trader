@@ -647,8 +647,8 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
         if x.ops is not None:  # BF-D75 / BF-D77
             from trader import app_ops
 
-            body = (app_ops.fresh_note(x.ops) + body
-                    + app_ops.research_section(x.ops, v.now.astimezone(ASX_TZ).date()))  # fmt: skip
+            body = (app_ops.fresh_note(x.ops) + x.ops.know + body  # BF-D89
+                    + section("Research", f'<ul class="srows">{app_ops.testing_row()}</ul>'))  # fmt: skip
         return shell(v, x, "Home", body, "home")
     from trader import app_more
 
@@ -714,7 +714,7 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
     if wi:
         rows.append(_srow("What if", "the market moves?", wi))
     ops = x.ops
-    score = jobs_note = research = ""
+    score = jobs_note = ""
     if ops is not None:  # BF-D75 / BF-D77: the honest scoreboard first, late jobs flagged
         from trader import app_ops
 
@@ -723,10 +723,11 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
         fr = app_ops.fresh_row(ops)
         if fr:
             rows.append(fr)
-        research = app_ops.research_section(ops, v.now.astimezone(ASX_TZ).date(), compact=True)
+        score += ops.know  # BF-D89: "What we know" directly under the scoreboard
+        rows.append(app_ops.testing_row())  # BF-D89: replaces the folded research lines
     rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
     rows += dr_rows(v, x)  # BF-D82 / BF-D83
-    status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>' + research)
+    status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>')
     foot = "<footer>Not shown to beat the index.</footer>"
     col_a = (
         lock_note(x)
@@ -1565,6 +1566,8 @@ def server(v: Any, x: Extras) -> str:
                          + menu_row("/setup", "list-check", "Setup & IBKR", nav=True)
                          + menu_row("/backups", "archive", "Backups",
                                     value="OK" if bk.get("ok") else "", nav=True)
+                         + menu_row("/research", "beaker", "Research",
+                                    "What we know, testing, dates", nav=True)  # BF-D89
                          + menu_row("/strategy", "chart", "Strategy",
                                     value="update available" if int(x.update.get("ahead") or 0) > 0
                                     else "", nav=True)

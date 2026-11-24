@@ -401,7 +401,10 @@ def test_BF_D75_home_leads_with_the_honest_scoreboard(demo_app: Any) -> None:
     assert "A200 by $" in html and "after running costs, before tax." in html
     assert "after all costs" not in html
     assert "Same money in A200" in html and "Fixed running costs" in html
-    assert "$21.0k against $18.6k" in html and "Research lines (information only)" in html
+    assert "$21.0k against $18.6k" in html
+    # BF-D89: the folded research lines gave way to "What we know" and one row to Testing
+    assert "Research lines (information only)" not in html
+    assert "What we know" in html and 'href="/research/testing"' in html
     assert "Info archive (announcements) late" in html  # the demo's late job is flagged
 
 

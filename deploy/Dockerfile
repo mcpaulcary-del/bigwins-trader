@@ -11,6 +11,8 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY trader ./trader
 # L6 (security review): the forecast method note the app renders at /forecast-method
 COPY docs/FORECAST_BANDS.md ./docs/FORECAST_BANDS.md
+# BF-D89: the research pages' content (read-only; .md and .yaml only, checked in CI)
+COPY docs/research ./docs/research
 RUN uv sync --locked --no-dev && chown -R trader:trader /app/.venv
 # review F22: the commit the image was built from (bigwins passes it; strategy fingerprint)
 ARG BUILD_SHA=unknown

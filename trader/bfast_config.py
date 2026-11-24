@@ -379,6 +379,8 @@ class ResearchCfg(_M):
     "Research (information only)" section."""
 
     scorecard_csv: Path | None = Path("/data/forward/record/paper/scorecard_latest.csv")
+    # BF-D89: the record's hash-chained ledger; the app reads only its tail (live trial count)
+    ledger_jsonl: Path | None = Path("/data/forward/record/LEDGER.jsonl")
 
 
 class HeartbeatCfg(_M):

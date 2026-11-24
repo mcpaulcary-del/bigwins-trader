@@ -237,6 +237,10 @@ class Sources:
     eodhd_budget: int = 100000
     presence_days: int = 14  # BF-D82: app.presence_days
     presence_warn_days: int = 10
+    # BF-D89: research content (docs/research; None = beside the config folder) and the
+    # record's LEDGER.jsonl (read-only; only its tail is read, for the live trial count)
+    research_dir: Path | None = None
+    ledger: Path | None = None
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -769,7 +773,7 @@ class Dashboard:
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
                "/strategy", "/setup", "/backups", "/accounts", "/shares",
                "/forecast-method", "/calendar", "/compare", "/search.json",
-               "/health", "/costs", "/digest")  # fmt: skip
+               "/health", "/costs", "/digest", "/research")  # fmt: skip
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
@@ -835,7 +839,8 @@ class Dashboard:
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
         sess: Sequence[date] = src.sessions() if src.sessions else []
-        if path in ("/", "/health", "/costs", "/digest", "/server", "/strategy"):
+        research = path == "/research" or path.startswith("/research/")
+        if path in ("/", "/health", "/costs", "/digest", "/server", "/strategy") or research:
             from trader import app_ops
 
             x.ops = app_ops.collect(src, v, _has_journal(j))
@@ -845,6 +850,9 @@ class Dashboard:
                 return html_t, app_ops.costs(v, x, x.ops).encode()
             if path == "/digest":
                 return html_t, app_ops.digest_page(src, v, x, x.ops, dict(qs)).encode()
+        if research:
+            out = self._research(path, qs, v, x)
+            return None if out is None else (html_t, out.encode())
         if path == "/":
             return html_t, app_pages.home(v, x).encode()
         if path == "/holdings":
@@ -906,6 +914,43 @@ class Dashboard:
                 return "text/csv; charset=utf-8", tax_screen.csv_export(src, qs).encode()
             return html_t, tax_screen.screen(v, x, src, qs).encode()
         return None
+
+    def _research(self, path: str, qs: Mapping[str, str], v: View, x: Extras) -> str | None:
+        """BF-D89: the research pages (GET, read-only). An id in the URL is only looked up
+        in the loaded index (``ID_RE``); it is never joined into a file path."""
+        from trader import app_research as ar
+        from trader import ops_view as ov
+
+        src = self.sources
+        c = ar.load(ar.research_dir(src))
+        today = ar.today_for(src, v)
+        t = ar.trials(c, src.ledger)
+        parts = path.split("/")  # "", "research", ...
+        body: str | None
+        if path == "/research":
+            body = ar.highlights_page(c, t, today)
+        elif path == "/research/library":
+            body = ar.library_page(c, t, qs.get("f", "all"))
+        elif path == "/research/testing":
+            o = x.ops
+            lines = o.research if o is not None else None
+            fresh = o.fresh if o is not None else []
+            body = ar.lines_page(c, today, lines, fresh, ov.retired_shown(today))
+        elif path == "/research/dates":
+            body = ar.dates_page(c, today)
+        elif path == "/research/glossary":
+            body = ar.glossary_page(c)
+        elif len(parts) == 4 and parts[2] in ("library", "report"):
+            sid = urllib.parse.unquote(parts[3])
+            if not ar.ID_RE.match(sid):
+                return None
+            body = ar.study_page(c, sid) if parts[2] == "library" else ar.report_page(c, sid)
+        else:
+            return None
+        if body is None:
+            return None
+        title = "Glossary" if path.endswith("/glossary") else "Research"
+        return app_pages.shell(v, x, title, body, "home")
 
     def _more(  # noqa: PLR0911 - one return per screen
         self, path: str, qs: Mapping[str, str], v: View, x: Extras,
@@ -1002,7 +1047,7 @@ class Dashboard:
         else:
             qs = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
             known = p in self.SCREENS or p.startswith(
-                ("/holdings/", "/orders/", "/shares/", "/replay/")
+                ("/holdings/", "/orders/", "/shares/", "/replay/", "/research/")
             )
             if p == "/search.json":
                 hdrs["Cache-Control"] = "no-store"

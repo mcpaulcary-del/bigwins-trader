@@ -47,6 +47,8 @@ UI_ONLY = (
     "trader/app_ops.py",  # BF-D75..BF-D80: screens only
     # BF-D81 (review M1): display and alert code; nothing here decides or trades
     "trader/ops_view.py", "trader/info_view.py", "trader/ops_hooks.py",
+    # BF-D89: the research pages and the share pages' odds card (display only)
+    "trader/app_research.py", "trader/odds.py",
 )  # fmt: skip
 APP_ONLY_DIRS = ("docs/", "tests/")
 # keys of config/bfast.yaml that are not trading settings (the fingerprint ignores them)

@@ -938,6 +938,7 @@ def _ops_sources(cfg: BfastConfig) -> dict[str, Any]:
         "fund_half_spread": bt.fund_half_spread if bt is not None else Decimal("0.0005"),
         "commission": cfg.commission_model(),
         "scorecard": cfg.research.scorecard_csv,
+        "ledger": cfg.research.ledger_jsonl,  # BF-D89
         "info_dir": cfg.info_archive.app_dir,
         "info_enabled": cfg.info_archive.archive_enabled,
         "eodhd_budget": sr.calls_per_day if sr is not None else 100000,

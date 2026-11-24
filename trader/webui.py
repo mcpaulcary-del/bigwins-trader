@@ -728,6 +728,50 @@ body.compact .list li{padding:8px 0}
 .okmark{display:block;margin:8px 0}.okmark .ic{width:44px;height:44px}.okmark.up{color:var(--up)}.okmark.down{color:var(--down)}
 .cons h3{font:600 12px/16px var(--font);text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:16px 0 4px}
 .cons ul{margin:0;padding-left:20px}.cons li{margin:4px 0}
+/* research (BF-D89): verdict chips (label + dot, never colour alone), highlights, library, timeline */
+.rchip{display:inline-flex;align-items:center;gap:5px;min-height:22px;font:600 12px/16px var(--font);border-radius:999px;
+padding:2px 9px;white-space:nowrap;vertical-align:1px;border:1px solid transparent;background:var(--surface-2);color:var(--ink-2)}
+.rchip:before{content:"";width:6px;height:6px;border-radius:3px;background:currentColor;flex:none}
+.rc-works{background:var(--up-soft);color:var(--up)}.rc-doesnt{background:var(--down-soft);color:var(--down)}
+.rc-mixed,.rc-info{background:var(--surface-2);color:var(--ink-2)}.rc-closed{background:var(--surface-2);color:var(--ink-3)}
+.rc-testing{background:none;color:var(--ink);border-color:var(--ink)}
+.rc-proposed{background:none;color:var(--ink-2);border:1px dashed var(--ink-2)}
+.rc-date{background:var(--warn-soft);color:var(--warn)}
+.rnote{font:400 13px/18px var(--font);color:var(--ink-3)}
+.rseg{margin-bottom:8px}
+.rhl p{margin:0}.rhl .hline{font:600 17px/24px var(--font);margin:8px 0 0}
+.rhl details.why>summary,.rsure>summary,.pres>summary{color:var(--ink-2)}
+.rhl details.why p{margin:8px 0 0}.rhl .h3{margin:12px 0 0}
+.rdue{font:400 13px/18px var(--font);color:var(--warn);margin:4px 0 0!important}
+a.gl{color:inherit;text-decoration:underline dotted;text-decoration-color:var(--ink-3);text-underline-offset:3px}
+.rmore{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;margin:4px 0 -8px;
+color:var(--ink);text-decoration:none;font:500 15px/20px var(--font);border-top:1px solid var(--line)}
+.know li{padding:10px 0}
+.rcard{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none}
+.rcard .grow{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.rcard b{font-weight:600}.rcard .ans{font:400 14px/20px var(--font);color:var(--ink-2);margin:2px 0 4px}
+.rbad{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.rans{font:400 17px/24px var(--font);margin:8px 0 4px}
+.bul{margin:0;padding-left:20px}.bul li{margin:6px 0}
+.rnum td{padding:8px 0}.rnum td.r{text-align:right;padding-left:12px;white-space:normal;font-weight:600}
+section.rmeans{background:var(--surface-2);border-left:3px solid var(--ink)}
+section.rmeans p{margin:0}
+.rsure{margin:12px 0}.rsure>summary b{font-weight:600;color:var(--ink)}.rsure p{margin:8px 0}
+.tline p{margin:0 0 4px}.tline .tname{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.pres{margin:4px 0 0}.pres p{margin:6px 0 0}
+.tlist{list-style:none;margin:0 0 0 6px;padding:0;border-left:2px solid var(--line)}
+.tlist li{position:relative;padding:0 0 16px 18px}.tlist li:last-child{padding-bottom:0}
+.tlist li:before{content:"";position:absolute;left:-7px;top:6px;width:12px;height:12px;border-radius:6px;background:var(--ink)}
+.tlist.done li:before{background:var(--surface);box-shadow:inset 0 0 0 2px var(--ink-3)}
+.tlist p{margin:0 0 4px}.tlist .h3{margin:2px 0}.tday{font:500 14px/20px var(--font);color:var(--ink-2)}
+.you{color:var(--warn);font-weight:500}
+.rfoot{font:400 13px/18px var(--font);color:var(--ink-3);margin:16px 0}
+.gloss{margin:0}.gloss dt{font-weight:600;margin-top:16px;scroll-margin-top:64px}.gloss dt:first-child{margin-top:0}
+.gloss dd{margin:2px 0 0;color:var(--ink-2)}
+@media (max-width:859px){.rtwo>.rside{display:none}}
+@media (min-width:860px){main:has(>.rtwo){display:block}
+.rtwo{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:0 24px;align-items:start}
+.rtwo>.rside{position:sticky;top:64px;max-height:calc(100vh - 160px);overflow:auto}.rtwo>.rside .ans{display:none}}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 """
 
