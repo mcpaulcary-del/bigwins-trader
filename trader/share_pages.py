@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import quote
 
 from trader import forecast as fc
+from trader import odds as od
 from trader.constants import ASX_TZ
 from trader.journal import FillRecord, Journal
 from trader.orders import Side
@@ -50,6 +51,7 @@ class ShareCtx:
     tr: Callable[[str], Series] | None = None
     names: dict[str, str] = field(default_factory=dict)  # code -> company name
     info_dir: Path | None = None  # BF-D78: the private info archive (read-only)
+    odds: od.OddsTable | None = None  # BF-D88: config/odds_table_v1.csv (read-only)
 
     @property
     def today(self) -> date:
@@ -808,11 +810,28 @@ def detail_sections(ctx: ShareCtx, code: str, info: Info | None = None) -> str:
     f = facts(ctx, info, lists, px)
     return (
         section("Rank history", rank_chart(rank_rows(lists, code), code))
+        + odds_section(ctx, code, lists)
         + expected_section(ctx, info, f, px, idx)
         + price_section(info, f, px)
         + next_section(ctx, info, f, lists, px, idx)
         + _announcements(ctx, code)
     )
+
+
+def odds_section(ctx: ShareCtx, code: str, lists: Sequence[tuple[date, dict[str, Any]]]) -> str:
+    """BF-D88: the historical odds of the share's group at the latest decision. Only band
+    C (ranks 301-600) is recorded with a score, so a share outside it has no group."""
+    if not lists:
+        return od.card(ctx.odds, None, None, why_missing="No decision has been recorded yet.")
+    day, rec = lists[-1]
+    row = next((r for r in rec.get("band_c", []) if r and r[0] == code), None)
+    pct = _f(row[4]) if row is not None and len(row) > 4 else None
+    if row is None or pct is None:
+        return od.card(ctx.odds, None, day, f"It had no size rank and score in band C at the "
+                       f"{day:%d %b %Y} decision.")  # fmt: skip
+    from trader.lines.emg2 import Emg2Params
+
+    return od.card(ctx.odds, od.lookup_band(ctx.odds, Emg2Params().band_lo, pct), day)
 
 
 def _announcements(ctx: ShareCtx, code: str) -> str:

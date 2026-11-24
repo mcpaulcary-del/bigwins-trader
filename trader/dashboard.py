@@ -773,7 +773,7 @@ class Dashboard:
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
-        from trader import forecast, share_pages
+        from trader import forecast, odds, share_pages
 
         src = self.sources
         return share_pages.ShareCtx(
@@ -781,7 +781,7 @@ class Dashboard:
             src.prices, src.index, src.index_label,  # type: ignore[arg-type]
             {k: forecast.load_bands(src.forecast_dir, k) for k in forecast.BENCH}, src.demo,
             src.tr_prices,  # type: ignore[arg-type]
-            self.names(v), src.info_dir,
+            self.names(v), src.info_dir, odds.load_odds(src.forecast_dir),
         )  # fmt: skip
 
     def names(self, v: View) -> dict[str, str]:
