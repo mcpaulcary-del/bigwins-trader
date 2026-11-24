@@ -53,3 +53,7 @@
 - 2026-11-23 05:21Z HOLDING MOVE VMM +9.1% on day (quote 2.53, last close 2.32)
 - 2026-11-23 05:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RGN'] leaving ['DDR', 'TWE']
 - 2026-11-23 05:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'MMS', 'SHL', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']
+- 2026-11-23 23:20Z HOLDING MOVE SXE +11.7% on day (quote 4.0, last close 3.58)
+- 2026-11-23 23:20Z HOLDING MOVE TEA +9.9% on day (quote 8.36, last close 7.61)
+- 2026-11-23 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-23 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['BHP', 'MMS', 'NXL', 'SHL', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']

@@ -19,6 +19,9 @@ import paper_emg2bt as BT                        # PAPER line EMG2_18_SIM_BT, EM
 import paper_emg2bt6 as BT6                      # PAPER line EMG2_18_SIM_BT_C6, the same + sell rule C6 (AMENDMENT_shadow_EMG2_18_BT_C6.md)
 import paper_blind3 as B3                        # PAPER line BLIND3, blind build 3 frozen primary (AMENDMENT_shadow_BLIND3.md)
 import paper_pair as PR                          # PAPER line PAIR, EMG2-18 + BLIND3 in one A$10,000 account (AMENDMENT_shadow_PAIR.md)
+import paper_sidelines as SL                     # side lines SWEEP / WIDE / FIP (AMENDMENT_shadow_sidelines_v1.md; information only)
+import paper_info_c as IC                        # information readings EST-C / DIL-C on band C (AMENDMENT_shadow_sidelines_v1.md; no trades)
+import paper_moon as MO                          # aggressive side lines MOON_TOP5 / MOON_NOLOT5 / MOON_LEG2 (AMENDMENT_shadow_moon_v1.md; information only)
 
 LOGF = P.FW + '/out/logs/paper_daily.log'
 
@@ -153,8 +156,17 @@ def scorecard(st, d):
     except Exception as e:
         log('PAIR scorecard error (H82 unaffected):', repr(e)); prrows, prmd, prhold = [], [f'| PAIR | — | — | scorecard error: {repr(e)[:120]} |'], []
     b3md = b3md + prmd; b3hold = b3hold + prhold
+    try: slrows, slmd, slhold = SL.scorecard_rows(d)                           # side lines SWEEP / WIDE / FIP (seq 91; information only)
+    except Exception as e:
+        log('side lines scorecard error (no other line affected):', repr(e)); slrows, slmd, slhold = [], [f'| side lines | — | — | scorecard error: {repr(e)[:120]} |'], []
+    try: icrows, icmd, _ = IC.scorecard_rows(d)                                # EST-C / DIL-C (seq 91; information only)
+    except Exception as e:
+        log('EST-C / DIL-C scorecard error (no other line affected):', repr(e)); icrows, icmd = [], [f'| EST-C / DIL-C | — | — | scorecard error: {repr(e)[:120]} |']
+    try: morows, momd, mohold = MO.scorecard_rows(d)                           # MOON_TOP5 / NOLOT5 / LEG2 (seq 94; information only)
+    except Exception as e:
+        log('MOON scorecard error (no other line affected):', repr(e)); morows, momd, mohold = [], [f'| MOON lines | — | — | scorecard error: {repr(e)[:120]} |'], []
     rows = emrows + esrows + b3rows + prrows + rows + earows
-    sc = pd.DataFrame(rows); hd = pd.DataFrame(hold)
+    sc = pd.DataFrame(rows + slrows + icrows + morows); hd = pd.DataFrame(hold)     # side-line rows last, existing columns only
     os.makedirs(P.PAPER, exist_ok=True); files = {}
     files['paper/scorecard_latest.csv'] = P.write_csv(P.PAPER + '/scorecard_latest.csv', sc)
     files['paper/holdings_latest.csv'] = P.write_csv(P.PAPER + '/holdings_latest.csv', hd if len(hd) else pd.DataFrame(columns=['asof', 'book', 'code']))
@@ -203,6 +215,10 @@ def scorecard(st, d):
     md += acmd
     md += cxmd
     md += eamd
+    md += ['', '## Side lines (AMENDMENT_shadow_sidelines_v1.md, ledger seq 91: information only, never evidence for or against the main line)', '',
+           'Each paper book = EMG2_18_SIM_BT_C6 with one change; A$10,000; 100 twins paired with the BT_C6 twins (seeds 8810000+i); twin-pair percentile = '
+           'share of the 100 differences (side twin i - BT_C6 twin i) below the real difference. EST-C and DIL-C trade nothing.', '',
+           '| Line | NAV A$ | Return | Reading |', '|---|---|---|---|'] + slmd + icmd + momd
     md += ['', '## Holdings (H82 books)', '', '| Book | Code | Name | Shares | Cost A$ | Last | Value A$ | P&L A$ | P&L | Flags |', '|---|---|---|---|---|---|---|---|---|---|']
     for h in hold:
         if h['book'].startswith('H82'):
@@ -215,6 +231,8 @@ def scorecard(st, d):
     if eshold: md += ['', '## EMG2-18 paper twins (H6, COMBO, REF) and paper lines EMG2_18_SIM_BT, EMG2_18_SIM_BT_C6 (information only)', ''] + eshold
     if b3hold: md += ['', '## BLIND3 and PAIR paper books (information only)', ''] + b3hold
     if eahold: md += ['', '## SHADOW EARLY books (information only, unproven)', ''] + eahold
+    if slhold: md += ['', '## Side-line paper books (SWEEP, WIDE, FIP; information only)', ''] + slhold
+    if mohold: md += ['', '## Aggressive side-line paper books (MOON_TOP5, MOON_NOLOT5, MOON_LEG2; information only, seq 94)', ''] + mohold
     if pend: md += ['', '## Pending paper orders (H82 and momentum books)', '', '| Book | Type | Code | Size | When | Rule |', '|---|---|---|---|---|---|'] + pend
     md += ['', '## Data notes', '', f"- Q6 flags: {json.dumps(flags) if flags else 'none'}", f"- Data blocks: {st['data_blocks'] or 'none'}",
            f"- Decisions so far: {', '.join(st['decisions'])}"]
@@ -312,7 +330,10 @@ def main():
         b6 = BT6.run(d, mkt, log)                                       # PAPER line EMG2_18_SIM_BT_C6 (own state file; same month-end bundle as EMG2)
         b3 = B3.run(d, mkt, log)                                        # PAPER line BLIND3 (own state file; same month-end bundle as EMG2)
         pr = PR.run(d, mkt, log)                                        # PAPER line PAIR (own state file; same month-end bundle as EMG2)
-        ea = EA.run(d, mkt, log); EM.clear_bundle(); P.BUNDLE.clear()   # SHADOW EARLY (AMENDMENT_shadow_EARLY.md; own state file; reads the new-listings tracker)
+        ea = EA.run(d, mkt, log)                                        # SHADOW EARLY (AMENDMENT_shadow_EARLY.md; own state file; reads the new-listings tracker)
+        sl = SL.run(d, mkt, log)                                        # side lines SWEEP / WIDE / FIP (seq 91; own state files; same month-end bundle; after every registered line)
+        ic = IC.run(d, mkt, log)                                        # EST-C / DIL-C readings (seq 91; own state file; information only)
+        mo = MO.run(d, mkt, log); EM.clear_bundle(); P.BUNDLE.clear()   # MOON_TOP5 / NOLOT5 / LEG2 (seq 94; own state files; same month-end bundle)
         ps = PS.sync(st, log)                                           # A$0 comparators (scoring only; own state file)
         files = scorecard(st, d)
         extra = dict(score=ps)
@@ -326,13 +347,16 @@ def main():
         if b3 is not None: extra['blind3'] = b3
         if pr is not None: extra['pair'] = pr
         if ea is not None: extra['early'] = ea
+        for k_, v_ in (sl or {}).items(): extra[k_] = v_                # sl_sweep, sl_wide, sl_fip
+        if ic is not None: extra['info_c'] = ic
+        for k_, v_ in (mo or {}).items(): extra[k_] = v_                # moon_top5, moon_nolot5, moon_leg2
         e = L.append(**extra, asof=d, kind='daily' + (' + month-end decision' if dec_info else ''), event=f'paper day booked {d} (closes; fills; dividends; NAV)',
                      universe_closes=f'{cov}/{len(uni)}', state_sha256=ssha, files_sha256=files, decision=dec_info,
                      trades=sum(1 for b in st['books'] for t in b['trades'] if t['date'] == d), flags=list(st['flags']))
         log(d, 'booked; ledger', e['seq'], e['entry_sha256'][:12]); booked.append(d)
     if not booked:
         PS.sync(st, log)
-        EM.run(st['last_processed'], None, log); ES.run(st['last_processed'], None, log); BT.run(st['last_processed'], None, log); BT6.run(st['last_processed'], None, log); B3.run(st['last_processed'], None, log); PR.run(st['last_processed'], None, log); EA.run(st['last_processed'], None, log); EM.clear_bundle(); P.BUNDLE.clear()   # catch-up only (e.g. EARLY waiting for the tracker); no new day
+        EM.run(st['last_processed'], None, log); ES.run(st['last_processed'], None, log); BT.run(st['last_processed'], None, log); BT6.run(st['last_processed'], None, log); B3.run(st['last_processed'], None, log); PR.run(st['last_processed'], None, log); EA.run(st['last_processed'], None, log); SL.run(st['last_processed'], None, log); IC.run(st['last_processed'], None, log); MO.run(st['last_processed'], None, log); EM.clear_bundle(); P.BUNDLE.clear()   # catch-up only (e.g. EARLY waiting for the tracker); no new day
         scorecard(st, st['last_processed']); log('nothing new to book; scorecard refreshed for', st['last_processed'])
 
 if __name__ == '__main__':

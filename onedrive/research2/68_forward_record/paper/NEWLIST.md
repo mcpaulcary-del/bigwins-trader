@@ -1,30 +1,30 @@
-# New ASX listings tracker - 2026-11-21
+# New ASX listings tracker - 2026-11-24
 
 INFORMATION ONLY. Makes no trading decision; feeds nothing in the paper record. EODHD data (private, non-commercial use); no ASX-website access. Returns from the FIRST EODHD CLOSE (no offer price available), EODHD adjusted close. Code: bigwins_forward/code/newlist_tracker.py; data: bigwins_forward/data/newlist/.
 
-- Symbol-list diff vs 2026-11-20: 2 new codes, 0 codes left the active list, 0 same-code name changes.
-- Genuine new listings (3-letter ordinary shares) tracked: 77 active, 0 already delisted; first traded in the last 30 days: 4.
-- Excluded from the table: 3 renames / carried-over histories / data stubs, 93 ETFs/funds, 58 other securities (rights, deferred settlement, notes...), 0 pending first trade (see newlist_other.csv).
+- Symbol-list diff vs 2026-11-21: 2 new codes, 3 codes left the active list, 0 same-code name changes.
+- Genuine new listings (3-letter ordinary shares) tracked: 77 active, 0 already delisted; first traded in the last 30 days: 2.
+- Excluded from the table: 3 renames / carried-over histories / data stubs, 94 ETFs/funds, 59 other securities (rights, deferred settlement, notes...), 0 pending first trade (see newlist_other.csv).
 
 ## Latest listings
 
 | listed | code | name | sector | first close | last | since first close | mcap A$m | status |
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-12 | CX8 | Capability X Limited | Technology | 0.29 | 0.265 | -9% | 46 | active |
-| 2026-11-02 | SMG | Seven Media Group Limited | Communication Services | 0.495 | 0.41 | -17% | 196 | active |
+| 2026-11-02 | SMG | Seven Media Group Limited | Communication Services | 0.495 | 0.42 | -15% | 201 | active |
 | 2026-10-23 | MSX | Miro Sciences Ltd | Healthcare | 0.056 | 0.043 | -23% | 17 | active |
-| 2026-10-22 | WMC | Wiluna Mining Corporation Ltd | Basic Materials | 0.56 | 0.325 | -42% | 118 | active |
-| 2026-10-16 | OWL | Overwatch Technologies Limited | Technology | 0.175 | 0.11 | -37% | 15 | active |
-| 2026-10-14 | GLC* | Glencore Plc | Basic Materials | 11.2 | 8.96 | -20% | 104,863 | active |
-| 2026-10-13 | ID1 | Identifai Genetics Limited | Healthcare | 0.25 | 0.41 | +64% | 79 | active |
-| 2026-10-05 | NMD | Normandy Minerals Ltd | Basic Materials | 0.29 | 0.195 | -33% | 23 | active |
+| 2026-10-22 | WMC | Wiluna Mining Corporation Ltd | Basic Materials | 0.56 | 0.365 | -35% | 132 | active |
+| 2026-10-16 | OWL | Overwatch Technologies Limited | Technology | 0.175 | 0.095 | -46% | 13 | active |
+| 2026-10-14 | GLC* | Glencore Plc | Basic Materials | 11.2 | 9.19 | -18% | 107,554 | active |
+| 2026-10-13 | ID1 | Identifai Genetics Limited | Healthcare | 0.25 | 0.42 | +68% | 81 | active |
+| 2026-10-05 | NMD | Normandy Minerals Ltd | Basic Materials | 0.29 | 0.192 | -34% | 23 | active |
 | 2026-10-02 | NRL | Northstone Resources Limited | Basic Materials | 0.013 | 0.007 | -46% | 16 | active |
 | 2026-10-01 | AQ1 | Aqyr Ltd | Industrials | 0.026 | 0.038 | +46% | 8 | active |
-| 2026-09-28 | AGT | Arbitr Group Limited | Technology | 0.115 | 0.097 | -16% | 6 | active |
+| 2026-09-28 | AGT | Arbitr Group Limited | Technology | 0.115 | 0.093 | -19% | 6 | active |
 | 2026-09-22 | PRB | Parbo Resources Limited | Basic Materials | 0.27 | 0.34 | +26% | 15 | active |
 | 2026-09-22 | INN | Innovaero Technologies Limited | Industrials | 0.5 | 0.25 | -50% | 79 | active |
 | 2026-09-02 | AXR | Axiant Resources Limited | Basic Materials | 0.215 | 0.135 | -37% | 8 | active |
-| 2026-08-31 | AMK | Almasar Minerals Limited | Basic Materials | 0.255 | 0.19 | -25% | 26 | active |
+| 2026-08-31 | AMK | Almasar Minerals Limited | Basic Materials | 0.255 | 0.17 | -33% | 23 | active |
 
 \* large at listing (> A$1bn): likely a secondary/dual listing, demerger or merger vehicle rather than an IPO (kept, flagged). EODHD gives no IPODate/offer price for AU codes, so returns start at the first close.
 
@@ -32,21 +32,21 @@ INFORMATION ONLY. Makes no trading decision; feeds nothing in the paper record. 
 
 | code | name | listed | since first close | max drawdown |
 |---|---|---|---|---|
-| PC2 | PC Gold Ltd | 2025-10-21 | +134% | -54% |
-| DSM | Desert Minerals Ltd | 2025-10-21 | +116% | -35% |
-| KAO | Kaoko Metals Limited | 2026-05-07 | +97% | -74% |
+| PC2 | PC Gold Ltd | 2025-10-21 | +150% | -54% |
+| DSM | Desert Minerals Ltd | 2025-10-21 | +122% | -35% |
+| KAO | Kaoko Metals Limited | 2026-05-07 | +83% | -75% |
 | GRS | Gwardar Resources Limited | 2026-07-31 | +78% | -35% |
-| ID1 | Identifai Genetics Limited | 2026-10-13 | +64% | -33% |
+| ID1 | Identifai Genetics Limited | 2026-10-13 | +68% | -33% |
 
 ## Worst since listing (tracked window, >= 5 trading days)
 
 | code | name | listed | since first close | max drawdown |
 |---|---|---|---|---|
+| TIO | Temas Resources Corp. | 2025-10-27 | -88% | -89% |
 | BPG | Black Pearl Group Limited | 2025-11-25 | -87% | -91% |
-| TIO | Temas Resources Corp. | 2025-10-27 | -86% | -87% |
 | SLD | Saluda Medical Inc | 2025-12-05 | -85% | -88% |
-| LFT | Li-ft Power Ltd. | 2026-05-26 | -81% | -82% |
-| EPI | Epiminder Ltd | 2025-12-01 | -81% | -82% |
+| LFT | Li-ft Power Ltd. | 2026-05-26 | -81% | -83% |
+| EPI | Epiminder Ltd | 2025-12-01 | -80% | -82% |
 
 ## Baseline 2014+ (descriptive only; survivorship-aware; no strategy test)
 
