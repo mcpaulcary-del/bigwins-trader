@@ -7,7 +7,10 @@
   (it never reads the contents).
 - Never place, approve or cancel an order. Orders go only through the trader, approved by
   the owner in the Big Wins app (or `/ok` in Telegram if that channel is switched on).
-- No automated access to asx.com.au. EODHD data is personal and private: do not share it.
+- No automated access to asx.com.au, with ONE exception (owner decision 24 Nov 2026, ledger seq 96): the
+  private info archive (`deploy/info_archive.py`) may fetch the previous-day announcement list and the
+  director-interest and capital-raising notice PDFs from asx.com.au hosts, slowly, for private personal use.
+  Its data is never shared and feeds no strategy. EODHD data is personal and private: do not share it.
 - Ask the owner before `docker compose down`, deleting volumes, or anything that stops the
   trader during ASX hours (10:00-16:12 Sydney).
 - Scan for secrets before every push; never force-push.
