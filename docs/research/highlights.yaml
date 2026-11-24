@@ -1,0 +1,64 @@
+# docs/research/highlights.yaml (BF-D89). Loaded by trader/app_research.py; checked by tests/test_bf_d89_research.py.
+# Rules: 5-8 items; line <= 20 words; why <= 70 words; do <= 30 words.
+# Every number must appear in a study listed under `sources`.
+version: 2
+checked: 2026-11-25
+trials_total: 3147          # fallback only; the app reads the live count from the record
+trials_ledger_seq: 101
+footer: "From your own research. General information, not personal financial advice. Check super and tax with your accountant."
+items:
+  - id: plan
+    slot: plan
+    chip: testing
+    line: "Big Wins is a $10,000 experiment: on paper until about the end of February, real money around March 2027."
+    why: "At $10,000 it costs about $835-1,260 a year to run, against $4 a year for the A200 index fund. The independent review expects it to finish about $700-1,000 a year behind the fund at this size. You are paying to learn whether the edge is real, with a fixed budget."
+    do: "Treat the $10,000 as a paid experiment. Do not add money before December 2028."
+    sources: [review_market, review_approach]
+    review_by: 2027-01-05
+  - id: core
+    slot: core
+    chip: works
+    line: "The plan that works is boring: a low-cost index fund, held and not traded."
+    why: "Across {trials} counted tests on ASX and US shares, no strategy beat an index fund after costs and tax with real evidence. From 2000 to 2026 an S&P 500 fund turned $50,000 into about $231,000 after tax without a single decision."
+    do: "Keep all other long-term savings in a broad index fund."
+    sources: [research_us, research_us2, review_market]
+    review_by: 2027-03-01
+  - id: tax
+    slot: tax
+    chip: works
+    line: "Where you hold it beats what you pick: inside super, and for more than 12 months."
+    why: "The same index fund grew 6.0% a year after tax held personally and 7.0% in super (2000-2026). That 1.0-1.8 points a year is more than any strategy we tested added. Selling inside 12 months loses the capital gains discount: one fast rule earned 14.8% a year before tax and 8.2% after."
+    do: "Ask your accountant how much of your index holding can sit in your existing super fund's index option. No company, no self-managed fund needed."
+    sources: [research_us2, research_us]
+    review_by: 2027-03-01
+  - id: bigwins_truth
+    slot: finding
+    chip: mixed
+    line: "Single shares often double; whole portfolios almost never do."
+    why: "In any 12 months since 2005, 8.8% of ASX shares doubled and 20.9% halved. The boldest rules we tested had one +100% year in twenty, a typical year of +15% to +35%, and a 55-75% fall every time. A +200% year never happened for any rule."
+    do: "Expect big wins from single holdings inside the book, not from the account as a whole."
+    sources: [research_big]
+    review_by: 2027-03-01
+  - id: signal
+    slot: finding
+    chip: works
+    line: "The share-picking score is real; at $10,000, costs are the problem."
+    why: "In ASX ranks 301-600 the top-scored fifth beat the rest by about 2 points a month before costs, in both halves of the history, with more doublers and fewer wrecks. But with the live $10,000 cap the 2018-26 replay ends at $21,031 against $18,586 for the fund, before about $650 a year of running costs."
+    do: "Nothing now. In January: idle cash into the A200 fund, which helped in tests, and your decision on the rule that can block sales."
+    sources: [research_gaps, research_big, research_bw]
+    review_by: 2027-01-05
+  - id: testing
+    slot: testing
+    chip: testing
+    line: "Twelve paper lines and four data archives are running; none can be judged before December 2028."
+    why: "Over a few months any gap between paper lines is mostly luck: with this many lines, one will be far ahead by February by chance alone. That is why the app never ranks them and why the cut list was fixed before any result existed."
+    do: "Do not move money toward whichever line looks best. Read the weekly digest; wait for the review dates."
+    sources: [review_approach, research_big]
+    review_by: 2027-01-05
+  - id: next
+    slot: next
+    chip: date
+    line: "{next_date_line}"      # filled by the app from dates.yaml: the next upcoming date
+    why: "{next_date_why}"
+    do: "{next_date_do}"
+    sources: []

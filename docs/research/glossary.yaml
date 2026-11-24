@@ -1,0 +1,25 @@
+# docs/research/glossary.yaml (BF-D89)  each definition <= 30 words, no jargon inside a definition
+version: 1
+terms:
+  - {term: "Index fund", also: ["A200", "IVV", "VGS", "VAS"], means: "A fund that simply owns the whole market for a tiny fee. A200 owns the 200 biggest Australian companies; IVV the 500 biggest American ones."}
+  - {term: "After tax", means: "What is left once tax on dividends and on gains is paid. The studies use the top tax rate (47%) unless they say otherwise."}
+  - {term: "12-month discount", also: ["CGT discount"], means: "Hold a share more than 12 months and only half the gain is taxed."}
+  - {term: "Super", means: "Your superannuation fund. Investment earnings inside it are taxed at 15% instead of your own rate."}
+  - {term: "Points a year", means: "Percentage points of yearly growth. 7% against 6% is one point a year."}
+  - {term: "Back-test", means: "Running a rule over past prices to see what it would have done. It flatters: the rule was chosen knowing the past."}
+  - {term: "Paper line", means: "A strategy run with pretend money on real daily prices, to see how it does from now on."}
+  - {term: "Information only", means: "Tracked to learn from. It can never be used as proof for or against the main strategy."}
+  - {term: "Random twins", means: "100 pretend portfolios that pick at random from the same shares. Beating most of them suggests skill, not just a good pond."}
+  - {term: "Mostly luck at this stage", means: "The period is too short for the number to mean anything. It would look much the same if there were no skill at all."}
+  - {term: "Trial count", also: ["N"], means: "Every test ever run in this project, counted. The more you test, the more likely one looks good by chance."}
+  - {term: "Luck bar", means: "How strong a result must be before it is unlikely to be chance, given the trial count. Nothing has cleared it against an index fund."}
+  - {term: "Ranks 301-600", also: ["Band C"], means: "ASX companies ranked 301st to 600th by how much they trade. Small companies, where Big Wins buys."}
+  - {term: "Score", also: ["Momentum"], means: "How strongly a share has risen over 6 and 12 months and how near it is to its one-year high."}
+  - {term: "Trend shield", means: "When small companies as a group are in a downtrend, the book holds the A200 fund instead."}
+  - {term: "Patient sell", also: ["C6"], means: "Sell only after six month-ends and only when the share has dropped out of the top 40%."}
+  - {term: "Lottery filter", means: "A rule that skips very cheap, very new or thinly traded shares."}
+  - {term: "Conviction sizing", means: "Putting bigger parcels into the best-scored shares and smaller ones into the rest, instead of equal amounts."}
+  - {term: "Worst fall", means: "The biggest drop from a high to the following low."}
+  - {term: "Wreck", means: "A share that loses half its value or more within 12 months."}
+  - {term: "Pre-registered", means: "The test and its pass mark were written down and locked before any result was seen."}
+  - {term: "Frozen", means: "No rule or setting of the main strategy may change until the date given."}
