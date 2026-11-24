@@ -66,3 +66,8 @@
 - 2026-11-24 03:20Z HOLDING MOVE TEA +10.5% on day (quote 8.41, last close 7.61)
 - 2026-11-24 03:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'RWC'] leaving ['DDR', 'TWE']
 - 2026-11-24 03:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CLW', 'MMS', 'SHL', 'SHV', 'SIQ', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'SRG', 'XYZ']
+- 2026-11-24 05:21Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-24 05:21Z HOLDING MOVE TEA +9.7% on day (quote 8.35, last close 7.61)
+- 2026-11-24 05:21Z +20% JUMP TUA +28.7% (possible takeover/scheme; check ASX announcements)
+- 2026-11-24 05:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['JHX', 'RWC'] leaving ['DDR', 'TWE']
+- 2026-11-24 05:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['MMS', 'NXL', 'SHL', 'SHV', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'NEU', 'ORI', 'SRG', 'XYZ']
