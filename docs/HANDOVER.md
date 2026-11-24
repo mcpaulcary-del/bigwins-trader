@@ -68,7 +68,7 @@ about the end of February 2027). The owner approves every order.
   tests before a change reaches the app** — fast mode speeds applying, not testing.
 - Claude on the server: via the official Claude app (Remote Control). Code changes go
   GitHub → tests → owner approval in the app; never edit the live trader in place.
-- Partner (Bec) may get view-only access by Tailscale machine sharing (pending).
+- The owner's partner may get view-only access by Tailscale machine sharing (pending).
 
 ## Strategy freeze (owner, 23 Nov 2026)
 The main strategy (EMG2-18 + band-trend shield + C6) is FROZEN until the start of January 2027:
