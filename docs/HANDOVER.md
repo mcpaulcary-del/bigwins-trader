@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 24 Nov 2026, disaster-recovery build BF-D82..D87)
+# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -96,6 +96,10 @@ Real money around March 2027.
    strategy update). Review fixes BF-D81 (one scoreboard for app and digest, "before tax"
    when no tax rate, cash-flow-dated A200, exact research book names, safer archive and
    twin jobs). Deploy before the paper trader's first decision (GO_LIVE_GUIDE C7).
+   **25 Nov 2026 (BF-D88)**: each share page shows "Odds for shares like this
+   (history)" from `config/odds_table_v1.csv` (aggregated counts by size band and score
+   quintile, 2005-2025; descriptive, not a trial, no strategy change); rebuild at most
+   yearly with `research/odds_table/build_odds_table.py` (`docs/ODDS_TABLE.md`).
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
