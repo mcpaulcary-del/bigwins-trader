@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88)
+# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -33,7 +33,8 @@ about the end of February 2027). The owner approves every order.
   MOON_LEG2 (info EST-C, DIL-C); retired at the 31 Dec 2026 close (history kept) = H6,
   COMBO, SIM_BT, PAIR, EARLY, ACC, M3, E3, CXL and the REF twins. No new paper line of any
   kind before the Dec 2028 review unless one is retired. Research trial count
-  **N = 3,046** (gap review seq 90, big-winner research seq 93).
+  **N = 3,147** (ledger seq 101, after the ASX improvement round research_bw; the US
+  large-cap round research_us4 is still running and will add more).
 - Backtest honesty (gap review, seq 90): with the live A$10k cap and rule 14, 2018-26
   gives A$21.0k against A$18.6k for the fund, before fixed costs (not the uncapped
   A$34.5k).
@@ -100,6 +101,11 @@ Real money around March 2027.
    (history)" from `config/odds_table_v1.csv` (aggregated counts by size band and score
    quintile, 2005-2025; descriptive, not a trial, no strategy change); rebuild at most
    yearly with `research/odds_table/build_odds_table.py` (`docs/ODDS_TABLE.md`).
+   **25 Nov 2026 (BF-D89)**: Research in the app (Home › "What we know", `/research`:
+   Highlights, Library, Testing, Dates, Glossary) from `docs/research/`; the live trial
+   count from the record's `LEDGER.jsonl` once the record is on the server. This build is
+   a trading / infrastructure update (Dockerfile, config, classifiers): deploy before the
+   first decision (C7). Later content-only commits are app-only.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
@@ -129,6 +135,17 @@ Personal, non-commercial use, never shared, feeds no paper line and no trading d
 (ledger seq 96). The trader and the app themselves never contact asx.com.au. On the
 server the archive is a host job, off until the research record moves (after 30 Nov;
 GO_LIVE_GUIDE C10).
+
+## Research content (BF-D89): after every study
+Claude updates `docs/research/` in ONE commit at the end of each study: the study card
+`studies/<id>.md` (front matter + Summary / Key numbers / What it means for you / How sure
+are we?, with `trials`, `n_total` and the ledger entry), `highlights.yaml` if a slot
+changes (bump `version`, `checked`, `trials_total`, `trials_ledger_seq`), `testing.yaml` /
+`dates.yaml` if a line or date changes. A pre-registered study is committed first as
+`placeholder: true`. Aggregated numbers and plain text only: no vendor price rows, no
+per-company series, no paths, names, emails or account ids; full reports stay on OneDrive
+(`report: null`). Run `tests/test_bf_d89_research.py` (limits, traceability, privacy).
+A content-only commit is an app update; it reaches the phone after Approve update.
 
 ## Rules that never change
 Paper only until the checklist passes · never read or show secrets · no automated access to
