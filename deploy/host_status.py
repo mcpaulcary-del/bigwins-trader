@@ -59,8 +59,15 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
             "new_config": env.get("UPD_CFG") or None, "new_changelog": env.get("UPD_LOG", ""),
             "subject": env.get("UPD_SUBJECT", ""), "previous": env.get("UPD_PREV", ""),
             "previous_migrations": bool(env.get("UPD_PREV_MIG", "").strip()),
-            "ci": env.get("UPD_CI", "unknown"),  # review F13
+            "ci": env.get("UPD_CI", "unknown"),  # review F13 (information only, BF-D84)
+            "signed": env.get("UPD_SIGNED", ""),  # BF-D84: good | bad | none
+            "seen_h": env.get("UPD_SEEN_H", ""),  # hours since the worker first saw it
         },
+        # BF-D84: commit signatures (enforce | warn | nokey); BF-D82: the presence check
+        "signing": env.get("SIGN_MODE", ""),
+        "presence_ping_set": env.get("PRESENCE_PING_SET") == "1",
+        "presence_ping": env.get("PRESENCE_PING", ""),
+        "claude_remote": env.get("CLAUDE_REMOTE", ""),  # BF-D85: "" or the start time
     }  # fmt: skip
 
 

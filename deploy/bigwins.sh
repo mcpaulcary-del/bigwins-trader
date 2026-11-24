@@ -4,7 +4,8 @@
 # Then type:     bigwins          (menu)   or   bigwins status | logs | update | restart |
 #                secret <name> | check | claude | remote | app | demo | login | vapid |
 #                install-worker | worker | backup | restore-test | onedrive | restore |
-#                start-trader <date> | ibkr | seed-data
+#                start-trader <date> | ibkr | seed-data | new-totp | signing <...> |
+#                fetch-archive <url> | offsite2
 # Server-only settings (your Tailscale log-in, tax rate, paper account id...) go in
 # config/bfast.local.yaml: not in git, laid over config/bfast.yaml (BF-D39).
 set -uo pipefail
@@ -16,16 +17,22 @@ CONFIG=$REPO/config/bfast.yaml
 LOCAL=$REPO/config/bfast.local.yaml
 # 8 typed + 3 made here = the 11 secret files (review F16; telegram_bot_token only with Telegram)
 BASE_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id db_dashboard_password"
-APP_SECRETS="vapid_private_key app_proxy_key worker_job_key"  # BF-D40, BF-D46, BF-D48: made here
+APP_SECRETS="vapid_private_key app_proxy_key worker_job_key app_passphrase"  # BF-D40/D46/D48/D83: made here
 BACKUP_DIR=/var/backups/bigwins              # BF-D64: local backups (root only)
 BKEY=/root/.bigwins-backup/backup.key         # the backup recovery key (age; root only)
 OD_REMOTE=bigwins-onedrive                    # the rclone remote for OneDrive
 OD_PATH="$OD_REMOTE:Big Wins server backups"
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
-TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url"
+TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url healthchecks_presence_url app_passphrase healthchecks_backup_url"
 INFO_SCRIPT=$DEPLOY/info_archive.py         # BF-D78: the private info archive (host job)
 IMAGE=asx-trader-bfast-trader               # the image compose builds (:local; :prev = BF-D80)
+# BF-D84 / BF-D85: root-only settings outside the repository (a pushed commit cannot change them)
+ETC=/etc/bigwins
+SIGNERS=$ETC/allowed_signers                 # the engineer's public signing key(s) (git ssh format)
+SIGN_ENFORCE=$ETC/require_signed             # present = refuse unsigned updates (else warn only)
+OD2_REMOTE=bigwins-offsite2                  # BF-D86: optional second off-site copy (any rclone remote)
+INFO_CAP_MB=500                              # BF-D86: the info archive is backed up up to this size
 
 g() { printf '\033[32m%s\033[0m\n' "$*"; }
 y() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -165,7 +172,10 @@ do_update() {  # no questions asked (the app's server worker uses it too)
     return 1
   fi
   local before; before=$(git -C $REPO rev-parse HEAD 2>/dev/null)
-  git -C $REPO pull --ff-only || { r "Update failed (no changes made)."; return 1; }
+  git -C $REPO fetch -q origin "$BRANCH" || { r "Update failed: git fetch (no changes made)."; return 1; }
+  local tip; tip=$(git -C $REPO rev-parse "origin/$BRANCH")
+  check_signed "$tip" || { r "Update refused (no changes made)."; return 1; }  # BF-D84
+  git -C $REPO merge --ff-only -q "$tip" || { r "Update failed (no changes made)."; return 1; }
   if [ "$(git -C $REPO rev-parse HEAD)" != "$before" ]; then
     python3 "$DEPLOY/gitops.py" record "$STATE" "$before"  # BF-D45: the rollback target
     new_strategy_version "$before" HEAD && note_prev_version "$before"  # BF-D80
@@ -208,6 +218,11 @@ make_keys() {  # BF-D40/D46/D48/D52: generated secrets, made here once, never sh
       python3 "$DEPLOY/backup.py" keygen "$BKEY" >/dev/null && g "Made the backup recovery key (root only)."
     fi
   fi
+  if [ ! -s "$SECRETS/app_passphrase" ]; then  # BF-D83: "none" until the owner sets one
+    mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+    printf 'none' > "$SECRETS/app_passphrase" && chmod 444 "$SECRETS/app_passphrase" \
+      && y "Passphrase not set yet (the app reminds you): bigwins secret app_passphrase"
+  fi
   local n tmp
   for n in app_proxy_key worker_job_key db_dashboard_password; do
     [ -s "$SECRETS/$n" ] && continue
@@ -237,6 +252,11 @@ update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing el
   fi
   if [ "$kind" = strategy ] && market_open; then
     echo "refused: a trading update is applied outside ASX hours"; return 1
+  fi
+  check_signed "$commit" || return 1  # BF-D84: the engineer's signature (enforce or warn)
+  local min age; min=$(update_min_age_h); age=$(seen_hours "$commit")
+  if [ "$min" -gt 0 ] && [ "$age" -lt "$min" ]; then  # BF-D84: live minimum age
+    echo "refused: this update is ${age} hours old here; the minimum is ${min} hours. Approve it again later."; return 1
   fi
   new_strategy_version "$before" "$commit" && note_prev_version "$before"  # BF-D80
   git -C $REPO merge --ff-only -q "$commit" || { echo "refused: fast-forward failed (no changes made)"; return 1; }
@@ -273,7 +293,9 @@ cmd_secret() {
     echo "Which secret?"; select name in $TYPED_SECRETS; do [ -n "$name" ] && break; done
   fi
   if [ "$name" = vapid_private_key ]; then cmd_vapid; return; fi
+  if [ "$name" = totp_seed ] && [ -s "$SECRETS/totp_seed" ]; then cmd_new_totp; return; fi  # BF-D83
   case " $TYPED_SECRETS " in *" $name "*) ;; *) r "Unknown secret: $name"; return 1;; esac
+  if [ "$name" = app_passphrase ]; then set_passphrase; return; fi  # BF-D83: stored as a hash
   if [ "$name" = db_password ] && [ -s "$SECRETS/db_password" ] && docker volume ls -q 2>/dev/null | grep -q pgdata; then
     r "db_password is already set and the database exists: Postgres keeps the original"
     r "password, so a new one would lock the trader out. Not changed (review F17)."
@@ -361,7 +383,13 @@ update_check() {  # BF-D45: every 10 minutes, is the branch ahead, and what woul
   fi
   UPD_PREV_MIG=""
   [ -n "$UPD_PREV" ] && UPD_PREV_MIG=$(git -C $REPO diff --name-only "$UPD_PREV" "$UPD_HEAD" -- migrations/ 2>/dev/null)
-  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG UPD_CI
+  UPD_SIGNED=""; UPD_SEEN_H=""  # BF-D84: the newest remote commit's signature and age here
+  if [[ "$UPD_REMOTE" =~ ^[0-9a-f]{40}$ ]] && [ "$UPD_REMOTE" != "$UPD_HEAD" ]; then
+    [ "$(cut -d' ' -f1 "$STATE/seen_remote" 2>/dev/null)" = "$UPD_REMOTE" ] \
+      || printf '%s %s\n' "$UPD_REMOTE" "$(date +%s)" > "$STATE/seen_remote"
+    UPD_SIGNED=$(commit_sig "$UPD_REMOTE"); UPD_SEEN_H=$(seen_hours "$UPD_REMOTE")
+  fi
+  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG UPD_CI UPD_SIGNED UPD_SEEN_H
 }
 
 host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no secrets)
@@ -373,7 +401,7 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
   ps=$(dc ps --format '{{.Service}}|{{.Status}}' 2>/dev/null)
   logs=$(dc logs --tail 30 --no-color trader 2>/dev/null | tail -30)
   local n present="" missing=""  # BF-D63: secret names only (the files are never read)
-  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password healthchecks_backup_url; do  # (BF-D77: daily_url is in TYPED)
+  for n in $TYPED_SECRETS $APP_SECRETS db_dashboard_password; do  # (BF-D77/D82: the hc URLs are in TYPED)
     if [ -s "$SECRETS/$n" ]; then present="$present $n"; else missing="$missing $n"; fi
   done
   TS="$ts" CV="$cv" ASX="$asx" PS="$ps" LOGS="$logs" SECRETS_PRESENT="$present" \
@@ -382,6 +410,9 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
     DAILY_PING_SET="$(daily_url >/dev/null && echo 1 || echo 0)" \
     DAILY_PING="$(cat "$STATE/daily_ping_day" 2>/dev/null | head -c 10)" \
     TIMERS="$(command -v systemctl >/dev/null && timer_states)" \
+    SIGN_MODE="$(sign_mode)" PRESENCE_PING_SET="$(presence_url && echo 1 || echo 0)" \
+    PRESENCE_PING="$(head -c 10 "$STATE/presence_ping_day" 2>/dev/null)" \
+    CLAUDE_REMOTE="$(tmux has-session -t remote 2>/dev/null && date -d "@$(cat "$STATE/claude_remote_started" 2>/dev/null || date +%s)" '+%a %H:%M' 2>/dev/null)" \
     python3 "$DEPLOY/host_status.py"
 }
 
@@ -416,7 +447,19 @@ do_backup() {  # BF-D64: one encrypted backup, local + OneDrive, and the readabl
   dc exec -T trader sh -c 'tar -C /app/out -cf - .' > "$stage/trader_out.tar" 2>/dev/null
   dc exec -T db psql -U trader -d "$jdb" -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" > "$stage/counts.txt" 2>/dev/null
   onedrive_ok && remote="$OD_PATH/archives"
+  local remote2="" info notes="" mb
+  od2_ok && remote2=$(od2_path)  # BF-D86: the optional second off-site copy
+  # BF-D86 (DR review M4): the deployed code itself, so a restore does not need GitHub
+  git -C $REPO bundle create "$stage/code.bundle" HEAD >/dev/null 2>&1 || notes="code bundle failed"
+  info=$(info_dir)  # BF-D86: the private info archive, up to INFO_CAP_MB
+  if [ -d "$info" ]; then
+    mb=$(du -sm "$info" 2>/dev/null | cut -f1)
+    if [ "${mb:-0}" -gt "$INFO_CAP_MB" ]; then notes="${notes:+$notes; }info archive not backed up: ${mb} MB is over ${INFO_CAP_MB} MB"; info=""; fi
+  else
+    info=""
+  fi
   COMPOSE="$(compose_json)" JDB="$jdb" STAGE="$stage" OUT="$BACKUP_DIR" KEY="$BKEY" REMOTE="$remote" \
+  REMOTE2="$remote2" INFO="$info" NOTES="$notes" \
   REPO="$REPO" DEPLOY="$DEPLOY" SECRETS="$SECRETS" STATE="$stage/worker_state" RECORD="$(envval RECORD_DIR)" \
   FSTORE="$(envval FORWARD_STORE)" REFDIR="$(envval REF_DIR)" FLEX="$(envval FLEX_INBOX)" \
   COMMIT="$(git -C $REPO rev-parse HEAD 2>/dev/null)" python3 - <<'PY'
@@ -440,7 +483,12 @@ if e.get("REFDIR"):  # security review M2
     src.append(["ref", e["REFDIR"]])
 if e.get("FLEX"):
     src.append(["flex_inbox", e["FLEX"]])
+if os.path.isfile(e["STAGE"] + "/code.bundle"):  # BF-D86
+    src.append(["code.bundle", e["STAGE"] + "/code.bundle"])
+if e.get("INFO"):
+    src.append(["info_archive", e["INFO"]])
 plan = {"out_dir": e["OUT"], "key_file": e["KEY"], "remote": e.get("REMOTE") or None,
+        "remote2": e.get("REMOTE2") or None, "notes": [x for x in e.get("NOTES", "").split("; ") if x],
         "commit": e.get("COMMIT", ""), "local_keep": [7, 0],
         "pg_dump": json.loads(e["COMPOSE"]) + ["exec", "-T", "db", "pg_dump", "-U", "trader", "-d", e["JDB"]],
         "row_counts": counts, "sources": src, "work_dir": "/var/tmp"}
@@ -475,7 +523,8 @@ do_restore_test() {  # BF-D64 / review L3: unpack the latest backup once, check 
     docker exec -i "$cid" psql -q -h 127.0.0.1 -U trader -d rt -v ON_ERROR_STOP=1 --single-transaction < "$tmp/journal/journal.sql" >/dev/null 2>&1
     counts=$(docker exec "$cid" psql -h 127.0.0.1 -U trader -d rt -At -F '|' -c "select 'bf_events',count(*) from bf_events union all select 'bf_fills',count(*) from bf_fills union all select 'bf_intents',count(*) from bf_intents union all select 'bf_approvals',count(*) from bf_approvals" 2>/dev/null)
   fi
-  res=$(printf '%s' "$res" | COUNTS="$counts" python3 -c 'import json,os,sys
+  local od; od=$(onedrive_verify 2>/dev/null)  # BF-D86: the newest OneDrive copy, downloaded
+  res=$(printf '%s' "$res" | COUNTS="$counts" OD="$od" python3 -c 'import json,os,sys
 r=json.loads(sys.stdin.read() or "{}"); r.pop("restore_dir", None); got={}
 for l in os.environ.get("COUNTS","").splitlines():
     t,_,n=l.partition("|")
@@ -485,6 +534,11 @@ r["kind"]="restore_test"
 r["db_rows_match"]=bool(want) and bool(got) and all(got.get(k)==v for k,v in want.items())
 r["ok"]=bool(r.get("ok")) and r["db_rows_match"]
 if not r["db_rows_match"]: r["error"]=r.get("error") or "journal rows in the restored database differ from the backup (or none were counted)"
+try: od=json.loads(os.environ.get("OD") or "{}")
+except ValueError: od={"onedrive_checked":True,"onedrive_ok":False,"onedrive_error":"check failed"}
+r.update(od)
+if od.get("onedrive_checked") and not od.get("onedrive_ok"):
+    r["ok"]=False; r["error"]=r.get("error") or ("the OneDrive copy failed its check: "+str(od.get("onedrive_error") or "?"))
 print(json.dumps(r))')
   record_backup "$res"
   echo "$res"
@@ -521,7 +575,8 @@ cmd_restore() {  # BF-D64 / review F6 + security M1: disaster recovery that fail
     mv -f "$BKEY.new" "$BKEY"
   fi
   mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
-  if onedrive_ok; then rclone copy "$OD_PATH/archives" "$BACKUP_DIR" --include 'bigwins-*' >/dev/null 2>&1; fi
+  if onedrive_ok; then rclone copy "$OD_PATH/archives" "$BACKUP_DIR" --include 'bigwins-*' >/dev/null 2>&1
+  elif od2_ok && [ -n "$(od2_path)" ]; then rclone copy "$(od2_path)" "$BACKUP_DIR" --include 'bigwins-*' >/dev/null 2>&1; fi  # BF-D86
   local arch tmp jdb man commit
   arch=$(python3 "$DEPLOY/backup.py" latest "$BACKUP_DIR") || { r "No backup found (connect OneDrive with: bigwins onedrive)."; return 1; }
   echo "Newest backup: $(basename "$arch") (made $(date -r "$arch" '+%a %d %b %Y %H:%M'))"
@@ -554,7 +609,12 @@ print("; ".join(bad)); sys.exit(1 if bad or not want else 0)' $(compose_json | p
   fi
   g "Journal restored and checked."
   commit=$(printf '%s' "$man" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",""))')
-  if [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then git -C $REPO fetch -q origin "$BRANCH" 2>/dev/null; git -C $REPO checkout -q "$commit" && g "Code at the backup's commit ${commit:0:12}."; fi
+  if [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+    git -C $REPO fetch -q origin "$BRANCH" 2>/dev/null
+    # BF-D86: without GitHub the archive's own code bundle has the commit
+    git -C $REPO cat-file -e "$commit^{commit}" 2>/dev/null || { [ -s "$tmp/code.bundle" ] && git -C $REPO fetch -q "$tmp/code.bundle" HEAD 2>/dev/null; }
+    git -C $REPO checkout -q "$commit" && g "Code at the backup's commit ${commit:0:12}."
+  fi
   # config: only the server's own files (never the tracked bfast.yaml)
   local f
   for f in "$tmp"/config/*; do
@@ -569,6 +629,9 @@ print("; ".join(bad)); sys.exit(1 if bad or not want else 0)' $(compose_json | p
   [ -n "$ref" ] && [ -d "$tmp/ref" ] && mkdir -p "$ref" && cp -a "$tmp/ref/." "$ref/"
   [ -n "$fx" ] && [ -d "$tmp/flex_inbox" ] && mkdir -p "$fx" && cp -a "$tmp/flex_inbox/." "$fx/"
   [ -n "$fs" ] && chown -R 10001:10001 "$fs"; [ -n "$fx" ] && chown -R 10001:10001 "$fx"  # M2
+  if [ -d "$tmp/info_archive" ]; then  # BF-D86: the private info archive (written as uid 10001)
+    mkdir -p "$(info_dir)" && cp -a "$tmp/info_archive/." "$(info_dir)/" && chown -R 10001:10001 "$(info_dir)"
+  fi
   dc up -d && dc exec -T trader sh -c 'tar -C /app/out -xf -' < "$tmp/trader_out.tar" 2>/dev/null
   g "Restored. Then: bigwins 9 (phone app on Tailscale; the server's Tailscale name may be new),"
   g "bigwins 11 (allow my phone), sudo bigwins install-worker, and in the app: Turn on alerts again."
@@ -601,6 +664,9 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
   local st
   st=$(host_status 2>/dev/null | dc exec -T trader trader-bf server-jobs status 2>/dev/null)
   daily_ping "$(printf '%s\n' "$st" | sed -n 's/^cycle-ok //p' | head -1)"
+  worker_heartbeat  # BF-D87 (S2): a dead server is caught before the trader runs
+  presence_ping "$st"  # BF-D82: the second contact's outside check
+  claude_autostop >/dev/null  # BF-D85
   if [ -s "$STATE/last_backup.json" ]; then  # a result recorded while the trader was down
     dc exec -T trader trader-bf server-jobs backup < "$STATE/last_backup.json" >/dev/null 2>&1 && rm -f "$STATE/last_backup.json"
   fi
@@ -646,7 +712,12 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     restart) out=$(dc up -d 2>&1 && dc restart trader 2>&1); rc=$?;;
     update) out=$(update_to "$commit" "$flags" 2>&1); rc=$?;;
     rollback) out=$(do_rollback "$commit" "$flags" 2>&1); rc=$?;;
-    claude_remote) out=$(claude_remote_status start 2>&1); rc=$?;;
+    claude_remote)  # BF-D85: off by default when live (a root-only switch allows it)
+      if is_live && [ ! -f "$ETC/claude_remote_live" ]; then
+        out="refused: Claude remote control is off on a live book (on the server: touch $ETC/claude_remote_live)"; rc=1
+      else
+        out=$(claude_remote_status start 2>&1); rc=$?
+      fi;;
     claude_stop) out=$(tmux kill-session -t remote 2>&1 && echo "Claude remote control stopped."); rc=$?;;
     backup_now) out=$(do_backup 2>&1); rc=$?;;
     restore_test) out=$(do_restore_test 2>&1); rc=$?;;
@@ -966,7 +1037,7 @@ claude_remote_status() {  # for the app's server job: start (reuses cmd_remote),
   if tmux capture-pane -p -t remote 2>/dev/null | grep -qiE 'log ?in|sign ?in|authenticat|https://claude'; then
     echo "Claude remote control is running but needs a one-time sign-in: on the server (Termius) run: tmux attach -t remote"
   else
-    echo "Claude remote control is running. Open the Claude app (claude.ai/code): the server shows as a session."
+    echo "Claude remote control is running (it stops by itself after $(claude_hours) hours). Open the Claude app (claude.ai/code): the server shows as a session."
   fi
 }
 
@@ -975,9 +1046,201 @@ cmd_remote() {
     g "Remote Control is already running. Open the Claude app: the server shows as a session."
   else
     tmux new -d -s remote -c $REPO "claude remote-control"
-    g "Remote Control started. If it asks you to sign in, run: tmux attach -t remote"
+    mkdir -p "$STATE" && date +%s > "$STATE/claude_remote_started"  # BF-D85: auto-stop clock
+    g "Remote Control started (it stops by itself after $(claude_hours) hours). If it asks you to sign in, run: tmux attach -t remote"
     echo "Then open the Claude app on your phone or laptop: the server shows as a session."
   fi
+}
+
+# ---------------------------------------------------------------- disaster recovery (BF-D82..BF-D87)
+set_passphrase() {  # BF-D83: the memorised passphrase, stored only as a salted hash
+  echo "Your passphrase: a few words you will remember, at least 12 characters. It is asked"
+  echo "for when you re-arm, approve an update, roll back, show the backup key, start Claude"
+  echo "remote control or unlock the app. It is never shown, stored only as a hash."
+  local a b
+  read -rsp "Type it: " a; echo
+  read -rsp "Type it again: " b; echo
+  mkdir -p "$SECRETS" && chmod 700 "$SECRETS"
+  if printf '%s\n%s\n' "$a" "$b" | python3 "$DEPLOY/secret_tool.py" passphrase "$SECRETS/app_passphrase"; then
+    unset a b
+    g "Passphrase saved (as a hash). Restart the trader to use it (menu option 4)."
+  else
+    unset a b
+    r "Nothing changed."; return 1
+  fi
+}
+
+cmd_new_totp() {  # BF-D83 (DR review M9): a new authenticator seed; the old one stops working
+  command -v qrencode >/dev/null || { r "qrencode is missing: apt install qrencode"; return 1; }
+  y "A NEW authenticator seed: the old codes stop working when the trader restarts (now)."
+  y "Have your authenticator app open (Google Authenticator / Microsoft / 1Password)."
+  y "Delete the old 'bigwins-trader' entry afterwards. Older backups still hold the old seed:"
+  y "after any restore from a backup, run bigwins new-totp again."
+  confirm "Make a new seed and show its QR code once?" || return 0
+  guard_market || return 1
+  python3 "$DEPLOY/secret_tool.py" new-totp "$SECRETS" | qrencode -t ansiutf8 \
+    || { r "Could not make the seed."; return 1; }
+  read -rp "Scan it now, then press Enter (the screen is cleared)." _
+  clear
+  if [ -f "$DEPLOY/.env" ]; then dc restart trader dashboard >/dev/null 2>&1 && g "Trader and app restarted: only the new codes work now."; fi
+  g "Done. Test it: in the app, Controls > Status, then Resume with a new code if paused."
+}
+
+sign_mode() {  # BF-D84: enforce | warn | nokey
+  if [ -f "$SIGN_ENFORCE" ]; then echo enforce; elif [ -s "$SIGNERS" ]; then echo warn; else echo nokey; fi
+}
+
+commit_sig() {  # commit -> good | bad | none (git verify-commit against the root-only signers file)
+  [ -s "$SIGNERS" ] || { echo none; return; }
+  # the plain OpenSSH verifier, whatever else the machine's git config says
+  if git -C $REPO -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen -c gpg.ssh.allowedSignersFile="$SIGNERS" \
+       verify-commit "$1" >/dev/null 2>&1; then
+    echo good
+  else
+    echo bad
+  fi
+}
+
+check_signed() {  # commit: 0 = may be applied (good, or warn mode), 1 = refused (enforce)
+  local sig mode; sig=$(commit_sig "$1"); mode=$(sign_mode)
+  [ "$sig" = good ] && { echo "signature: good (the engineer's key)"; return 0; }
+  if [ "$mode" = enforce ]; then
+    echo "refused: commit ${1:0:10} is not signed by the engineer's key (signing is enforced)"; return 1
+  fi
+  echo "warning: commit ${1:0:10} is not signed by the engineer's key (warn mode: applied anyway)"
+  return 0
+}
+
+cmd_signing() {  # BF-D84: bigwins signing status | key | enforce | warn
+  [ "$(id -u)" = 0 ] || { r "Run as root."; return 1; }
+  case "${1:-status}" in
+    key)
+      echo "Paste the engineer's PUBLIC signing key (one line: ssh-ed25519 AAAA... name):"
+      local k; read -r k
+      [[ "$k" =~ ^(ssh-ed25519|sk-ssh-ed25519@openssh.com|ecdsa-sha2-nistp256)\ [A-Za-z0-9+/=]{40,}( .*)?$ ]] \
+        || { r "That is not a public key line; nothing changed."; return 1; }
+      mkdir -p "$ETC" && chmod 755 "$ETC"
+      printf 'engineer namespaces="git" %s\n' "$k" >> "$SIGNERS" && chmod 644 "$SIGNERS"
+      g "Saved in $SIGNERS (root only). Mode now: $(sign_mode).";;
+    enforce)
+      [ -s "$SIGNERS" ] || { r "No signing key yet: bigwins signing key first."; return 1; }
+      local hs; hs=$(commit_sig "$(git -C $REPO rev-parse "origin/$BRANCH" 2>/dev/null)")
+      [ "$hs" = good ] || y "Note: the newest commit on GitHub is not signed yet ($hs): updates wait for a signed one."
+      touch "$SIGN_ENFORCE" && chmod 644 "$SIGN_ENFORCE" && g "Signing ENFORCED: unsigned updates are refused.";;
+    warn) rm -f "$SIGN_ENFORCE"; y "Signing in WARN mode: unsigned updates are applied with a warning.";;
+    *) echo "Commit signatures: $(sign_mode)  (key file: $SIGNERS)";;
+  esac
+}
+
+seen_hours() {  # commit -> hours since this worker first saw it as the branch's newest commit
+  local sha t; read -r sha t < "$STATE/seen_remote" 2>/dev/null || { echo 0; return; }
+  [ "$sha" = "$1" ] && [[ "$t" =~ ^[0-9]+$ ]] || { echo 0; return; }
+  echo $(( ($(date +%s) - t) / 3600 ))
+}
+
+is_live() { grep -qsE '^mode: *live' "$CONFIG" "$LOCAL"; }  # never true in this paper-only build
+
+update_min_age_h() {  # BF-D84: live 24 hours by default, paper 0; /etc/bigwins overrides
+  local v; v=$(cat "$ETC/update_min_age_hours" 2>/dev/null)
+  if [[ "$v" =~ ^[0-9]{1,3}$ ]]; then echo "$v"; elif is_live; then echo 24; else echo 0; fi
+}
+
+worker_heartbeat() {  # BF-D87 (DR review S2): while the trader is the placeholder, the worker pings
+  case "$(envval TRADER_CMD)" in "trader-bf run"*) return 0;; esac  # the real trader pings itself
+  local u now last; u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null)
+  case "$u" in https://*) ;; *) return 0;; esac
+  now=$(date +%s); last=$(cat "$STATE/hb_ping_at" 2>/dev/null)
+  [[ "$last" =~ ^[0-9]+$ ]] && [ $((now - last)) -lt 290 ] && return 0
+  curl -fsS -m 10 -o /dev/null "$u" && printf '%s' "$now" > "$STATE/hb_ping_at"
+}
+
+presence_url() {  # BF-D82: the optional owner-presence check (a secret: never printed)
+  local u; u=$(cat "$SECRETS/healthchecks_presence_url" 2>/dev/null)
+  case "$u" in https://*) return 0;; *) return 1;; esac
+}
+
+presence_ping() {  # BF-D82: once a day while the trader says the owner acted within the days
+  printf '%s\n' "$1" | grep -qx 'presence-ok' || return 0
+  local day; day=$(date +%F)
+  [ "$(cat "$STATE/presence_ping_day" 2>/dev/null)" = "$day" ] && return 0
+  presence_url || return 0
+  curl -fsS -m 10 -o /dev/null "$(cat "$SECRETS/healthchecks_presence_url")" && printf '%s' "$day" > "$STATE/presence_ping_day"
+}
+
+claude_hours() {  # BF-D85: Claude remote control stops by itself after this many hours
+  local v; v=$(cat "$ETC/claude_remote_hours" 2>/dev/null)
+  [[ "$v" =~ ^[1-9][0-9]?$ ]] && echo "$v" || echo 2
+}
+
+claude_autostop() {  # BF-D85: stop the remote-control session after claude_hours
+  tmux has-session -t remote 2>/dev/null || { rm -f "$STATE/claude_remote_started"; return 0; }
+  local t now; now=$(date +%s); t=$(cat "$STATE/claude_remote_started" 2>/dev/null)
+  if ! [[ "$t" =~ ^[0-9]+$ ]]; then printf '%s' "$now" > "$STATE/claude_remote_started"; return 0; fi
+  if [ $((now - t)) -ge $(( $(claude_hours) * 3600 )) ]; then
+    tmux kill-session -t remote 2>/dev/null; rm -f "$STATE/claude_remote_started"
+    echo "Claude remote control stopped after $(claude_hours) hours"
+  fi
+}
+
+od2_ok() { command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -qx "$OD2_REMOTE:"; }
+
+cmd_offsite2() {  # BF-D86: an optional second off-site copy (e.g. Backblaze B2), set up from a phone
+  command -v rclone >/dev/null || { r "rclone is missing: apt install rclone"; return 1; }
+  echo "A second place for the encrypted backups, not Microsoft. Backblaze B2 works from a phone:"
+  echo "  1. backblaze.com > sign up (B2 Cloud Storage) > Buckets > Create a bucket, PRIVATE,"
+  echo "     name it (e.g. bigwins-backups-<random>)."
+  echo "  2. Application Keys > Add a New Application Key: only that bucket, Read and Write."
+  echo "     Copy the keyID and the applicationKey (shown once)."
+  echo "Now rclone asks: n (new remote) > name: $OD2_REMOTE > storage: b2 > account: the keyID >"
+  echo "  key: the applicationKey > hard_delete: false > advanced: n > y > q"
+  confirm "Start?" || return 0
+  rclone config
+  chmod 600 /root/.config/rclone/rclone.conf 2>/dev/null
+  local bk; read -rp "The bucket name: " bk
+  [[ "$bk" =~ ^[a-z0-9-]{6,50}$ ]] || { r "Not a bucket name."; return 1; }
+  mkdir -p "$ETC" && printf '%s' "$bk" > "$ETC/offsite2_bucket"
+  if rclone lsd "$OD2_REMOTE:$bk" >/dev/null 2>&1; then g "Second copy connected: every backup also goes to $bk."; else r "Not working yet: run bigwins offsite2 again."; fi
+}
+
+od2_path() { local b; b=$(cat "$ETC/offsite2_bucket" 2>/dev/null); [ -n "$b" ] && echo "$OD2_REMOTE:$b/archives"; }
+
+cmd_fetch_archive() {  # BF-D86: phone-only restore, route B: a OneDrive share link of one archive
+  local url=${1:-} name=${2:-} part
+  [ -n "$url" ] || read -rp "Paste the share link of the archive: " url
+  [[ "$url" =~ ^https://[A-Za-z0-9.-]+/ ]] || { r "Not an https link."; return 1; }
+  [ -n "$name" ] || read -rp "The file's name as OneDrive shows it (bigwins-YYYYMMDD-HHMMSS.tar.age): " name
+  [[ "$name" =~ ^bigwins-[0-9]{8}-[0-9]{6}\.tar\.age$ ]] || { r "That is not a backup file name."; return 1; }
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+  part="$BACKUP_DIR/$name.part"
+  local try
+  for try in "$url" "$url$( [[ "$url" == *\?* ]] && echo '&' || echo '?')download=1"; do
+    curl -fsSL -m 600 -o "$part" "$try" 2>/dev/null && archive_ok "$part" && break
+    rm -f "$part"
+  done
+  [ -s "$part" ] || { r "Could not download an encrypted backup from that link (try the Termius SFTP way, guide F4)."; return 1; }
+  mv -f "$part" "$BACKUP_DIR/$name" && chmod 600 "$BACKUP_DIR/$name"
+  g "Saved $name. Now: bigwins restore (it uses the newest archive in $BACKUP_DIR). Then delete the share link."
+}
+
+archive_ok() {  # a file that starts like an age-encrypted archive (not a web page)
+  [ -s "$1" ] && [ "$(head -c 21 "$1")" = "age-encryption.org/v1" ]
+}
+
+onedrive_verify() {  # BF-D86 (DR review M4): download the newest OneDrive archive and verify it
+  onedrive_ok || { echo '{"onedrive_checked":false}'; return 0; }
+  local name d res
+  name=$(rclone lsf "$OD_PATH/archives" --include 'bigwins-*.tar.age' 2>/dev/null | sort | tail -1)
+  [ -n "$name" ] || { echo '{"onedrive_checked":true,"onedrive_ok":false,"onedrive_error":"no archive in OneDrive"}'; return 0; }
+  d=$(mktemp -d /var/tmp/bigwins-odcheck.XXXXXX) && chmod 700 "$d"
+  if rclone copyto "$OD_PATH/archives/$name" "$d/$name" >/dev/null 2>&1; then
+    res=$(python3 "$DEPLOY/backup.py" verify "$d/$name" "$BKEY" /var/tmp)
+  else
+    res='{"ok":false,"error":"download from OneDrive failed"}'
+  fi
+  rm -rf "$d"
+  printf '%s' "$res" | NAME="$name" python3 -c 'import json,os,sys
+r=json.loads(sys.stdin.read() or "{}")
+print(json.dumps({"onedrive_checked":True,"onedrive_ok":bool(r.get("ok")),"onedrive_archive":os.environ["NAME"],"onedrive_error":r.get("error","")}))'
 }
 
 menu() {
@@ -991,13 +1254,14 @@ menu() {
   echo " 11) Allow my phone to act (approve, pause...)   12) New phone-alert key"
   echo " 13) Install the server worker (app Server tab)   14) Connect OneDrive for backups"
   echo " 15) Back up now   16) Restore from a backup (disaster recovery)"
+  echo " 17) New authenticator seed (lost phone)   18) Set the app passphrase"
   echo "  0) Exit"
   read -rp "Choose: " c
   case $c in
     1) cmd_status;; 2) cmd_logs;; 3) cmd_update;; 4) cmd_restart;; 5) cmd_secret;;
     6) cmd_check;; 7) cmd_claude;; 8) cmd_remote;; 9) cmd_app;; 10) cmd_demo;;
     11) cmd_login;; 12) cmd_vapid;; 13) cmd_install_worker;; 14) cmd_onedrive;;
-    15) do_backup;; 16) cmd_restore;; *) echo "Bye.";;
+    15) do_backup;; 16) cmd_restore;; 17) cmd_new_totp;; 18) set_passphrase;; *) echo "Bye.";;
   esac
 }
 
@@ -1011,6 +1275,9 @@ case ${1:-} in
   start-trader) cmd_start_trader "${2:-}";; ibkr) cmd_ibkr;; seed-data) cmd_seed_data;;
   weekly) cmd_weekly;; new-backup-key) cmd_new_backup_key;;
   info-archive) do_info_archive;; prev-twin) do_prev_twin;;  # BF-D78, BF-D80 (timers)
+  new-totp) cmd_new_totp;; signing) cmd_signing "${2:-}";;  # BF-D83, BF-D84
+  fetch-archive) cmd_fetch_archive "${2:-}" "${3:-}";; offsite2) cmd_offsite2;;  # BF-D86
+  __lib__) ;;  # tests: load the functions only
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key|new-totp|signing status|key|enforce|warn|fetch-archive <url> [name]|offsite2]";;
 esac

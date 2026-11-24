@@ -23,7 +23,8 @@ Tailscale log-in are not secrets; they go in `config/bfast.local.yaml` on the se
 
 Contents: A. IBKR - B. Server - C. The phone app, alerts and the authenticator - D. First
 messages, approving in the app, the controls - E. What is left before go-live -
-T. Telegram (optional).
+**F. Emergencies (from a borrowed device)** - T. Telegram (optional). The one-page card
+for your second person is `docs/EMERGENCY_CARD.md`.
 
 ---
 
@@ -275,7 +276,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **eleven** files in `deploy/secrets/` (review F16: the eight you type below plus three that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key`; twelve with Telegram on). Optional: `healthchecks_backup_url` (C5), with exactly these names
+Compose needs **twelve** files in `deploy/secrets/` (review F16: the eight you type below plus four that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key` and `app_passphrase`, which holds `none` until you set your passphrase, BF-D83; thirteen with Telegram on). Optional, read only by the server worker and never by a container: `healthchecks_backup_url` (C5), `healthchecks_daily_url` (C5) and `healthchecks_presence_url` (F8). Exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -336,7 +337,11 @@ mode, which the containers cannot see.
 | `app_proxy_key` | dashboard and trader (signed app actions, BF-D46) | made by `bigwins update` |
 | `worker_job_key` | trader and the root host worker (signed server jobs, BF-D48) | made by `bigwins update` |
 | `db_dashboard_password` | the dashboard's SELECT-only database role (BF-D52) | made by `bigwins update`; the `db-roles` service sets it |
-| `healthchecks_url` | dead-man heartbeat (BF-D41), `none` = off | `trader/heartbeat.py` (pinged every 5 minutes) |
+| `healthchecks_url` | dead-man heartbeat (BF-D41), `none` = off | `trader/heartbeat.py` (pinged every 5 minutes); before the trader runs, the server worker pings it instead (BF-D87) |
+| `app_passphrase` | trader: the passphrase you keep in your head (BF-D83), stored only as a hash; `none` = not set | `trader/passphrase.py`; set with `bigwins secret app_passphrase` (typed twice, never shown) |
+| `healthchecks_backup_url` | server worker only: pinged after each good backup (C5) | `deploy/bigwins.sh` `hc_backup_ping` |
+| `healthchecks_daily_url` | server worker only: pinged after each good daily cycle (C5) | `deploy/bigwins.sh` `daily_ping` |
+| `healthchecks_presence_url` | server worker only: pinged once a day while you have used the app in the last 14 days; your second contact is on its alerts (F8) | `deploy/bigwins.sh` `presence_ping` |
 
 ### B7. Your settings in `config/bfast.local.yaml` (this server only)
 
@@ -441,6 +446,27 @@ The app now shows "bigwins-trader" with a 6-digit code. Keep a **paper backup** 
 seed (print the QR or write the letters down) somewhere safe: if you lose your phone,
 nobody can re-arm the system or approve an order without it.
 
+**A new seed (BF-D83)**: `bigwins new-totp` (or menu 17) makes a new seed, shows its QR
+code once on the screen, clears the screen and restarts the trader and the app. From then
+on only the new codes work; delete the old "bigwins-trader" entry in your authenticator.
+Use it after a lost phone (F1) or a lost authenticator (F2). Older backups still hold the
+old seed: after any restore, run `bigwins new-totp` again.
+
+**Your passphrase (BF-D83, before real money)**: `bigwins secret app_passphrase` (menu 18).
+Choose a few words you will remember (at least 12 characters) and keep it **in your
+head**, not on the phone. The app then asks for it, besides the 6-digit code, when you
+resume or continue, approve an update, roll back, show the backup key, start Claude
+remote control and unlock actions. Approvals and refusals still need only the code. A
+wrong passphrase counts like a wrong code (3 in 15 minutes lock code actions). Restart
+the trader after setting it (menu 4). Server > Health says "Passphrase: not set" until
+then.
+
+**Lock actions (BF-D83)**: Home or Controls > **Lock actions** is one tap. While locked,
+approvals, refusals, re-arming, code changes and server jobs are refused until you tap
+**Unlock** and enter your code (and passphrase). Pause, Kill and Stop always work with one
+tap, locked or not. Use it when the phone may be out of your hands (travel, repairs, a
+night out), and as the first step if you think someone else has it.
+
 ### C5. Strongly recommended: healthchecks.io (tells you if the server goes quiet)
 
 The app cannot tell you that the server is down, so the trader "checks in" with
@@ -505,6 +531,14 @@ database migrations (the app asks before rolling back across one).
   official Claude app (signed in with your Claude account). The **first sign-in is done
   once in Termius**: `tmux attach -t remote`, follow the sign-in, then Ctrl-b d to leave
   it running. The Big Wins app never runs Claude or any command itself.
+  **It stops by itself after 2 hours** (BF-D85; the server worker ends the session; a
+  different number of hours goes in `/etc/bigwins/claude_remote_hours`, root only). On a
+  live book it is **off** unless you switch it on deliberately on the server
+  (`touch /etc/bigwins/claude_remote_live`). It runs as root on purpose: Claude is there to
+  look after the server (Docker, the services, the checks), and a user that may run Docker
+  is as powerful as root anyway, so a "non-root" Claude would protect nothing. The
+  protections are instead: your code and passphrase to start it, the 2-hour stop, off when
+  live, and your Claude account's own 2-step verification.
 
 ### C7. Upgrading a server that already runs an earlier build
 
@@ -546,6 +580,16 @@ outside ASX hours (10:00-16:15 Sydney):
    them), and "Results by strategy version" starts a new segment with the same version
    name.
 
+8. **After the disaster-recovery update (24 Nov 2026, BF-D82..BF-D87)**, outside ASX
+   hours: `git -C /srv/asx-trader pull --ff-only && bigwins update` (it makes the
+   `app_passphrase` placeholder, rebuilds and restarts; like C7 step 7 it counts as a
+   trading / infrastructure update although no trading rule changes: the strategy hash
+   and the strategy settings hash stay the same). Then, from the phone, the owner steps
+   of part F0 (passphrase, presence check with your second contact, Tailscale device
+   approval). From now on the worker pings the heartbeat even before the paper trader
+   starts, so a dead server is caught today; the 14-day presence clock starts when the
+   paper trader runs.
+
 ### C8. Backups (server + OneDrive) and the recovery key
 
 1. On the server, once: `apt install age rclone` (if not there yet).
@@ -571,12 +615,42 @@ backups (and keep its password in your password manager), or keep using your own
 accept that the server could read the rest of your OneDrive. Your choice; the default
 is your own account. Backups are always encrypted before they leave the server.
 
+**Recommended: a backups-only Microsoft account (DR review S3).** About 10 minutes,
+needs a computer once (the `rclone authorize` step):
+1. signup.live.com: a new free Outlook address used only for this, a long password in your
+   password manager, 2-step verification on (Microsoft Authenticator or SMS), and the
+   recovery code printed and kept with your other backup codes.
+2. On the server: `rclone config delete bigwins-onedrive`, then `bigwins onedrive` again,
+   signing in with the **new** account on the computer.
+3. Copy the last few archives across once (OneDrive web: share the folder "Big Wins server
+   backups" from the old account to the new one, or just let the new one fill up over a
+   few nights while the old copies remain).
+4. In your main Microsoft account: account.microsoft.com > Privacy > Apps and services:
+   remove the old "rclone" access.
+If someone gets into your main Microsoft account they then cannot touch the backups, and
+the server's token can no longer read your own files.
+
+**A second off-site copy, not Microsoft (BF-D86, before real money)**: `bigwins offsite2`
+connects a free Backblaze B2 bucket (10 GB free; the archives are about 20-100 MB each).
+It is done **entirely from the phone** (a key id and a key typed in Termius, no browser
+step), and the same encrypted archive and the same retention go there every night. It is
+also the easiest restore source when your Microsoft account is not available (F4).
+
+**Also in each archive (BF-D86)**: the deployed code as a git bundle (`code.bundle`, so a
+restore does not need GitHub) and the private announcements archive (up to 500 MB; above
+that it is left out and the Backups result says so). The **weekly restore test** now also
+downloads the newest archive from OneDrive and checks it, so a OneDrive copy that cannot
+be opened is paged.
+
 The backups screen shows the recovery key's **fingerprint**; until the key with that
 fingerprint has been shown (and saved) the screen and the inbox remind you. A new key is
 never made silently while backups exist; a rotation is `bigwins new-backup-key`
 (old backups then still need the old key). A restore test runs by itself every Sunday.
 
 ### C9. If the server dies
+
+From a phone only: follow **F4** (no computer and no `rclone authorize` needed). The
+steps below are the computer route.
 
 You need: the recovery key (password manager), OneDrive access (or a copy of the backup
 files) and a computer with Termius.
@@ -736,7 +810,12 @@ actions locked.
 - **Strategy > Did the last update help?** (BF-D80): after each strategy update the
   server also runs the previous version on paper; both simulated twins start from the
   update day with $10,000, and the screen shows which is ahead.
-- **Settings** (gear): alerts, who may act, the go-live checklist items the app can see.
+- **Settings** (gear): alerts, who may act, the go-live checklist items the app can see
+  (including the disaster-recovery items of E2).
+- **Server > Health, "You · owner presence"** (BF-D82): days since your last action, the
+  day buying would pause by itself, and **I'm here**; "Phone and update safety" (the
+  passphrase, Lock, update signatures, Claude remote); **Renewal dates** (the Flex token,
+  your payment card, BinaryLane), edited like the running costs.
 
 ---
 
@@ -794,7 +873,14 @@ February 2027**; real money (A$10,000) starts around **March 2027**, not in Dece
 | - | **IBKR Mobile as the fallback**: install it, log in with the live user name, and practise once on paper: cancel an open order and sell one holding from the app (if the server is down on an order day, this is how you act) | before real money |
 | - | **Rotate every secret seen during set-up** (chat screenshots, pasted values): EODHD token, Flex token, healthchecks URLs, the paper password; then `bigwins secret <name>` and restart | before real money |
 | - | **Calendar reminders**: the Flex token's expiry date (IBKR shows it), card expiries for BinaryLane / EODHD / Claude, the Tailscale key expiry if you did not disable it (C5b) | now |
-| - | **Recovery key saved** (Backups > Show recovery key, fingerprint matches) and a **restore drill on a second server** (`bigwins restore`, C9) | before real money |
+| - | **Recovery key saved** (Backups > Show recovery key, fingerprint matches) and a **restore drill on a second server, from the phone only, timed** (F4; fill in the timing table there) | before real money |
+| - | **Passphrase set** (`bigwins secret app_passphrase`, C4); Health shows "Passphrase: set" | before real money |
+| - | **Update signatures enforced** (F5b: the engineer's signing key on the server, `bigwins signing enforce`); Health shows "Update signatures: enforce" | before real money |
+| - | **Second contact added** to the owner-presence check on healthchecks.io, and the emergency card (`docs/EMERGENCY_CARD.md`) filled in by hand and given to them (F8) | before real money |
+| - | **Break-glass root password tested** in the BinaryLane web console (F3) | before real money |
+| - | **IBKR trading-only user** for the live gateway (F7) | before real money |
+| - | **Telegram token revoked** (BotFather `/revoke`), whether or not Telegram is on | before real money (now is better) |
+| - | **Tailscale**: device approval on, SSH limited to your named devices (F10); a second off-site copy (`bigwins offsite2`, C8) | before real money |
 | - | **Retail / wholesale resolved** with IBKR (retail), and your **TFN** given to IBKR | before funding |
 | - | **Early-close days**: 24 and 31 December are not order days (orders go the next full session); nothing to do | info |
 | - | **Live items** (a separate reviewed change, go-live item 6): a live Flex query and token; a separate live journal database; the dry-run book reset; `strategy.update_mode: next_decision` for live (immediate is refused for live); the order precautions also set for the live user in the gateway; the gateway image re-pinned; **a separate gateway user name for live** (IBKR: Settings > Users > add a user), whose 2FA IBKR asks you to re-approve about once a week on IBKR Mobile | before real money |
@@ -860,6 +946,371 @@ deposits in `ledger_bf_paper`, and start the official paper book
 
 Real money needs, after all of the above, a separate reviewed code change that adds
 the live gateway with its own guards (go-live item 6); nothing in this build can do it.
+
+---
+
+## F. Emergencies, from a borrowed device (disaster recovery, BF-D82..BF-D87)
+
+Written for a phone, and for the day your own phone is gone: every step says where to tap
+and works from a friend's phone, a hotel computer or a library. Keep a printed copy of
+this part with your backup codes. **While the book is paper, nothing here can lose money**:
+the worst outcome is a gap in the paper record and some keys to replace. The system fails
+safe: no order is sent without your approval, all orders are day-only, and if you, the
+phone, Tailscale or the server disappear, the book just holds what it has. Nothing is ever
+sold automatically.
+
+What you need for most of this, kept **away from the phone** (paper at home, plus a
+sealed copy somewhere else):
+- the **backup codes** of Google, Microsoft, GitHub, BinaryLane, Tailscale's sign-in
+  account, IBKR, Claude, healthchecks.io (each site's "2-step verification > backup codes");
+- your **password manager's** master password (and its own recovery kit);
+- the **break-glass root password** of the server (F3);
+- the **backup recovery key** (in the password manager; Backups > Show recovery key);
+- the **authenticator seed** on paper (C4), if you made one;
+- your **passphrase** (in your head).
+
+### F0. Do these now (once, about an hour, from the phone)
+
+1. **Screen locks**: a strong phone lock (6+ digits or a pattern you do not use
+   elsewhere), and the app lock inside Termius (Settings > Security > PIN / fingerprint),
+   your authenticator app and IBKR Mobile.
+2. **Find My Device**: Android Settings > Google > Find My Device: on. Try it once at
+   `android.com/find` from another device.
+3. **2-step verification and backup codes on paper** for every account in the list above.
+4. **Passphrase**: in Termius, `bigwins secret app_passphrase`, then menu 4 (restart). See C4.
+5. **Owner-presence check with your second contact** (F8, 10 minutes).
+6. **Tailscale**: device approval on and SSH limited to your devices (F10, 15 minutes).
+7. **Break-glass root password** set and tested in the BinaryLane console (F3, 10 minutes).
+8. **Second off-site copy** of the backups: `bigwins offsite2` (C8, 15 minutes).
+9. **Renewal dates**: Server > Health > Renewal dates > Edit the dates (Flex token, your
+   payment card, the BinaryLane card).
+10. **Emergency card**: print `docs/EMERGENCY_CARD.md`, fill in the blanks **by hand**
+    (names and numbers never go into the computer files), give it to your second person.
+11. Telegram > @BotFather > `/revoke` the old bot token (one minute), whether or not you use
+    Telegram.
+
+### F1. Lost or stolen phone
+
+Do these in order; each one cuts something off. The first three take about 15 minutes.
+
+1. **Lock or erase the phone**: open `android.com/find`, sign in to Google (use a backup
+   code if it asks for your phone), choose the phone, **Secure device** (locks it and shows
+   a message) or **Erase device** if you will not get it back.
+2. **Cut it off from the server**: open `login.tailscale.com/admin/machines`, sign in,
+   find the phone, tap **...** > **Remove**. From this moment the phone cannot open the
+   Big Wins app or Termius. (Device approval, F10, stops it being added back.)
+3. **Your accounts**: change the Google password and sign out everywhere
+   (`myaccount.google.com/security` > Your devices > Manage all devices > the phone >
+   Sign out; then "Password"). Then the same for GitHub (`github.com/settings/sessions`),
+   Microsoft (`account.microsoft.com` > Security > Sign out everywhere), Claude
+   (claude.ai > Settings > log out of all devices) and BinaryLane.
+4. **After real money**: phone IBKR (the number on your emergency card) and ask them to
+   restrict the account until you have a new phone. IBKR Mobile was your second factor:
+   see F7.
+5. **On a new phone** (or a trusted computer), later, with Tailscale signed in again:
+   - Termius: `bigwins new-totp`, scan the QR, delete the old entry (the thief's codes stop
+     working);
+   - if you think your passphrase was seen: `bigwins secret app_passphrase`;
+   - new app keys: `cd /srv/asx-trader/deploy && rm secrets/app_proxy_key
+     secrets/worker_job_key && bigwins update` (it makes new ones and restarts);
+   - in the app: Settings > Alerts > **Turn alerts off on all devices**, then Turn on alerts
+     on the new phone;
+   - IBKR: register IBKR Mobile (IB Key) on the new phone (IBKR's help guides you).
+
+What a thief with the **unlocked** phone could do before step 2: approve the orders the
+strategy proposes, and Pause / Kill. With your **passphrase** set they cannot re-arm,
+update, roll back, show the backup key or start Claude; with **Lock actions** on they
+cannot even approve. Through Termius they would have the whole server: that is why the
+phone lock and Termius's own PIN matter, and why step 2 comes first.
+
+### F2. Lost authenticator (the phone is fine, or a new phone)
+
+- If you kept the seed on paper (C4): add it again in the authenticator app (enter the
+  key by hand: account `bigwins-trader`, the letters, time based).
+- If not: in Termius `bigwins new-totp`, scan the new QR (C4). Nothing is approved in the
+  meantime; unapproved orders lapse and the book holds.
+- No Termius either? Use the BinaryLane console (F3) and type `bigwins new-totp` there.
+
+### F3. Tailscale logged out, expired or its account locked: the break-glass console
+
+Without Tailscale there is no app and no SSH: the server has no open port (B2). The way
+in is BinaryLane's **web console**, which shows the server's screen in your browser, and
+it needs a root password.
+
+**Set it up now (DR review S1, 10 minutes):**
+1. In Termius: `passwd root` and type a long password you can type on a phone keyboard
+   (for example six random words with spaces removed). Store it in your password manager
+   and on the paper kept with your backup codes (not on the emergency card).
+2. Test it: BinaryLane website > Servers > your server > **Console** > log in as `root`
+   with that password > type `tailscale status` > it lists your devices > type `exit`.
+3. Write the date you tested it on your own paper. Test again every 6 months.
+
+**When Tailscale is not working:**
+1. BinaryLane > Servers > your server > Console > log in as root.
+2. Type `tailscale up --ssh --force-reauth`. It prints a login link: type that link into
+   the borrowed device's browser (or a phone browser), sign in to your Tailscale account
+   and approve. The server is back on your tailnet.
+3. If the phone app's address changed: `bigwins app` and then `bigwins login`
+   (menu 9 and 11), then menu 4.
+4. If your Tailscale **account** is locked: recover the account you sign in to Tailscale
+   with (usually Google; use its backup codes), then repeat. Tailscale support:
+   `tailscale.com/contact/support`. Meanwhile the trader keeps running, nothing is
+   approved, unapproved orders lapse, the book holds.
+
+### F4. Server dead, or BinaryLane suspended: restore from the phone only
+
+Order of work and the time each step took in the drill (fill in the last column during
+the **second-server drill**, a go-live item; do it once on paper, before real money):
+
+| Step | What | Expected | Drill |
+| --- | --- | --- | --- |
+| A | New BinaryLane server | 10 min | |
+| B | Tailscale on it (console) | 10 min | |
+| C | Bootstrap and the code | 20 min | |
+| D | The backup archive onto the server | 10-20 min | |
+| E | `bigwins restore` | 15 min | |
+| F | App, alerts, worker, checks | 15 min | |
+
+**A. A new server**: BinaryLane > Create server: Singapore region, Ubuntu 24.04, 2 vCPU /
+4 GB, 40 GB; choose **password** log-in (a phone has no SSH key) and type a new
+break-glass root password (store it). If the account is suspended (card failure): pay the
+balance or add prepaid credit first (Account > Billing), then the old server may simply
+come back: check before rebuilding.
+
+**B. Tailscale**: Console > log in as root > type (short on purpose, the console has no
+paste):
+```
+curl -fsSL https://tailscale.com/install.sh | sh && tailscale up --ssh
+```
+Open the login link it prints on your phone, approve. In the Tailscale admin, approve
+the new device (F10) and disable its key expiry (C5b); remove the dead server's machine.
+From now on use **Termius** over Tailscale (paste works there).
+
+**C. Bootstrap and the code**: on the phone open the GitHub app (or github.com) >
+`bigwins-trader` > branch `bigwins-fast` > `deploy/server_bootstrap.sh` > copy its raw
+text; in Termius paste it into `nano /root/bootstrap.sh`, save, `bash /root/bootstrap.sh`.
+It prints a public deploy key: GitHub > the repository > Settings > Deploy keys > Add
+(read-only), then clone as it says and run the bootstrap once more.
+**If GitHub is not available**, skip the clone: do D first, then in Termius
+```
+age -d -i <(cat) /var/backups/bigwins/bigwins-YYYYMMDD-HHMMSS.tar.age | tar -xzf - -C /root code.bundle
+git clone /root/code.bundle /srv/asx-trader
+bash /srv/asx-trader/deploy/server_bootstrap.sh
+```
+(paste the recovery key when the first line waits, then press Ctrl-D). The archive holds
+the exact code that ran (BF-D86). When GitHub is back, your engineer points the server
+at it again (`git remote set-url origin` and the deploy key).
+
+**D. The newest backup onto the server.** Choose the first route that works:
+1. **Second off-site copy (B2)**, if you set it up (C8): `bigwins offsite2` and type the
+   bucket's key id and key again (from your password manager). `bigwins restore` then
+   finds the archives itself. No file handling at all.
+2. **Termius SFTP (the main route)**: OneDrive app on the phone > "Big Wins server
+   backups" > archives > the newest `bigwins-YYYYMMDD-HHMMSS.tar.age` > ⋮ > **Download**
+   (it lands in Downloads). In Termius: `mkdir -p /var/backups/bigwins`, then open the
+   host's **SFTP** view, go to `/var/backups/bigwins` and **upload** the file from
+   Downloads.
+3. **A share link**: OneDrive app > the archive > Share > Copy link (anyone with the link).
+   In Termius: `bigwins fetch-archive '<the link>' bigwins-YYYYMMDD-HHMMSS.tar.age`. It
+   keeps the file only if it is a real encrypted archive. **Delete the share link** in
+   OneDrive afterwards (the archive is encrypted, but do not leave it shared).
+OneDrive itself (`bigwins onedrive`) needs a computer once; reconnect it later at home.
+Until then the nightly backups go to the server and to B2.
+
+**E. Restore**: `bigwins restore`, answer y, **paste the recovery key** from the password
+manager. It checks the key, the signed manifest and the journal's row counts before it
+changes anything, puts back the journal, settings, secret files, `.env`, record, price
+store, Flex inbox, the info archive and the worker's notes, checks out the backup's code
+commit, and starts everything.
+
+**F. Finish**: `bigwins app` (menu 9: the phone app on the new Tailscale name),
+`bigwins login` (menu 11), `sudo bigwins install-worker`, menu 4. On the phone: open the
+new app address, Add to Home screen, **Turn on alerts**, Server > Health (every job and
+the heartbeat green), Backups > **Back up now** and **Restore test**. healthchecks.io needs
+nothing (the URLs come back from the backup). IBKR: approve the paper gateway's log-in on
+IBKR Mobile if it asks. Then `bigwins new-totp` only if the phone was lost too.
+
+### F5. GitHub locked, or someone else pushing code
+
+- **Locked out of GitHub**: nothing stops. The trader keeps running the code it has; there
+  are no updates until you are back in; a restore uses the code inside the backup (F4 C).
+  Recover with GitHub's backup codes (`github.com/login` > "Use a recovery code").
+- **Someone else may have pushed code**: the app tells you about **every** new commit
+  ("New code on GitHub (not applied)"). **Do not approve an update you did not expect.**
+  Nothing changes until you approve it in the app (with your code and passphrase), and
+  with signing enforced (F5b) the server refuses code that your engineer did not sign.
+  Then: change the GitHub password, check 2-step verification, and look at the repository's
+  Settings: **Deploy keys** (exactly one, "sydney server", read-only), **Collaborators**
+  (only you), and your account's Settings > Developer settings > tokens (delete any you do
+  not know). Tell your engineer.
+- The **"CI passed"** label on an update is information only: anyone who can push can
+  fake it. The signature is what counts.
+
+**F5b. The engineer's signing key (before real money; until then the server only warns).**
+The server checks every update with `git verify-commit` against a public key kept on the
+server in a root-only file (`/etc/bigwins/allowed_signers`, outside the repository and
+outside GitHub), before it moves to the new code, both for the app's Approve update and
+for `bigwins update`.
+- *Engineer, once*: make an SSH signing key on a computer you control (not GitHub, not a
+  shared or cloud machine; a hardware key such as a YubiKey is better):
+  `ssh-keygen -t ed25519 -C bigwins-release -f ~/.ssh/bigwins_release`. Keep the private
+  half there only, with a passphrase. Send the owner the **public** line
+  (`~/.ssh/bigwins_release.pub`, starts `ssh-ed25519`); it is not secret.
+- *Engineer, each release*: review the changes, then sign the commit the server will run
+  (for example an empty release commit on top:
+  `git -c gpg.format=ssh -c user.signingkey=~/.ssh/bigwins_release.pub commit --allow-empty -S -m "release: <what>"`)
+  and push it. The server checks the newest commit only: a commit's signature covers the
+  whole code at that point.
+- *Owner, once (Termius)*: `bigwins signing key` and paste the public line; `bigwins
+  signing status` says "warn". When a signed release has arrived and Server > Strategy
+  shows "Signed", switch to `bigwins signing enforce`. From then on an unsigned update is
+  refused with "not signed by the engineer's key". `bigwins signing warn` goes back.
+- *Owner, in GitHub (web)*: Settings > Branches > add a rule for `bigwins-fast`: require
+  signed commits, no force pushes, no deletion.
+- *Live minimum age*: on a live book the server applies an update only after it has known
+  that commit for 24 hours (0 on paper); a different number goes in
+  `/etc/bigwins/update_min_age_hours`. That gives you a day to notice an alert you did not
+  expect.
+
+### F6. Google or Microsoft account taken over
+
+- **Google** (probably also your Tailscale sign-in): recover it with the backup codes,
+  change the password, Security > "Sign out of all other sessions", check the recovery
+  phone and email. Then the Tailscale admin: Machines (remove anything you do not know;
+  with device approval nothing new got in), Users. Then F1 step 5 (new authenticator seed,
+  new app keys) if you think they reached the server. A passkey or a hardware key on Google
+  makes this much harder (Security > Passkeys).
+- **Microsoft** (OneDrive): they cannot read the backups (encrypted), but they could
+  delete them; the server keeps 7 days and B2 keeps its own copies. Recover the account,
+  change the password, Security > "Sign out everywhere", Privacy > Apps and services >
+  remove "rclone", then reconnect later with `bigwins onedrive` (a computer). A
+  backups-only Microsoft account (C8) keeps this away from your own files.
+
+### F7. IBKR down, or you cannot reach IBKR (live)
+
+- Every order is a **DAY** order: nothing is left working overnight. If the server or
+  IBKR is down on an order day, nothing is sent and the book holds. Usually: do nothing.
+- To act yourself: IBKR Mobile, or the Client Portal in a browser
+  (`interactivebrokers.com.au` > Log in): cancel an open order or sell a holding. Practise
+  it once on paper (E2).
+- **If the phone is gone**: IBKR Mobile was your second factor (IB Key) for the Client
+  Portal, so you cannot log in. Phone IBKR (the number on your emergency card; IBKR
+  Australia client services, from the IBKR website's contact page) and ask them to
+  verify you and reset the second factor, or to place / cancel an order for you.
+- **The gateway's weekly approval**: the live gateway's user name asks for a confirmation
+  on IBKR Mobile about once a week. If the phone is gone, the gateway stays logged out
+  after the next weekly check: the trader cannot send anything, and the book holds. That is
+  safe. It comes back when you approve on the new phone.
+- **A trading-only user for the gateway (before real money)**: Client Portal > Settings >
+  Users & Access Rights > add a user for the gateway with **trading rights only**: ASX
+  stocks and ETFs; no deposits, withdrawals or transfers, no account management, no
+  changes to users. Its password goes in `tws_password` (live, later). If that password
+  ever leaks, nobody can move money with it.
+
+### F8. Owner unreachable: the 14-day rule (owner decision, 24 Nov 2026)
+
+What happens if you do nothing in the app for 14 days (BF-D82):
+- day 10: a warning push to your phone ("buying pauses on ...");
+- day 14: **buying pauses** by itself (safety level HALTED_BUYS; a stricter level such as
+  KILLED is never lowered). **Nothing is sold automatically.** Sells, and the loss rule's
+  wind-down, still need your approval as always; unapproved orders lapse;
+- the same day the server stops its daily "I am here" ping to healthchecks.io, so your
+  **second contact** gets an email the next day. They also get one if the whole server
+  stops for about two days;
+- when you are back: Controls > **Resume** with your code (and passphrase). That is the
+  only way buying starts again.
+
+"An action" is anything you do in the app that the server accepts: approve, refuse, Pause,
+Status, a setting, Lock, or the **I'm here** button (Home, or Server > Health). Opening a
+page does not count (any device on your tailnet could open one, and the app refreshes
+itself). Server > Health shows the days since your last action and the date the pause
+would start. In paper mode it runs the same way and the messages say "paper". The number
+of days is `app.presence_days` (default 14) in `config/bfast.local.yaml`.
+
+**Set up the second contact (10 minutes, phone):**
+1. healthchecks.io (the same free account as C5) > **Add Check**. Name: "Big Wins owner
+   presence". Schedule: **Simple**, period **1 day**, grace **1 day**. Save.
+2. **Integrations** > Add Integration > **Email** > your second contact's email address >
+   Save. They get a confirmation email and must click it once. (Also add your own email or
+   the healthchecks app.)
+3. Open the new check > Notifications: turn on that email for **this check only** (turn it
+   off on your other checks, so the heartbeat does not email them).
+4. Copy the check's ping URL (a secret). In Termius: `bigwins secret
+   healthchecks_presence_url` and paste it. Nothing to restart. Server > Health shows
+   "Owner-presence check: set up" and the last ping day.
+5. Give your second contact the filled-in emergency card and tell them what the email
+   means: "Either I have not used the app for two weeks, or the server has stopped. It is
+   paper only: do nothing to the account; try to reach me."
+
+### F9. A secret leaked (seen in a screenshot, a chat, a lost device)
+
+| Secret | Where it is used | How to replace it (Termius unless said) |
+| --- | --- | --- |
+| authenticator seed (`totp_seed`) | 6-digit codes | `bigwins new-totp`, rescan |
+| your passphrase (`app_passphrase`) | risky app actions | `bigwins secret app_passphrase`, menu 4 |
+| IBKR paper password (`tws_password`) | the gateway | change it in the IBKR portal (paper user), then `bigwins secret tws_password`, menu 4 |
+| Flex token (`ibkr_flex_token`) | daily statement | IBKR > Flex Web Service > generate a new token (the old one stops), `bigwins secret ibkr_flex_token`; update Renewal dates |
+| EODHD token (`eodhd_api_token`) | price download | EODHD dashboard > API key > regenerate, `bigwins secret eodhd_api_token` |
+| healthchecks URLs (`healthchecks_url`, `_backup_url`, `_daily_url`, `_presence_url`) | outside alarms | healthchecks.io: make a new check like the old one, delete the old one, `bigwins secret <name>` with the new URL |
+| Telegram token (`telegram_bot_token`) | Telegram (optional) | @BotFather > `/revoke`; if used: `bigwins secret telegram_bot_token` |
+| app keys (`app_proxy_key`, `worker_job_key`, `db_dashboard_password`) | inside the server | `cd /srv/asx-trader/deploy && rm secrets/<name> && bigwins update` (made again) |
+| phone-alert key (`vapid_private_key`) | push alerts | `bigwins vapid`, menu 4, then Turn on alerts on each phone |
+| database password (`db_password`) | the journal | cannot simply be retyped (B6 F17): ask your engineer |
+| backup recovery key | opens the backups | `bigwins new-backup-key`, then show and save the new one (old backups still need the old key: keep both) |
+| GitHub deploy key | the server reads GitHub | `ssh-keygen -t ed25519 -f ~/.ssh/bigwins_deploy -N '' ` (overwrite), replace it in GitHub > Settings > Deploy keys |
+| OneDrive token (rclone) | backups | Microsoft > Apps and services > remove rclone; `bigwins onedrive` (computer) |
+| B2 key | second copy | Backblaze > App keys > delete, add a new one, `bigwins offsite2` |
+| break-glass root password | BinaryLane console | `passwd root`, test it (F3) |
+
+Before real money, replace every secret that was ever seen in a chat or a screenshot
+(E2).
+
+### F10. Tailscale: device approval and SSH only from your own devices (DR review M3)
+
+Tailscale is the front door: whoever is on your tailnet can open the app, and Tailscale
+SSH gives your devices root on the server (`tailscale up --ssh`, B2). Two settings keep
+strangers out even if they get into the account you sign in to Tailscale with.
+
+**Write down (on your own paper)**: which account you sign in to Tailscale with (for
+example your Google account) and that its recovery is that account's backup codes.
+
+**1. Device approval**: Tailscale admin (`login.tailscale.com/admin/settings/device-management`)
+> **Device approval** > on. From then on a new device joins only after you approve it in
+the admin page (Machines > the device > Approve).
+
+**2. SSH only from your named devices, with a re-check every hour**: Admin > **Access
+controls** > the policy file. This example replaces the default "everyone reaches
+everything" policy. Fill in the placeholders from Admin > Machines (each machine's
+100.x.y.z address); keep the comments out if the editor complains:
+
+```json
+{
+  // your machines, by their Tailscale addresses (Admin > Machines)
+  "hosts": {
+    "bigwins-server": "100.X.X.X",
+    "owner-phone":    "100.Y.Y.Y",
+    "owner-laptop":   "100.Z.Z.Z"
+  },
+  "acls": [
+    // the Big Wins app (HTTPS) from any of your devices
+    {"action": "accept", "src": ["autogroup:member"], "dst": ["bigwins-server:443"]},
+    // SSH (Termius) only from these two devices
+    {"action": "accept", "src": ["owner-phone", "owner-laptop"], "dst": ["bigwins-server:22"]}
+  ],
+  "ssh": [
+    // Tailscale SSH as root: you sign in again once an hour
+    {"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"],
+     "users": ["root", "autogroup:nonroot"], "checkPeriod": "1h"}
+  ]
+}
+```
+
+Save, then **test at once**: open the app on the phone, and Termius from the phone (it may
+ask you to sign in to Tailscale in the browser: that is the hourly check). If something no
+longer works, Access controls keeps the previous version (restore it), or use the
+BinaryLane console (F3). After a new phone or laptop, add its address in `hosts`.
+The code does not change `tailscale up --ssh`: Tailscale SSH is what lets you reach the
+server from the phone at all, and these two settings are the safe way to narrow it.
 
 ---
 

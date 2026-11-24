@@ -33,7 +33,10 @@ result.
   of each of the last 12 months with one; the rest is deleted, locally and in OneDrive.
 * **Destinations**: the local folder (``/var/backups/bigwins``) and an rclone remote
   (``bigwins-onedrive:Big Wins server backups``); a plain local path also works as the
-  remote (tests, a USB disk).
+  remote (tests, a USB disk). BF-D86: an optional second off-site remote (``remote2``,
+  e.g. Backblaze B2, set up with ``bigwins offsite2``) gets the same archive and retention.
+  The archive also holds ``code.bundle`` (a git bundle of the deployed commit, so a restore
+  does not need GitHub) and the private info archive up to 500 MB.
 """
 
 from __future__ import annotations
@@ -387,17 +390,21 @@ def run(plan: dict[str, Any]) -> dict[str, Any]:
         ld, lm = plan.get("local_keep", [LOCAL_DAILY, LOCAL_MONTHLY])
         names = sorted(x.name for x in out.iterdir())
         res["pruned_local"] = prune(names, lambda n: (out / n).unlink(missing_ok=True), ld, lm)
-        remote = plan.get("remote")
-        if remote:
+        for key in ("remote", "remote2"):  # BF-D86: remote2 = the optional second off-site copy
+            dest = plan.get(key)
+            if not dest:
+                continue
             try:
-                _remote_put(arch, remote)
-                _remote_put(out / (arch.name + ".json"), remote)
-                names = _remote_list(remote)
-                res["pruned_remote"] = prune(names, lambda n: _remote_delete(remote, n))
-                res["remote"] = {"archive": arch.name, "ok": True}
+                _remote_put(arch, dest)
+                _remote_put(out / (arch.name + ".json"), dest)
+                names = _remote_list(dest)
+                res["pruned_" + key] = prune(names, lambda n, d=dest: _remote_delete(d, n))
+                res[key] = {"archive": arch.name, "ok": True}
             except (OSError, subprocess.CalledProcessError) as e:
-                res["remote"] = {"ok": False, "error": type(e).__name__}
-        res["ok"] = res["remote"] is None or bool(res["remote"].get("ok"))
+                res[key] = {"ok": False, "error": type(e).__name__}
+        res["ok"] = all(res.get(k) is None or bool(res[k].get("ok")) for k in ("remote", "remote2"))
+        if plan.get("notes"):  # BF-D86: e.g. the info archive over its size cap
+            res["notes"] = [str(x)[:200] for x in plan["notes"]][:5]
     except (OSError, subprocess.CalledProcessError, RuntimeError) as e:
         res["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     finally:
