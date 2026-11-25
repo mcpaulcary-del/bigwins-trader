@@ -2,6 +2,7 @@
 # evidence for or against EMG2. THIS SCRIPT MUST NEVER BE USED TO CHANGE THE RUBRIC, the prompt, the baselines or any NEWS-C rule:
 # it only reads the recorded days and writes a reading under newsc/readings/<asof>/.
 #   python3 newsc_score.py [--asof YYYY-MM-DD] [--external EST-C=0.04,DIL-C=0.3] [--out DIR]
+#   python3 newsc_score.py --drops [--asof YYYY-MM-DD] [--out DIR]        (the big-drop log reading; see below)
 # Measurement (s6):
 #   entry  = the close of the first ASX session that OPENS (10:00 Sydney) after the day's info_news ledger timestamp and in which
 #            the share trades (close and volume > 0; a halted share enters at reinstatement). A day whose ledger timestamp is after
@@ -20,6 +21,13 @@
 #            keeps the sign of the reading with t >= 1.5.
 #   BASELINES: KEY (its own rating, read exactly like the AI), RAISE, HALT, DIR (flag vs no flag, expected sign -, -, +).
 #   Benjamini-Hochberg at 10% across the information family (these readings plus EST-C and DIL-C p-values given with --external).
+# BIG-DROP LOG (draft AMENDMENT_info_NEWSC_drops_v1.md; `--drops`; added 25 Nov 2026, the v1 file is kept as newsc_score_pre_drops.py
+#   and every v1 function above is unchanged): events of the info_drops ledger entries (on time only), entry = the first close at
+#   or after the session after D (within 5 sessions, else dropped and counted), horizons 21/63/126/252 sessions; excess over A200
+#   tracked the same way; recovered = a split-adjusted close >= the close of D-1 within 252 sessions of D; further fall = a close
+#   20% / 50% below the entry close within 252 sessions of D; month-clustered, lag-weighted t (research_dip PREREG s3), by cause
+#   class (keyword primary, blinded rater secondary). No return is computed before the reading date: 'no reading' is printed until
+#   at least 100 on-time events AND 1 Dec 2029, whichever is later.
 import argparse, bisect, glob, hashlib, json, math, os, sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -278,13 +286,179 @@ def load(newsc, ledger_path):
     return rows, base, rec, bandc, bad
 
 
+# ---------------------------------------------------------------- big-drop log (AMENDMENT_info_NEWSC_drops_v1.md)
+DROPS_H = (21, 63, 126, 252)
+DROPS_L = {21: 1, 63: 3, 126: 6, 252: 12}            # lag months of the clustered variance (PREREG s3: L = horizon in months)
+DROPS_MIN_EVENTS, DROPS_READ = 100, '2029-12-01'
+DROPS_INDEX = 'A200'
+DROPS_ENTRY_WITHIN = 5
+DROPS_BAR_T = 2.0
+KW_CLASSES = ('temporary', 'fundamental', 'other-news', 'no-news')
+
+
+def load_drops(newsc, ledger_path):
+    """on-time and late event rows of the info_drops ledger entries; files are hash-checked against the ledger"""
+    import fwd_ledger as L
+    L.LED = ledger_path; es = L.entries(); L.verify()
+    rows, bad = [], []
+    for e in sorted((e for e in es if e.get('kind') == 'info_drops'), key=lambda e: e['asof']):
+        od = f"{newsc}/{e['asof']}"
+        try:
+            with open(od + '/drops.jsonl', 'rb') as f: db = f.read()
+            with open(od + '/drops_labels.jsonl', 'rb') as f: lb = f.read()
+            if hashlib.sha256(db).hexdigest() != e['drops_sha256'] or hashlib.sha256(lb).hexdigest() != e['labels_sha256']:
+                raise ValueError('drops.jsonl / drops_labels.jsonl hash differs from the ledger')
+        except Exception as ex:
+            bad.append(f"{e['asof']}: {ex}"); continue
+        ev = {x['id']: x for x in (json.loads(l) for l in db.decode().splitlines() if l.strip())}
+        for x in (json.loads(l) for l in lb.decode().splitlines() if l.strip()):
+            r = dict(ev[x['id']]); r.update(rater=x['rater'], cause_rater=x['cause_rater'], late=int(not e['on_time']),
+                                            recorded_utc=e['recorded_utc'], month=e['asof'][:7])
+            rows.append(r)
+    return rows, bad
+
+
+def drops_outcomes(rows, mk):
+    """adds entry, ret/idx/ex per horizon, recovered, fell20, fell50 (None while not yet observable)"""
+    for r in rows:
+        i = bisect.bisect_left(mk.ss, r['day'])
+        r['entry'] = None
+        for k in range(i + 1, min(i + 1 + DROPS_ENTRY_WITHIN, len(mk.ss))):
+            if mk.ss[k] > mk.asof: break
+            m = mk.day(mk.ss[k])
+            if m['close'].get(r['code']) and m['vol'].get(r['code'], 0) > 0: r['entry'] = k; break
+        for h in DROPS_H: r[f'ret{h}'] = r[f'idx{h}'] = r[f'ex{h}'] = None
+        r['recovered'] = r['fell20'] = r['fell50'] = None
+        if r['entry'] is None: continue
+        ie = r['entry']; R = track(mk, ie, r['code'], DROPS_H); X = track(mk, ie, DROPS_INDEX, DROPS_H)
+        for h in DROPS_H:
+            r[f'ret{h}'], r[f'idx{h}'] = R[h], X[h]
+            r[f'ex{h}'] = None if R[h] is None or X[h] is None else R[h] - X[h]
+        end = i + 252
+        if end >= len(mk.ss) or mk.ss[end] > mk.asof: continue
+        q, rec, low = 1.0, False, None
+        pe = mk.day(mk.ss[ie])['close'][r['code']]; qe = None
+        for k in range(i + 1, end + 1):
+            m = mk.day(mk.ss[k]); sp = m['split'].get(r['code'])
+            if sp and sp > 0: q *= sp
+            if k == ie: qe = q
+            c = m['close'].get(r['code'])
+            if c is None: continue
+            if q * c >= r['close_prev']: rec = True                          # close_prev is in D-1 shares; q converts back
+            if k > ie:
+                rel = (q / qe) * c / pe
+                low = rel if low is None else min(low, rel)
+        r['recovered'] = int(rec); r['fell20'] = int(low is not None and low <= 0.80); r['fell50'] = int(low is not None and low <= 0.50)
+    return rows
+
+
+def _months(ms):
+    a, b = min(ms), max(ms); y, m = int(a[:4]), int(a[5:7]); out = []
+    while f'{y}-{m:02d}' <= b:
+        out.append(f'{y}-{m:02d}'); m += 1
+        if m == 13: y, m = y + 1, 1
+    return out
+
+
+def _hac(score, months, lags, denom):
+    """[sum S_m^2 + 2 sum_l (1 - l/(L+1)) sum_m S_m S_{m-l}] / denom^2, S_m = score summed by calendar month (empty months 0)"""
+    allm = _months(months); ix = {m: k for k, m in enumerate(allm)}; Sm = np.zeros(len(allm))
+    for s_, m in zip(score, months): Sm[ix[m]] += s_
+    v = float(Sm @ Sm)
+    for l in range(1, lags + 1): v += 2 * (1 - l / (lags + 1)) * float(Sm[l:] @ Sm[:-l]) if l < len(Sm) else 0.0
+    return v / denom ** 2
+
+
+def clustered_mean(x, months, lags):
+    """research_dip PREREG s3: mean, SE (month-clustered, lag-weighted), t"""
+    x = np.asarray(x, float); n = len(x)
+    if n < 2: return dict(n=n, mean=(float(x.mean()) if n else None), t=None)
+    v = _hac(x - x.mean(), months, lags, n)
+    se = math.sqrt(v) if v > 0 else None
+    return dict(n=n, mean=float(x.mean()), median=float(np.median(x)), share_pos=float((x > 0).mean()), se=se,
+                t=(float(x.mean() / se) if se else None))
+
+
+def clustered_diff(y, d, months, lags):
+    """OLS of y on a 0/1 dummy d: b = mean(d=1) - mean(d=0); HAC by month as above"""
+    y, d = np.asarray(y, float), np.asarray(d, float)
+    if d.sum() < 1 or (1 - d).sum() < 1: return dict(n1=int(d.sum()), n0=int((1 - d).sum()), b=None, t=None)
+    dc = d - d.mean(); b = float(dc @ (y - y.mean()) / (dc @ dc)); e = y - y.mean() - b * dc
+    v = _hac(dc * e, months, lags, float(dc @ dc)); se = math.sqrt(v) if v > 0 else None
+    return dict(n1=int(d.sum()), n0=int((1 - d).sum()), b=b, se=se, t=(b / se if se else None))
+
+
+def drops_reading(rows, mk, asof, read_from=DROPS_READ, min_events=DROPS_MIN_EVENTS):
+    ok = [r for r in rows if not r['late']]
+    head = dict(asof=asof, on_time_events=len(ok), late_events=len(rows) - len(ok),
+                by_cause_kw={c: sum(1 for r in ok if r['cause_kw'] == c) for c in KW_CLASSES},
+                by_cause_rater={c: sum(1 for r in ok if r['cause_rater'] == c) for c in KW_CLASSES})
+    if asof < read_from or len(ok) < min_events:
+        head['result'] = (f'no reading: needs at least {min_events} on-time events and {read_from} (whichever is later); '
+                          f'{len(ok)} on-time events so far. No return is computed before then.')
+        return head
+    mk.asof = asof; drops_outcomes(ok, mk)
+    head['no_entry_within_5_sessions'] = sum(1 for r in ok if r['entry'] is None)
+    tab = {}
+    for clf, key in (('keyword (primary)', 'cause_kw'), ('rater (secondary)', 'cause_rater')):
+        tab[clf] = {}
+        for c in ('all',) + KW_CLASSES:
+            g = [r for r in ok if c == 'all' or r[key] == c]
+            row = {}
+            for h in DROPS_H:
+                s = [r for r in g if r[f'ex{h}'] is not None]
+                row[f'{h}s_excess'] = clustered_mean([r[f'ex{h}'] for r in s], [r['month'] for r in s], DROPS_L[h]) if s else dict(n=0)
+            z = [r for r in g if r['recovered'] is not None]
+            row['recovered_252'] = (float(np.mean([r['recovered'] for r in z])) if z else None)
+            row['fell20_252'] = (float(np.mean([r['fell20'] for r in z])) if z else None)
+            row['fell50_252'] = (float(np.mean([r['fell50'] for r in z])) if z else None)
+            row['n'] = len(g); tab[clf][c] = row
+        tf = [r for r in ok if r[key] in ('temporary', 'fundamental') and r['ex252'] is not None]
+        tab[clf]['temporary_minus_fundamental_252s'] = clustered_diff([r['ex252'] for r in tf], [r[key] == 'temporary' for r in tf],
+                                                                      [r['month'] for r in tf], 12) if tf else dict(b=None, t=None)
+    head['tables'] = tab
+    k = tab['keyword (primary)']; T = k['temporary']['252s_excess']; D = k['temporary_minus_fundamental_252s']
+    a1 = T.get('n', 0) >= 2 and T.get('mean') is not None and T['mean'] > 0 and T.get('t') is not None and T['t'] >= DROPS_BAR_T
+    a2 = D.get('b') is not None and D['b'] > 0
+    head['bar'] = dict(temporary_12m_excess_positive_t_ge_2=bool(a1), temporary_beats_fundamental_12m=bool(a2),
+                       result=('present: earns at most a separately pre-registered paper-line proposal' if a1 and a2 else 'not detected'),
+                       note='keyword classifier is primary; the rater is reported, never a second chance at the bar')
+    return head
+
+
+def drops_sessions(end='2035-12-31'):
+    """ASX sessions to `end` (paper_lib.sessions() stops at 2028-12-31, before the Dec 2029 reading; v1 code is left unchanged)"""
+    import exchange_calendars as xc
+    return [str(x.date()) for x in xc.get_calendar('XASX', start='2014-01-01', end=end).sessions]
+
+
+def drops_main(a):
+    import fwd_ledger as L
+    import paper_lib as P
+    rows, bad = load_drops(a.newsc, a.ledger or L.LED)
+    mk = Market(drops_sessions(), P.load_day)
+    R = drops_reading(rows, mk, a.asof); R['excluded_days'] = bad
+    if 'tables' in R:
+        out = a.out or f'{a.newsc}/readings/{a.asof}'
+        os.makedirs(out, exist_ok=True)
+        with open(f'{out}/drops_reading.json', 'w') as f: json.dump(R, f, indent=1, sort_keys=True, default=str)
+        print(json.dumps(R['bar'], indent=1))
+    else:
+        print('drops:', R['result'])
+        print('drops counts (descriptive, no returns):', json.dumps(dict(by_cause_kw=R['by_cause_kw'], by_cause_rater=R['by_cause_rater'],
+                                                                           late_events=R['late_events'], excluded_days=bad)))
+    print('INFORMATION ONLY. The big-drop log feeds no line; this reading never changes the classifier, the rubric or any rule.')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--asof', default=datetime.now(SYD).strftime('%Y-%m-%d'))
     ap.add_argument('--external', default='', help='EST-C=p,DIL-C=p (one-sided p-values from their own readings)')
     ap.add_argument('--newsc', default=NEWSC); ap.add_argument('--ledger', default=None); ap.add_argument('--out', default=None)
     ap.add_argument('--arm', default='F', choices=['F', 'H'])
+    ap.add_argument('--drops', action='store_true', help='the big-drop log reading (AMENDMENT_info_NEWSC_drops_v1.md) instead')
     a = ap.parse_args()
+    if a.drops: return drops_main(a)
     import fwd_ledger as L
     rows, base, rec, bandc, bad = load(a.newsc, a.ledger or L.LED)
     mk = bulk_market(); mk.asof = a.asof

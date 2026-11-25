@@ -2,6 +2,9 @@
 
 NEWS-C feeds no paper line and no trade. It is never evidence for or against EMG2. Rules: `AMENDMENT_info_NEWSC_v1.md`.
 Rubric: `bigwins_forward/data/newsc/RUBRIC_v1.md` (frozen; `newsc_record.py` refuses to record if its hash changes).
+Big-drop log (steps 2b, 3b, 4b): rules `AMENDMENT_info_NEWSC_drops_v1.md`. **Add these steps to the scheduled task only after
+the owner has registered that amendment**; before that, step 4b refuses (`not registered`). Rubric `bigwins_forward/data/newsc/DROPS_RUBRIC_v1.md`
+(frozen); cause keywords `newsc_drops_classify.py` (= `research_dip/code/classify.py`, frozen). It also feeds no line.
 
 `S=/tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad`, `C=$S/bigwins_forward/code`,
 `N=$S/bigwins_forward/data/newsc`.
@@ -29,6 +32,16 @@ flagged LATE and left out of every bar.
    - Exit 0 with `already prepared` means a re-run on an unchanged day. Continue.
    - Exit 2 or `REFUSED` is a failure. Report it and stop.
    - If it reports `0 code-days`, skip step 3 and go to step 4 with an empty replies folder.
+
+2b. **Big drops.**
+   `python3 newsc_drops.py`
+   - With no `--day`, it uses the ASX session before today (the same `<D>` as step 1). It needs step 1's `list.csv` for `<D>`,
+     the paper bulk files for `<D>` and the session before, and a paper decision file dated before `<D>`. It reads no network.
+   - It prints `drops <D>: <n> events (<k> in the dossier, file drops_blind/<x>.txt, sha256 <s>); ...`.
+   - Exit 0 with `already prepared` is a re-run on an unchanged day. Continue.
+   - Exit 2, `REFUSED`, or a warning containing `FAIL` is a failure. Report it; steps 3b and 4b are skipped that day.
+   - A warning that the D-1 list is not archived, or that there is no `DONE_PS`, is not a failure.
+   - If it reports `0 in the dossier`, skip step 3b and go straight to step 4b.
 
 3. **Rate: spawn the blinded rater subagents.**
    - Read `$N/<D>/manifest.json`. For each entry in `batches` (fields `batch` and `sha256`), and for pass 1 and pass 2:
@@ -60,6 +73,25 @@ flagged LATE and left out of every bar.
    - Recommended: install a rater agent with only the Read tool and a pinned model (see "Model pinning" below), and spawn it
      with that agent type.
 
+3b. **Rate the drop dossier** (only if step 2b put at least one company in the dossier).
+   - Read `$N/<D>/drops_manifest.json`, fields `dossier_path` and `dossier_txt_sha256`. For pass 1 and pass 2, start a **new,
+     separate subagent** (subagent type `newsc-rater` if installed; the same isolation rules as step 3) with exactly this prompt:
+
+   ```
+   You are the NEWS-C drop-cause rater. Use only the Read tool. Read these two files in full and no other file:
+   1. /tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/data/newsc/DROPS_RUBRIC_v1.md
+   2. /tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/data/newsc/<dossier_path>
+   Then follow the rubric (file 1) and label every company in the dossier (file 2).
+   HEADER
+   dossier_sha256: <dossier_txt_sha256>
+   pass: <1 or 2>
+   Reply with the JSON object only.
+   ```
+
+   - Write each reply **byte for byte** to `$N/<D>/drops_incoming/drops_p<pass>.json`.
+   - The task must not read the dossier, `drops.jsonl` or the manifest's other fields into a rater's context, and never
+     changes a label. Schema failures: as step 3 (move the reply to `$N/<D>/rejected/`, one fresh subagent, run 4b again, report).
+
 4. **Record.**
    - First call the claude-code-remote tool `get_session` (no arguments) and note:
      - `session_context.model`
@@ -83,6 +115,18 @@ flagged LATE and left out of every bar.
      - the input or batch hash does not match;
      - a reply is missing or invalid;
      - the day is already recorded.
+
+4b. **Record the drop causes** (every trading day, also with 0 events; before 16:00 Sydney on the session after `<D>`).
+
+   ```
+   python3 newsc_drops_record.py --day <D> --ratings-dir $N/<D>/drops_incoming \
+     --model "<as step 4>" --model-source "<as step 4>" --session-id "<this session's id>" --subagent-model "<as step 4>" \
+     [--failures "<any rejection or other problem, separated by ;>"]
+   ```
+
+   - It prints `recorded drops <D>: ledger seq <n>; <k> events; failures: none` on a normal day (ledger kind `info_drops`).
+   - `REFUSED`, exit 2, or a failures list other than `none` is a failure. Report it (counts only, never a code or a label).
+   - Recorded at or after 16:00 Sydney on the next session it is flagged `LATE` and left out of every reading.
 
 5. **Report only failures.** Report only the lines that failed. Never report per-share ratings, not even inside a failure report
    (amendment s8: the owner sees monthly counts only).
@@ -112,6 +156,10 @@ You are the NEWS-C rater. Read only the two files named in the prompt, follow th
 ## Other commands
 
 - `python3 test_newsc.py`: the test suite. It works on scratch copies only and needs no network.
+- `python3 test_newsc_drops.py`: the big-drop tests (scratch copies only, no network).
+- `python3 newsc_drops.py --detect-only --from A --to B`: read-only event list for a range of sessions; writes nothing.
 - `python3 newsc_score.py [--asof D] [--external EST-C=p,DIL-C=p]`: the reading. It shows descriptive tables only until
   January 2028 (drift) and December 2029 (wrecks and winners). It writes only to `$N/readings/<asof>/`, and it is never used to
   change the rubric.
+- `python3 newsc_score.py --drops [--asof D]`: the big-drop reading. It prints `drops: no reading ...` and computes no return
+  until at least 100 on-time events and 1 December 2029, whichever is later; then it writes `$N/readings/<asof>/drops_reading.json`.
