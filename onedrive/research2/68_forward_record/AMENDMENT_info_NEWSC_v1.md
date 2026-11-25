@@ -316,7 +316,13 @@ each one alone.
 | File | SHA-256 |
 |---|---|
 | `bigwins_forward/data/newsc/RUBRIC_v1.md` | `ed23cd805e4fd6b2d8483ba61e3b3e5cee829432dd418394d228527aa93ed680` |
-__CODE_TABLE__
+| `bigwins_forward/code/info_archive.py` | `28f8c56e6fc3f23955f25dfa99516fe3fa565f57913e311c8f1a8218641b4442` |
+| `bigwins_forward/code/info_archive_pre_newsc.py` | `9d3bcb2a87c131bbd3431e1210bde318bc332ccf0371c56fe78cd49673997325` |
+| `bigwins_forward/code/newsc_baselines.py` | `d2f71588c015affe5199ee45389465356e72e5aeb1f74d6ef614fc4bd96924c8` |
+| `bigwins_forward/code/newsc_prepare.py` | `670d8010d47aa34a73da716a30e2c2ec8ff4143c7359d66f03fdb503774bb093` |
+| `bigwins_forward/code/newsc_record.py` | `27ce97dc62edd0d16fdda7edb07e40ada653aa64aa0d05f8c817246c02de259f` |
+| `bigwins_forward/code/newsc_score.py` | `81494c8290eba560e8868e4a3cfa299f2deebbf0b1a5553ebc56430d2c6eadf5` |
+| `bigwins_forward/code/test_newsc.py` | `bbaf223ba13f55d0d1907f913eb1c230b0844d74175ccb6b4afc23ed303ad904` |
 
 **Statement.** Information only. NEWS-C feeds no paper line and no trade. It is never evidence for or against EMG2. It changes no
 line.
