@@ -3,7 +3,7 @@
 # Every number must appear in a study listed under `sources`.
 version: 2
 checked: 2026-11-25
-trials_total: 3172          # fallback only; the app reads the live count from the record
+trials_total: 3229          # fallback only; the app reads the live count from the record
 trials_ledger_seq: 101
 footer: "From your own research. General information, not personal financial advice. Check super and tax with your accountant."
 items:
