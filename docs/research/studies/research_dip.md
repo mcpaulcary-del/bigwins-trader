@@ -29,7 +29,7 @@ report: null
 | $100k buying every drop, US, from 2000 | $83k v $506k in the index fund |
 
 ## What it means for you
-The ASX big-drop log now tracks big falls forward at no cost. Don't buy big drops as a strategy; read a big fall in one of your shares as a warning, not a bargain.
+The ASX big-drop log now tracks big falls forward at no cost, so buying them as a strategy is off the table. Read a big fall in one of your shares as a warning, not a bargain.
 
 ## How sure are we?
 The rules were locked in before the results were seen, and the answer was the same in both markets.
