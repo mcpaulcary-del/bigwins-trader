@@ -73,3 +73,10 @@
 - 2026-11-24 05:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['MMS', 'NXL', 'SHL', 'SHV', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'NEU', 'ORI', 'SRG', 'XYZ']
 - 2026-11-24 23:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['CCL', 'JHX'] leaving ['DDR', 'TWE']
 - 2026-11-24 23:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['MMS', 'SHL', 'SHV', 'SIQ', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'ORI', 'XYZ']
+- 2026-11-25 01:20Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-25 01:20Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-25 01:20Z INDICATIVE top-90 band vs 2026-11-16: entering ['CIP', 'CLW', 'NXL', 'SHL', 'SHV', 'SIQ', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'NUF', 'ORI', 'SRG', 'TEA', 'XYZ']
+- 2026-11-25 03:21Z STALE/NO TRADE TODAY (quote not from this session): ['OML']
+- 2026-11-25 03:21Z HOLDING MOVE MI6 -8.3% on day (quote 0.637, last close 0.695)
+- 2026-11-25 03:21Z INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
+- 2026-11-25 03:21Z INDICATIVE top-90 band vs 2026-11-16: entering ['CIP', 'CLW', 'DXS', 'NXL', 'SHL', 'SHV', 'SPK', 'WES', 'WGN'] leaving ['ALK', 'BTR', 'IPH', 'L1G', 'NUF', 'ORI', 'SRG', 'TEA', 'XYZ']
