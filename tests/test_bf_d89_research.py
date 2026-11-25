@@ -416,7 +416,7 @@ def test_BF_D89_pages_content(demo: Any) -> None:
     assert "Still running" not in html  # nothing in progress since research_us4 reported
     assert "US large-company" in html[html.index("Finished") :]
     assert "Doesn&#x27;t work" in html and "no change passed" in html
-    assert "Proposed" in html and "information only" in html
+    assert "Testing" in html and "information only" in html  # NEWS-C registered (seq 106)
     assert "Mixed" in html and "describes, does not forecast" in html
     _, us = _get(app, "/research/library?f=us")
     assert "insiders" in us and "Odds card" not in us

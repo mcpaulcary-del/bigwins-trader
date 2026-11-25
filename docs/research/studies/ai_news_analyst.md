@@ -1,16 +1,16 @@
 ---
 id: ai_news_analyst
-title: "AI news analyst (proposed)"
+title: "AI news analyst (NEWS-C)"
 date: 2026-11-24
 kind: review
 market: ASX
-verdict: proposed
+verdict: testing
 verdict_note: "information only"
 question: "Could an AI reading each day's company announcements add useful information?"
-answer: "Worth building as an information-only archive, with changes. Expect at best a warning of wrecks, not a winner finder. First honest reading: January 2028."
+answer: "Approved and registered. From 1 December it rates each morning's announcements blind, before the open. Expect at best a wreck warning. First reading: January 2028."
 trials: 0
 n_total: null
-ledger_seq: null
+ledger_seq: 106
 confidence: cant_tell
 report: null
 ---
