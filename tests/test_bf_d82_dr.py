@@ -527,10 +527,12 @@ def test_BF_D84_one_alert_per_new_remote_commit() -> None:
     set_state(j, "update-available", u, T0)
     assert hook._new_code(T0) == ["c" * 40]
     assert hook._new_code(T0) == []  # once per commit
-    assert said[-1].startswith("info|New code on GitHub") and "signed by" in said[-1]
+    # BF-D90: an update that needs approval says "Update ready ... tap to review and approve"
+    assert said[-1].startswith("info|Update ready: Fix things") and "signed by" in said[-1]
+    assert "New code on GitHub (not applied)" in said[-1]
     set_state(j, "update-available", {**u, "remote": "e" * 40, "signed": "bad"}, T0)
     hook._new_code(T0)
-    assert said[-1].startswith("page|PAGE New code") and "NOT signed" in said[-1]
+    assert said[-1].startswith("page|PAGE Update ready") and "NOT signed" in said[-1]
     set_state(j, "update-available", {**u, "remote": "d" * 40}, T0)
     assert hook._new_code(T0) == []  # nothing new
 

@@ -43,6 +43,7 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "healthchecks_backup_url",  # review F9: optional check pinged after each good backup
         "healthchecks_daily_url",  # BF-D77 (b): optional check pinged after each good daily cycle
         "healthchecks_presence_url",  # BF-D82: pinged daily while the owner is active
+        "github_ci_token",  # BF-D90: optional read-only token for GitHub CI results (private repo)
     }
 )
 

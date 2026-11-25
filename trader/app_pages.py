@@ -1635,7 +1635,7 @@ def server(v: Any, x: Extras) -> str:
                    f"{e(chr(10).join(log))}</div></details>" if len(log) > 3 else "")
                 + '<p class="caption">Last lines, cleaned.</p>')))  # fmt: skip
     parts.append(health_card(v, x))
-    known = {k for k, *_ in SRV_MENU}
+    known = {k for k, *_ in SRV_MENU} | {"srv:autoupdate_on", "srv:autoupdate_off"}  # Settings
     menu = "".join(menu_row(act_link(a=k), ic, lab, desc, danger=dn)
                    for k, ic, lab, desc, dn in SRV_MENU
                    if k == "refresh" or k[4:] in SERVER_ACTIONS)  # fmt: skip
@@ -1718,6 +1718,10 @@ def strategy_card(x: Extras) -> str:
         card = (f'<p class="note"><b>{"Strategy update" if strat else "App-only update"} available</b>'
                 f" · {plural(int(u['ahead']), 'commit')}" + (f" · {e(u['notes'].get('version', ''))}"
                 if u.get("notes") else "") + "</p>" + _ci_line(u))  # fmt: skip
+        if u.get("auto") == "auto":  # BF-D90
+            card += ("<p class='small'><span class='pill ok'>Applies by itself</span> outside ASX "
+                     "hours once GitHub CI has passed (Settings &gt; Automatic app updates). You "
+                     "may also approve it now.</p>")  # fmt: skip
     return section("Strategy", head + card + '<a class="btn sec wide" href="/strategy" data-nav>'
                    "Strategy, updates and versions</a>")  # fmt: skip
 
@@ -1842,6 +1846,7 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
                   f"<p class='small muted'>You are: {e(x.viewer or 'unknown (not through Tailscale)')}"
                   "</p><p class='small muted'>Changed on the server only (bigwins menu).</p>")
         + section("Messages", f"<p>Channel: <b>{e(x.channel)}</b> (notify.channel)</p>")
+        + autoupdate_settings(x)
         + section("Go-live checklist (docs/GO_LIVE_GUIDE.md part E)",
                   f'<ul class="list">{ck}</ul><p class="small muted">This build is PAPER ONLY; '
                   "going live is a separate, reviewed owner step.</p>")
@@ -1857,6 +1862,29 @@ def settings(v: Any, x: Extras, version: str, checklist: Sequence[tuple[str, boo
                   "Australian dollars (AUD).</p>")
     )  # fmt: skip
     return shell(v, x, "Settings", body, "")
+
+
+def autoupdate_settings(x: Extras) -> str:
+    """BF-D90: the switch for automatic app updates (a server job with your code; turning
+    it on also asks for the passphrase when one is set)."""
+    host = x.host[0] if x.host else {}
+    au = host.get("autoupdate") if isinstance(host.get("autoupdate"), Mapping) else None
+    if au is None:
+        return section("Automatic app updates", "<p class='muted'>Not reported by the server yet "
+                       "(the server worker sends it within a minute).</p>")  # fmt: skip
+    on = bool(au.get("enabled"))
+    btn = (f'<a class="btn sec wide" href="{act_link(a="srv:autoupdate_off")}">Turn off</a>' if on
+           else f'<a class="btn wide" href="{act_link(a="srv:autoupdate_on")}">Turn on</a>')  # fmt: skip
+    live = ("<p class='note'>Live book: nothing is applied by itself until update signatures are "
+            "enforced (guide F5b).</p>" if au.get("live") else "")  # fmt: skip
+    return section("Automatic app updates", (
+        f"<p>Automatic app updates: <b>{'on' if on else 'off'}</b></p>"
+        "<p class='small muted'>When on, app-only changes (screens, documents, research pages) "
+        "are applied by themselves outside ASX hours, after GitHub CI has passed; only the app "
+        "restarts, never the trader. Anything that touches trading code, settings or the server "
+        "always waits for your approval.</p>" + live + btn
+        + "<p class='caption'>Needs your 6-digit code. On the server: <code>bigwins autoupdate "
+          "on|off|status</code>.</p>"))  # fmt: skip
 
 
 def dumps_mapping(m: Mapping[str, Any]) -> str:

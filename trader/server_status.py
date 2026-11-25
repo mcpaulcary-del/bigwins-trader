@@ -64,7 +64,8 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - o
     tm = raw.get("timers")
     if isinstance(tm, Mapping):  # BF-D81 (S7): which systemd timers exist (known names only)
         out["timers"] = {k: bool(v) for k, v in tm.items()
-                         if k in ("worker", "backup", "weekly", "info", "twin")}  # fmt: skip
+                         if k in ("worker", "backup", "weekly", "info", "twin",
+                                  "autoupdate")}  # fmt: skip
     if "daily_ping_set" in raw:  # BF-D77 (b): the optional daily-cycle check (never its URL)
         out["daily_ping_set"] = bool(raw.get("daily_ping_set"))
         dp = str(raw.get("daily_ping") or "")
@@ -85,6 +86,48 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - o
     log = raw.get("log")
     if isinstance(log, list):
         out["log"] = [clean_line(str(x)) for x in log[-LOG_LINES:]]
+    au = raw.get("autoupdate")
+    if isinstance(au, Mapping) and au:  # BF-D90
+        out["autoupdate"] = clean_autoupdate(au)
+    return out
+
+
+def _sha(x: Any) -> str:
+    v = str(x or "")
+    return v if len(v) == 40 and all(c in "0123456789abcdef" for c in v) else ""
+
+
+def _au_item(m: Any) -> dict[str, Any]:
+    if not isinstance(m, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    for k in ("commit", "from"):
+        if _sha(m.get(k)):
+            out[k] = _sha(m.get(k))
+    for k, n in (("title", 160), ("reason", 300), ("at", 40), ("action", 20), ("kind", 20)):
+        if m.get(k):
+            out[k] = clean_line(str(m[k]))[:n]
+    if isinstance(m.get("id"), int):
+        out["id"] = m["id"]
+    return out
+
+
+def clean_autoupdate(au: Mapping[str, Any]) -> dict[str, Any]:
+    """BF-D90: the host's automatic-update status (deploy/autoupdate.py status): known keys
+    and plain values only."""
+    out: dict[str, Any] = {k: bool(au.get(k)) for k in ("enabled", "live", "timer")}
+    if au.get("mode") in ("app", "demo", "none"):
+        out["mode"] = str(au["mode"])
+    for k in ("last_check", "next_check"):
+        if au.get(k):
+            out[k] = clean_line(str(au[k]))[:40]
+    for k in ("last", "last_applied", "pending"):
+        item = _au_item(au.get(k))
+        if item:
+            out[k] = item
+    hist = au.get("history")
+    if isinstance(hist, list):
+        out["history"] = [i for i in (_au_item(h) for h in hist[:8]) if i]
     return out
 
 

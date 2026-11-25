@@ -259,7 +259,10 @@ def _needs(j: Journal, book: str, now: datetime | None = None,
         out.append(f"Safety is {lvl}: see Controls")
     up = ov.state(j, "update-available")
     if up and isinstance(up[0], Mapping) and int(str(up[0].get("ahead") or 0)) > 0:
-        out.append("An update is waiting for your approval (Server > Strategy)")
+        if up[0].get("auto") == "auto":  # BF-D90
+            out.append("An app-only update applies by itself outside ASX hours")
+        else:
+            out.append("An update is waiting for your approval (Server > Strategy)")
     return out
 
 
@@ -332,3 +335,66 @@ def record_prev_twin(j: Journal, root: Path, book: str, raw: Mapping[str, Any],
             rec["capital"] = 10000
     set_state(j, "prev-twin", rec, now)
     return rec
+
+
+# ---------------------------------------------------------------- automatic app updates (BF-D90)
+AU_EVENTS = "autoupdate-events"
+AU_TOLD = "autoupdate-told"
+AU_KINDS = ("applied", "rolled_back", "failed", "blocked")
+
+
+def record_autoupdate(j: Journal, raw: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    """The host's automatic-update event (``trader-bf server-jobs autoupdate``), cleaned:
+    known keys and plain values only; kept (last 30) for the Inbox message and Health."""
+    from trader.app_store import set_state
+    from trader.server_status import _au_item
+
+    ev = _au_item(raw)
+    if ev.get("kind") not in AU_KINDS or not isinstance(ev.get("id"), int):
+        return {}
+    st = ov.state(j, AU_EVENTS)
+    old = ([dict(x) for x in st[0] if isinstance(x, Mapping)]
+           if st and isinstance(st[0], list) else [])  # fmt: skip
+    if any(x.get("id") == ev["id"] and x.get("commit") == ev.get("commit") for x in old):
+        return ev  # the worker sent it again (a retry): kept once
+    set_state(j, AU_EVENTS, [ev, *old][:30], now)
+    return ev
+
+
+def autoupdate_text(ev: Mapping[str, Any]) -> tuple[str, str]:
+    """(text, kind) of one event's message."""
+    what = f"{str(ev.get('title') or 'an app update')[:120]} ({str(ev.get('commit') or '')[:10]})"
+    k = ev.get("kind")
+    if k == "applied":
+        return (f"Updated automatically: {what}. App-only change (screens, documents, research "
+                "pages); trading code and settings unchanged. Server > Health shows it; turn "
+                "this off in Settings > Automatic app updates.", "info")  # fmt: skip
+    if k in ("rolled_back", "failed"):
+        word = "ROLLED BACK" if k == "rolled_back" else "FAILED"
+        return (f"PAGE Automatic app update {word}: {what}. {ev.get('reason') or ''}. The app "
+                "runs the previous version. Tell your engineer.", "page")  # fmt: skip
+    return (f"PAGE Automatic app update not applied: {ev.get('reason') or 'a check failed'}. "
+            f"Update: {what}. See Server > Health.", "page")  # fmt: skip
+
+
+def tell_autoupdate(j: Journal, notify: Callable[..., object]) -> int:
+    """Each event once, oldest first (after a trader restart too): an applied update goes to
+    the Inbox; a rollback, a failure or a refused update is PAGEd."""
+    from trader.app_store import set_state
+
+    st = ov.state(j, AU_EVENTS)
+    evs = [x for x in st[0] if isinstance(x, Mapping)] if st and isinstance(st[0], list) else []
+    told_st = ov.state(j, AU_TOLD)
+    told = [str(x) for x in told_st[0]] if told_st and isinstance(told_st[0], list) else []
+    n = 0
+    for ev in reversed(evs):
+        key = f"{ev.get('id')}:{str(ev.get('commit') or '')[:12]}"
+        if key in told:
+            continue
+        text, kind = autoupdate_text(ev)
+        notify(text, kind, "/health")
+        told.append(key)
+        n += 1
+    if n:
+        set_state(j, AU_TOLD, told[-60:], datetime.now(ASX_TZ))
+    return n

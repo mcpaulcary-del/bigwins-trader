@@ -87,7 +87,7 @@ NO_CODE_SERVER = frozenset(
 ONE_TAP = frozenset({"pa", "st", "here", "lock"})
 # BF-D83 (DR review M2): the riskiest actions also need the memorised passphrase (once set)
 PASS_ACTS = frozenset({"re", "co", "srv:update", "srv:rollback", "srv:backup_key",
-                       "srv:claude_remote", "unlock"})  # fmt: skip
+                       "srv:claude_remote", "srv:autoupdate_on", "unlock"})  # fmt: skip
 LOCK_STATE = "actions-lock"  # BF-D83: "Lock actions" (approvals and re-arms need Unlock first)
 CONFIRM_TITLE = {
     "ok": "Approve orders", "ap": "Approve orders", "rf": "Refuse orders", "veto": "Veto order",
@@ -131,6 +131,8 @@ SRV_TITLE = {
     "hc_ping": ("Healthchecks ping", "Send the ping"),
     "info_archive": ("Collect announcements", "Collect now"),
     "prev_twin": ("Previous-version twin", "Run it now"),
+    "autoupdate_on": ("Automatic app updates", "Turn them on"),  # BF-D90
+    "autoupdate_off": ("Automatic app updates", "Turn them off"),
 }  # fmt: skip
 _ACT: contextvars.ContextVar[str] = contextvars.ContextVar("bw_act", default="")
 MAX_FAILS = 3

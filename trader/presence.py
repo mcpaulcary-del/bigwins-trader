@@ -249,9 +249,20 @@ class PresenceHook:
         sig_txt = SIG_WORDS.get(sig, "signature not checked")
         kind = "page" if sig == "bad" else "info"
         subject = str(u.get("subject") or "")[:120]
-        self._say(f"{'PAGE ' if sig == 'bad' else ''}New code on GitHub (not applied): "
-                  f"{subject} ({remote[:10]}, {sig_txt}). Nothing changes until you approve it "
-                  "in Server > Strategy. If you did not expect new code, do not approve it and "
-                  "tell your engineer.", kind, "/strategy")  # fmt: skip
+        pre = "PAGE " if sig == "bad" else ""
+        if u.get("auto") == "auto":  # BF-D90: an app-only update the server applies by itself
+            self._say(f"{pre}New app update on GitHub: {subject} ({remote[:10]}, {sig_txt}). "
+                      "App-only (screens, documents, research pages): the server applies it by "
+                      "itself outside ASX hours once GitHub CI has passed; the trader is not "
+                      "restarted. If you did not expect new code, turn this off in Settings > "
+                      "Automatic app updates and tell your engineer.",
+                      kind, "/strategy")  # fmt: skip
+        else:  # one push: the owner reviews and approves it (6-digit code, passphrase if set)
+            off = " (automatic app updates are off)" if u.get("auto") == "off" else ""
+            self._say(f"{pre}Update ready: {subject} — tap to review and approve. New code on "
+                      f"GitHub (not applied){off}: {remote[:10]}, {sig_txt}. Nothing changes "
+                      "until you approve it in Server > Strategy with your 6-digit code. If you "
+                      "did not expect new code, do not approve it and tell your engineer.",
+                      kind, "/strategy")  # fmt: skip
         set_state(self.j, "update-told", [*told[-19:], remote], now)
         return [remote]

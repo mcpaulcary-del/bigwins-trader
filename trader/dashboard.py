@@ -241,6 +241,9 @@ class Sources:
     # record's LEDGER.jsonl (read-only; only its tail is read, for the live trial count)
     research_dir: Path | None = None
     ledger: Path | None = None
+    # BF-D90: demo only: the server's REAL automatic-update status (a read-only file the
+    # host worker writes; commit ids, titles, times and reasons only)
+    autoupdate_status: Path | None = None
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -269,6 +272,38 @@ def _has_journal(j: Journal) -> bool:
     return {"bf_events", "bf_safety", "bf_batches", "bf_fills", "bf_cash"} <= names
 
 
+def demo_autoupdate_notes(path: Path | None) -> list[str]:
+    """BF-D90: in demo mode there is no trader to push or approve in, so the demo shows the
+    server's real automatic-update status as a note (read on every page)."""
+    import json
+
+    if path is None or not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")[:200_000])
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    from trader.server_status import clean_autoupdate
+
+    au = clean_autoupdate(raw)
+    la, p = au.get("last_applied") or {}, au.get("pending") or {}
+    head = (f"Server (real, not demo): automatic app updates {'on' if au.get('enabled') else 'off'}"
+            + (f"; last applied {la.get('title', '')[:80]} ({la.get('commit', '')[:10]}) at "
+               f"{la.get('at', '')[:16].replace('T', ' ')}" if la else "")
+            + (f"; next check {au.get('next_check', '')[11:16]}" if au.get("next_check") else "")
+            + ".")  # fmt: skip
+    out = [head]
+    if p.get("action") == "approval":
+        out.append(f"Update ready on the server: {p.get('title', '')[:100]} "
+                   f"({p.get('commit', '')[:10]}). The demo has no trader to approve it in: "
+                   "apply it on the server (Termius) with: bigwins update")  # fmt: skip
+    elif p.get("action") == "block":
+        out.append(f"Server: automatic update NOT applied: {p.get('reason', '')}")
+    return out
+
+
 def collect(src: Sources) -> View:
     j = src.journal
     v = View(
@@ -278,6 +313,7 @@ def collect(src: Sources) -> View:
     )  # fmt: skip
     if src.demo:
         v.notes.append("DEMO: synthetic prices from a short simulated run, not your book.")
+        v.notes += demo_autoupdate_notes(src.autoupdate_status)
     v.next_decision = _next_decision(src, j)
     _health_files(src, v)
     if not _has_journal(j):

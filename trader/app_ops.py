@@ -7,9 +7,9 @@ fixed running costs) goes through the trader's control server (``/act/costs``)."
 from __future__ import annotations
 
 import time as _time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -282,7 +282,8 @@ def research_health(o: Ops) -> str:
 STATUS_PILL = {"ok": ("ok", "on time"), "late": ("bad", "late"), "failed": ("bad", "failed"),
                "off": ("", "off"), "new": ("", "not yet")}  # fmt: skip
 TIMER_WORDS = {"worker": "server worker", "backup": "nightly backup", "weekly": "weekly checks",
-               "info": "announcements archive", "twin": "previous-version twin"}  # fmt: skip
+               "info": "announcements archive", "twin": "previous-version twin",
+               "autoupdate": "automatic app updates"}  # fmt: skip
 
 
 def health(v: Any, x: Extras, o: Ops, version: str) -> str:
@@ -474,10 +475,53 @@ def phone_safety_section(x: Extras) -> str:
     if sig:
         items.append(f"<li>Update signatures: <span class='pill {sig[0]}'>{e(sm)}</span> "
                      f"<span class='sub'>{e(sig[1])}</span></li>")  # fmt: skip
+    items.append(autoupdate_line(host))  # BF-D90
     cr = str(host.get("claude_remote") or "")
     items.append("<li>Claude remote control: " + (f"<b>on</b> since {e(cr)} <span class='sub'>(stops "
                  "by itself, 2 hours by default)</span>" if cr else "<b>off</b>") + "</li>")  # fmt: skip
     return section("Phone and update safety", f"<ul class='list'>{''.join(items)}</ul>")
+
+
+def _au_when(t: Any) -> str:
+    try:
+        d = datetime.fromisoformat(str(t))
+    except (TypeError, ValueError):
+        return ""
+    return f"{(d.astimezone(ASX_TZ) if d.tzinfo else d):%a %d %b %H:%M}"
+
+
+def autoupdate_line(host: Mapping[str, Any]) -> str:
+    """BF-D90: "Auto-update: on, last applied <title> at <time>, next check <time>"."""
+    au = host.get("autoupdate")
+    if not isinstance(au, Mapping) or not au:
+        return ("<li>Auto-update: <span class='sub'>not reported yet (needs the BF-D90 server "
+                "update)</span></li>")  # fmt: skip
+    on = bool(au.get("enabled"))
+    la = au.get("last_applied") if isinstance(au.get("last_applied"), Mapping) else {}
+    out = (f"<li>Auto-update: <span class='pill {'ok' if on else 'amber'}'>{'on' if on else 'off'}"
+           "</span>")  # fmt: skip
+    if la:
+        out += (f", last applied <b>{e(str(la.get('title') or '')[:80])}</b> "
+                f"<span class='mono'>{e(str(la.get('commit') or '')[:10])}</span> at "
+                f"{e(_au_when(la.get('at')))}")  # fmt: skip
+    else:
+        out += ", nothing applied automatically yet"
+    if au.get("next_check") and au.get("timer"):
+        out += f", next check {e(_au_when(au.get('next_check')))}"
+    if not au.get("timer"):
+        out += ("<div class='sub'>The auto-update timer is not installed: on the server "
+                "<code>sudo bigwins install-worker</code>.</div>")  # fmt: skip
+    p = au.get("pending") if isinstance(au.get("pending"), Mapping) else {}
+    if p:
+        act = str(p.get("action") or "")
+        word = {"approval": "Waiting for your approval", "block": "Not applied",
+                "wait": "Waiting"}.get(act, "Waiting")  # fmt: skip
+        out += (f"<div class='sub'>{word}: {e(str(p.get('title') or '')[:80])} "
+                f"({e(str(p.get('commit') or '')[:10])}): {e(str(p.get('reason') or ''))}</div>")  # fmt: skip
+    if au.get("live"):
+        out += ("<div class='sub'>Live book: applies by itself only with update signatures "
+                "enforced.</div>")  # fmt: skip
+    return out + "</li>"
 
 
 def renewals_section(x: Extras, today: date) -> str:

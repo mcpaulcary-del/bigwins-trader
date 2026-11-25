@@ -35,6 +35,9 @@ SERVER_ACTIONS: dict[str, str] = {
     "hc_ping": "Send a test ping to healthchecks.io",
     "info_archive": "Collect the announcements now (private archive, if on)",  # BF-D78
     "prev_twin": "Run the previous-version twin now (after a strategy update)",  # BF-D80
+    # BF-D90: the switch for automatic app-only updates (a root-only file on the server)
+    "autoupdate_on": "Turn automatic app updates on (app-only changes, outside ASX hours)",
+    "autoupdate_off": "Turn automatic app updates off (every update waits for your approval)",
 }
 GUARDED_ACTIONS = frozenset({"restart", "update", "rollback"})  # ASX open: refused unless forced
 # bits of server_jobs.force (BF-D42, BF-D45)

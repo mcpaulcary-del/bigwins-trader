@@ -380,6 +380,7 @@ def _app_wiring(
         hooks.append(lambda now: ctl.process())
         hooks.append(lambda now: tell_server_jobs(j, notifier))
         hooks.append(lambda now: tell_backups(j, notifier))  # BF-D64
+        hooks.append(lambda now: tell_autoupdate(j, notifier.notify))  # BF-D90
         hooks.append(lambda now: page_host(j, app.say, now))  # review F9
         sleep = ctl.wait
     hb = Heartbeat(ping_url(read_secret("healthchecks_url")), j, app.say,
@@ -547,6 +548,13 @@ def tell_backups(j: Journal, notifier: AppNotifier) -> int:
     return n
 
 
+def tell_autoupdate(j: Journal, notify: Callable[..., object]) -> int:
+    """BF-D90: each automatic-update event once (Inbox; a rollback or a refusal PAGEs)."""
+    from trader.ops_hooks import tell_autoupdate as tell
+
+    return tell(j, notify)
+
+
 def tell_server_jobs(j: Journal, notifier: AppNotifier) -> int:
     """BF-D42: push the result of each server job once (after a restart too)."""
     from trader.app_store import get_state, server_job_rows, set_state
@@ -696,6 +704,12 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912,
                                json.loads(sys.stdin.read() or "{}"), now)  # fmt: skip
         print("previous-version twin stored: " + ("ok" if rec["ok"] else "FAILED"))
         return 0
+    if args.op == "autoupdate":  # BF-D90: an automatic app update applied / rolled back
+        from trader.ops_hooks import record_autoupdate
+
+        ev = record_autoupdate(j, json.loads(sys.stdin.read() or "{}"), now)
+        print("auto-update event stored: " + str(ev.get("kind") or "ignored"))
+        return 0
     if args.op == "backup":  # BF-D64: the worker's backup / restore-test result
         from trader.backups import record_result
 
@@ -751,6 +765,8 @@ def update_info(u: dict[str, object], old_config: str | None) -> dict[str, objec
         # long the server has known it (the live minimum age is checked by the worker)
         "signed": str(u.get("signed")) if u.get("signed") in ("good", "bad", "none") else "unknown",
         "seen_h": int(str(u.get("seen_h"))) if str(u.get("seen_h") or "").isdigit() else None,
+        # BF-D90: the worker's verdict: applied by itself (auto), or needs approval
+        "auto": str(u.get("auto")) if u.get("auto") in ("auto", "approval", "off") else "",
         "files": files[:40], "subject": clean_line(str(u.get("subject") or ""))[:200],
         "notes": {k: clean_line(str(v))[:600] for k, v in notes[0].items()} if notes else {},
     }  # fmt: skip
@@ -863,6 +879,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             j, cfg.book, cfg.data.sim_book, index=demo.index, index_label="Index",
             sessions=lambda: demo.sessions, today=lambda: demo.last_day, clock=lambda: demo.now,
             out_dir=Path(args.out) if args.out else None, index_note="synthetic", demo=True,
+            autoupdate_status=args.autoupdate_status,  # BF-D90: the server's real status
             tax_params=tax, prices=demo.prices, forecast_dir=args.config.parent,
             **{**_ops_sources(cfg), "scorecard": demo.scorecard, "info_dir": demo.info_dir,
                "info_enabled": True},
@@ -1137,7 +1154,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
     p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
     p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal",
-                                  "info-archive", "prev-twin"])  # fmt: skip
+                                  "info-archive", "prev-twin", "autoupdate"])  # fmt: skip
     p.add_argument("--fp", default="", help="reveal: the recovery key's fingerprint (M3)")
     p.add_argument("--id", type=int)
     p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])
@@ -1156,6 +1173,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p.add_argument("--out", default="/app/out", help="the trader's output folder (disk free)")
     p.add_argument("--demo", action="store_true", help="synthetic demo data (screenshots)")
     p.add_argument("--snapshot", help="write the page to this file and exit")
+    p.add_argument(
+        "--autoupdate-status",
+        type=Path,
+        default=None,
+        help="demo: the server's real auto-update status file (BF-D90, read-only)",
+    )
     for name in ("kill", "pause", "status"):
         _journal_args(sub.add_parser(name))
     a = ap.parse_args(argv)
