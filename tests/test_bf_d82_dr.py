@@ -39,14 +39,17 @@ PHRASE = "purple kettle mountain river"
 # ---------------------------------------------------------------- the strategy is frozen
 
 
-def test_BF_D82_strategy_hash_and_settings_hash_unchanged() -> None:
+def test_BF_D82_strategy_hash_and_settings_hash_unchanged(tmp_path: Path) -> None:
     """EMG2-18 + shield + C6 is frozen until 1 Jan 2027: these safety-layer changes leave the
-    strategy hash and the strategy settings hash exactly as before (e3e496b)."""
-    from trader.strategy_version import config_hash, strategy_hash
+    strategy hash and the strategy settings hash exactly as before (e3e496b). BF-D90
+    (branch jan2027-fixes, proposed): with the E5 change taken out, as before."""
+    from tests.test_bf_d90_e5 import _strategy_hash_without_e5
+    from trader.strategy_version import config_hash
     from trader.yamlio import load_yaml
 
-    assert strategy_hash(REPO) == "a50dfa0b4eb1"
+    assert _strategy_hash_without_e5(tmp_path) == "a50dfa0b4eb1"
     cfg = load_yaml((REPO / "config" / "bfast.yaml").read_text()) or {}
+    cfg["live_emg2_20"].pop("e5")  # BF-D90
     assert config_hash(cfg) == "02589a19293b"
     assert cfg["app"]["presence_days"] == 14  # in the app's own (non-trading) section
 
@@ -59,7 +62,8 @@ def test_BF_D82_no_strategy_file_changed_since_e3e496b() -> None:
                                capture_output=True, text=True, check=True).stdout.split()  # fmt: skip
     except (subprocess.CalledProcessError, FileNotFoundError):
         pytest.skip("the base commit is not in this checkout (shallow clone)")
-    assert not [f for f in files for s in STRATEGY_FILES if f.startswith(s)]
+    moved = [f for f in files for s in STRATEGY_FILES if f.startswith(s)]
+    assert moved in ([], ["trader/lines/emg2.py"])  # BF-D90 (jan2027-fixes): E5 only
 
 
 # ---------------------------------------------------------------- owner presence (BF-D82)

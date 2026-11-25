@@ -53,6 +53,7 @@ from trader.approval import approved_seqs
 from trader.constants import ASX_TZ
 from trader.journal import Journal, Status, events, safety
 from trader.orders import Side
+from trader.sleeve import sleeve_holding
 
 CENT = Decimal("0.01")
 MINUS = "\u2212"  # a typographic minus sign
@@ -146,6 +147,8 @@ class View:
     limits: Any = None  # BF-D62: the L11 thresholds (loss-rule meter)
     journal: Any = None  # BF-D62: read-only, for the chart's trade dots
     holdings: list[Holding] = field(default_factory=list)
+    # BF-D90 (proposed): (fund, units) of the A200 sweep sleeve inside ``holdings``
+    sleeve: tuple[str, int] | None = None
     next_decision: date | None = None
     last_decision: date | None = None
     orders: list[OrderRow] = field(default_factory=list)
@@ -305,6 +308,7 @@ def collect(src: Sources) -> View:
         )
     _index(src, v)
     v.holdings = _holdings(j, book, src.today())
+    v.sleeve = sleeve_holding(j, book)  # BF-D90
     _orders(j, book, v)
     _safety(j, v)
     _trend_and_twins(j, src, v)

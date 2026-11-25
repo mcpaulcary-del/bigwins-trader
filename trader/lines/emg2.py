@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import date
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Literal
 
@@ -230,6 +231,24 @@ class Emg2_20Params:  # noqa: N801 - the line's registered name
     sell_rule: SellRule = "L4"
     c6_min_months: int = 6
     c6_keep_fraction: float = 0.40
+    # BF-D90 (PROPOSED; effective only on owner approval on or after 1 Jan 2027; draft
+    # AMENDMENT_live_EMG2_18_E5_jan2027.md; research_bw E5): ``rule14_sells``: a rule-14
+    # thin band (band C not empty but under ``min_names``) blocks buys and the fund sale
+    # only, every sale the rules require still happens; ``sweep``: at each decision, after
+    # the rules' orders, the trading-book value above the cap (X >= ``sweep_min_aud``) buys
+    # the fund into a sleeve the rules never count, size on or sell. Both apply only to
+    # decisions on or after ``e5_from`` (None: never). Off by default: the payload (and the
+    # digest) of a decision without them is unchanged.
+    rule14_sells: bool = False
+    sweep: bool = False
+    sweep_min_aud: Decimal = Decimal(500)
+    e5_from: date | None = None
+
+    def e5(self, as_of: str) -> tuple[bool, bool]:
+        """(rule-14 sale fix, sweep) in force at a decision on ``as_of``."""
+        if self.e5_from is None or date.fromisoformat(as_of) < self.e5_from:
+            return False, False
+        return self.rule14_sells, self.sweep
 
 
 @dataclass(frozen=True)
@@ -283,6 +302,9 @@ class Emg2_20Decision:  # noqa: N801
     # BF-D35: under sell rule C6, each holding's age in month-ends (None: no buy of its
     # own, counted as old enough) and the keep zone held; None = rule L4 (payload unchanged)
     ages: tuple[tuple[str, int | None], ...] | None = None
+    # BF-D90 E5: the rule-14 reason when a thin band blocked the buys and the fund sale
+    # but not the other sales (None: no thin band, or the E5 fix not in force)
+    thin_band: str | None = None
 
     def payload(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -297,7 +319,14 @@ class Emg2_20Decision:  # noqa: N801
         if self.ages is not None:
             out["sell_rule"] = "C6"
             out["ages"] = [[e, a] for e, a in self.ages]
+        if self.thin_band is not None:
+            out["thin_band"] = self.thin_band
         return out
+
+    @property
+    def sweep_buy(self) -> BuyPlan | None:
+        """BF-D90: the decision's sweep-sleeve buy, if any."""
+        return next((b for b in self.buys if b.reason == E5_SWEEP_BUY), None)
 
     @property
     def digest(self) -> str:
@@ -352,6 +381,13 @@ class _Ctx:
 
 
 EMG2_C6_EXIT = "EMG2_C6_EXIT"  # BF-D35: held >= 6 month-ends and outside the keep zone
+E5_SWEEP_BUY = "E5_SWEEP_BUY"  # BF-D90: cash above the cap into the fund's sweep sleeve
+
+
+def rule14_thin(lst: Emg2List) -> bool:
+    """BF-D90: the list's data block is rule 14's count test (band C holds names, fewer
+    than ``min_names``), not an empty band C. Only this block is narrowed by E5."""
+    return bool(lst.band_c) and len(lst.band_c) < lst.params.min_names
 
 
 def keep_zone(lst: Emg2List, keep_fraction: float) -> frozenset[str]:
@@ -389,22 +425,26 @@ def _plan_sells(
     keep: frozenset[str] | None = None,
     ages: Mapping[str, int | None] | None = None,
     force: frozenset[str] = frozenset(),
+    never: frozenset[str] = frozenset(),
 ) -> tuple[list[SellPlan], list[str], Decimal]:
     """L4: sell in full every holding not on T or flagged ``BID_PEG``. With ``keep``
     (rule C6, BF-D35): sell by ``c6_sells`` instead. ``force``: sold whatever the rule
-    (the fund in state EMG2, BT4); a holding without a close for 20 sessions is never an
-    order (payout path)."""
+    (the fund in state EMG2, BT4); ``never``: kept whatever the rule (BF-D90: the fund in
+    a rule-14 thin band); a holding without a close for 20 sessions is never an order
+    (payout path)."""
     sells: list[SellPlan] = []
     kept: list[str] = []
     proceeds = Decimal(0)
     priced = {e: ctx.px(e) for e in sorted(book.holdings)}
     c6: dict[str, str] = {}
     if keep is not None:
-        live = [e for e, px in priced.items() if px is not None and e not in force]
+        live = [
+            e for e, px in priced.items() if px is not None and e not in force and e not in never
+        ]
         c6 = dict(c6_sells(live, ages or {}, keep, ctx.pegged, ctx.p.c6_min_months))
     for e, price in priced.items():
         q = book.holdings[e]
-        if price is None:
+        if price is None or e in never:
             kept.append(e)  # no close for 20 sessions: payout path (BW-UNI-21), not an order
             continue
         if e in force:
@@ -457,6 +497,7 @@ def decide_emg2_20(
     ages: Mapping[str, int | None] | None = None,
     keep_order: KeepZone | None = None,
     force_sell: frozenset[str] = frozenset(),
+    never_sell: frozenset[str] = frozenset(),
 ) -> Emg2_20Decision:
     """One EMG2-20 decision (rules L2-L5) for ``book`` at the panel's session D.
 
@@ -467,7 +508,11 @@ def decide_emg2_20(
     Sell rule C6 (``params.sell_rule``, BF-D35): ``ages`` = each holding's age in
     month-ends (a missing entry counts as old enough); ``keep_order(lst, fraction)``
     replaces the keep zone for a random twin (None: the EMG2 score's). ``force_sell``:
-    holdings sold whatever the rule (the fund in state EMG2)."""
+    holdings sold whatever the rule (the fund in state EMG2); ``never_sell``: holdings
+    kept whatever the rule (BF-D90: the fund in a rule-14 thin band).
+    BF-D90 E5 (``params.rule14_sells`` in force): a rule-14 thin band (``rule14_thin``)
+    is no longer "no decision": every sale the rules require is made (``BID_PEG``, C6 or
+    L4) and nothing is bought; the decision carries the reason in ``thin_band``."""
     p = params or Emg2_20Params()
     if any(q <= 0 for q in book.holdings.values()):
         raise ValueError("holdings must be positive whole shares (long only)")
@@ -482,7 +527,8 @@ def decide_emg2_20(
     sizing_value = min(account_value, p.capital_cap_aud)  # L1
     n = max(0, min(p.slots, int(sizing_value // p.slot_unit_aud)))  # L3 (EMG2-18)
     parcel = (sizing_value / n).quantize(CENT, ROUND_DOWN) if n else Decimal(0)
-    if lst.data_block:  # rule 14: no decision, holdings kept
+    thin = lst.data_block is not None and p.e5(lst.as_of)[0] and rule14_thin(lst)
+    if lst.data_block and not thin:  # rule 14: no decision, holdings kept
         return Emg2_20Decision(
             book.book, lst.as_of, lst.digest, lst.data_block, account_value, n, parcel,
             (), (), (), tuple(sorted(book.holdings)),
@@ -497,9 +543,11 @@ def decide_emg2_20(
         frac = p.c6_keep_fraction
         keep = keep_order(lst, frac) if keep_order is not None else keep_zone(lst, frac)
     sells, kept, proceeds = _plan_sells(
-        ctx, book, frozenset(targets), keep=keep, ages=ages, force=force_sell
-    )
-    cands, skipped = _pick_buys(ctx, book, targets, n - len(kept))
+        ctx, book, frozenset(targets), keep=keep, ages=ages, force=force_sell - never_sell,
+        never=never_sell,
+    )  # fmt: skip
+    # BF-D90: a thin band buys nothing (its sales still happen)
+    cands, skipped = ([], []) if thin else _pick_buys(ctx, book, targets, n - len(kept))
     kept_value = sum(((ctx.px(e) or Decimal(0)) * book.holdings[e] for e in kept), Decimal(0))
     available = min(
         book.cash + proceeds - p.cash_reserve_aud,  # L5 reserve
@@ -520,6 +568,7 @@ def decide_emg2_20(
     return Emg2_20Decision(
         book.book, lst.as_of, lst.digest, None, account_value, n, parcel,
         tuple(sells), tuple(buys), tuple(skipped), tuple(kept), ages=aged,
+        thin_band=lst.data_block if thin else None,
     )  # fmt: skip
 
 
@@ -555,18 +604,28 @@ def decide_emg2_18_bt(
     it is at least A$500; when the fund is already held, only if it is also at least
     ``top_up_fraction`` of the account. Rule 14 data block: no decision, as always.
     Sell rule C6 (BF-D35) applies in state EMG2 only; the fund is always sold there (BT4)
-    and every share in state FUND (BT3), whatever its age."""
+    and every share in state FUND (BT3), whatever its age.
+    BF-D90 E5 (in force from ``params.e5_from``): a rule-14 thin band blocks only the buys
+    of shares and the fund sale (state EMG2: BID_PEG and C6 sales go ahead, the fund is
+    kept; state FUND: every share is sold and the cash buys the fund, as BT3); then the
+    sweep (``add_sweep``). ``book`` must leave the sweep sleeve out (the rules never count
+    it)."""
     p = params or Emg2_20Params()
     lst = lst or emg2_list(panel, list_params)
+    r14, sweep = p.e5(lst.as_of)
+    thin = lst.data_block is not None and r14 and rule14_thin(lst)
     if trend_on:
         dec = decide_emg2_20(
             panel, book, p, list_params, lst=lst, target_order=target_order, ages=ages,
-            keep_order=keep_order, force_sell=frozenset({fund}),
+            keep_order=keep_order,
+            force_sell=frozenset() if thin else frozenset({fund}),
+            never_sell=frozenset({fund}) if thin else frozenset(),  # BF-D90: fund not sold
         )  # fmt: skip
         relabel = tuple(
             replace(x, reason=BT_FUND_SELL) if x.entity == fund else x for x in dec.sells
         )
-        return replace(dec, sells=relabel, state="EMG2")
+        dec = replace(dec, sells=relabel, state="EMG2")
+        return add_sweep(dec, panel, book, p, fund) if sweep else dec
     if any(q <= 0 for q in book.holdings.values()):
         raise ValueError("holdings must be positive whole shares (long only)")
     ctx = _Ctx(
@@ -579,7 +638,7 @@ def decide_emg2_18_bt(
     sizing_value = min(account_value, p.capital_cap_aud)
     n = max(0, min(p.slots, int(sizing_value // p.slot_unit_aud)))
     parcel = (sizing_value / n).quantize(CENT, ROUND_DOWN) if n else Decimal(0)
-    if lst.data_block:  # rule 14: no decision, holdings kept
+    if lst.data_block and not thin:  # rule 14: no decision, holdings kept
         return Emg2_20Decision(
             book.book, lst.as_of, lst.digest, lst.data_block, account_value, n, parcel,
             (), (), (), tuple(sorted(book.holdings)), "FUND",
@@ -610,7 +669,36 @@ def decide_emg2_18_bt(
         buys.append(BuyPlan(fund, 0, value, _dec_price(panel.close[-1, j]), BT_FUND_BUY))
     elif not held:
         skipped.append(Skip(fund, "MIN_PARCEL"))  # its cash waits for the next decision
-    return Emg2_20Decision(
+    dec = Emg2_20Decision(
         book.book, lst.as_of, lst.digest, None, account_value, n, parcel,
         tuple(sells), tuple(buys), tuple(skipped), tuple(kept), "FUND",
+        thin_band=lst.data_block if thin else None,
     )  # fmt: skip
+    return add_sweep(dec, panel, book, p, fund) if sweep else dec
+
+
+def add_sweep(
+    dec: Emg2_20Decision, panel: PricePanel, book: BookState, p: Emg2_20Params, fund: str
+) -> Emg2_20Decision:
+    """BF-D90 sweep (research_bw E5): after the rules' own orders, X = the trading book's
+    value at the decision close (``account_value``: the sleeve is not in ``book``) less
+    the capital cap. If X >= ``sweep_min_aud``, X, at most the cash after the decision's
+    sales (estimated as for every buy) and buys less the A$50 reserve, buys the fund into
+    the sweep sleeve (reason ``E5_SWEEP_BUY``); under the A$500 minimum it is skipped
+    (``SWEEP_CASH``). A data block (no decision) has no sweep."""
+    if dec.data_block is not None:
+        return dec
+    x = dec.account_value - p.capital_cap_aud
+    if x < p.sweep_min_aud:
+        return dec
+    j = panel.entities.index(fund) if fund in panel.entities else None
+    if j is None or math.isnan(panel.close[-1, j]):
+        return replace(dec, skipped=(*dec.skipped, Skip(fund, "NO_CLOSE")))
+    proceeds = sum((_sale_estimate(s.qty, s.ref_close, p) for s in dec.sells), Decimal(0))
+    spent = sum((b.value_aud for b in dec.buys), Decimal(0))
+    cash = book.cash + proceeds - spent - p.cash_reserve_aud
+    amt = min(x, cash).quantize(CENT, ROUND_DOWN)
+    if amt < p.min_parcel_aud:
+        return replace(dec, skipped=(*dec.skipped, Skip(fund, "SWEEP_CASH")))
+    buy = BuyPlan(fund, 0, amt, _dec_price(panel.close[-1, j]), E5_SWEEP_BUY)
+    return replace(dec, buys=(*dec.buys, buy))

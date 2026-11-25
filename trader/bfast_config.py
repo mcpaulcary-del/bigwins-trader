@@ -107,6 +107,19 @@ class Emg2_20Cfg(_M):  # noqa: N801
     # BF-D35 (AMENDMENT_live_EMG2_18_C6.md): C6 = sell only after 6 month-ends held and
     # outside the top 40% of band C; L4 = the registered rule (kept for the paper comparison)
     sell_rule: Literal["L4", "C6"] = "L4"
+    # BF-D90 (PROPOSED; effective only on owner approval on or after 1 Jan 2027): E5
+    e5: E5Cfg | None = None
+
+
+class E5Cfg(_M):
+    """BF-D90, research_bw E5 (draft ``AMENDMENT_live_EMG2_18_E5_jan2027.md``): rule 14
+    never blocks a sale; cash above the cap is swept into an A200 sleeve. Both act only at
+    decisions on or after ``effective_from`` (never before 1 Jan 2027: the freeze)."""
+
+    rule14_sells: bool
+    sweep: bool
+    sweep_min_aud: Decimal = Field(default=Decimal(500), ge=Decimal(500))
+    effective_from: date = Field(ge=date(2027, 1, 1))
 
 
 class BandTrendCfg(_M):
@@ -460,6 +473,15 @@ class BfastConfig(_M):
         return self
 
     @model_validator(mode="after")
+    def _e5_needs_the_fund(self) -> BfastConfig:
+        """BF-D90: the sweep buys the L15 fund and the sale fix is written for C6 under L15."""
+        e5 = self.live_emg2_20.e5
+        on = e5 is not None and (e5.rule14_sells or e5.sweep)
+        if on and (self.band_trend is None or not self.band_trend.enabled):
+            raise ValueError("live_emg2_20.e5 needs band_trend enabled (the sweep buys its fund)")
+        return self
+
+    @model_validator(mode="after")
     def _dry_run_paper_only(self) -> BfastConfig:
         d = self.paper_dry_run
         if d is None:
@@ -499,6 +521,10 @@ class BfastConfig(_M):
             capital_cap_aud=c.capital_cap_aud,
             skip_lottery=c.skip_lottery,
             sell_rule=c.sell_rule,
+            rule14_sells=bool(c.e5 and c.e5.rule14_sells),
+            sweep=bool(c.e5 and c.e5.sweep),
+            sweep_min_aud=c.e5.sweep_min_aud if c.e5 else Decimal(500),
+            e5_from=c.e5.effective_from if c.e5 else None,
         )
 
     def commission_model(self) -> CommissionModel:

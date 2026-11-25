@@ -964,6 +964,26 @@ def _mark_history(j: Journal | None, last: int = 40) -> dict[str, list[float]]:
     return out
 
 
+def sleeve_note(v: Any) -> str:
+    """BF-D90 (proposed): the owner's words for the A200 sweep sleeve, when there is one."""
+    sl = getattr(v, "sleeve", None)
+    if not sl:
+        return ""
+    fund, units = sl
+    h = next((h for h in v.holdings if h.code == fund), None)
+    val = ""
+    if h is not None and h.value is not None and h.qty:
+        val = f" (about {aud(h.value * units / h.qty, dp=0)})"
+    return (
+        f'<p class="note"><b>Sweep sleeve:</b> {units:,} of your {e(fund)} units{val} are '
+        "money above the $10,000 the strategy works with. At each decision anything over "
+        f"$10,000 (from $500) is put into {e(fund)} instead of sitting in cash. The strategy's "
+        "rules never sell these units, never count them and never size on them; they stay "
+        "invested until you decide otherwise. The scoreboard counts them: they are part of "
+        "your result against the same money in A200.</p>"
+    )
+
+
 def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     seg = ('<div class="seg"><a class="on" href="/holdings" data-nav>Holdings</a>'
            '<a href="/shares" data-nav>Shares</a><a href="/tax" data-nav>Tax</a></div>')  # fmt: skip
@@ -998,6 +1018,7 @@ def holdings(v: Any, x: Extras, j: Journal | None) -> str:
     stale = sum(1 for h in v.holdings if h.stale)
     note = (f'<p class="note">{plural(stale, "share")} had no price on the last report day; '
             "valued at the last price.</p>" if stale else "")  # fmt: skip
+    note += sleeve_note(v)  # BF-D90
     cash = float(v.cash or 0)
     invested = float(total) / (float(total) + cash) * 100 if float(total) + cash > 0 else 0.0
     summary = (

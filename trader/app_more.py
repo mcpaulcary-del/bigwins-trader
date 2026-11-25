@@ -31,6 +31,11 @@ REASON_WORDS = {
     "BT_FUND_BUY": "the trend shield moved the book into the A200 fund",
     "BT_FUND_SWEEP": "spare cash went into the A200 fund",
     "BT_LEFTOVER_SELL": "a leftover parcel was sold",
+    # BF-D90 (proposed): research_bw E5
+    "E5_SWEEP_BUY": (
+        "the sweep: money above the $10,000 the rules use went into the A200 sweep sleeve "
+        "(the rules never sell it or count it; the scoreboard does)"
+    ),
 }
 
 

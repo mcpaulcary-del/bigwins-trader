@@ -449,7 +449,7 @@ def test_BF_D89_linker_first_use_only() -> None:
 # ---------------------------------------------------------------- 17: classifiers
 
 
-def test_BF_D89_classifiers_ui_only_and_hashes_unchanged() -> None:
+def test_BF_D89_classifiers_ui_only_and_hashes_unchanged(tmp_path: Path) -> None:
     from trader import strategy_version as sv
     from trader.yamlio import load_yaml
 
@@ -461,9 +461,16 @@ def test_BF_D89_classifiers_ui_only_and_hashes_unchanged() -> None:
     docs = ["docs/research/highlights.yaml", "docs/research/studies/research_bw.md",
             "docs/research/reports/research_bw.md", "docs/DECISIONS.md"]  # fmt: skip
     assert w["classify"](docs) == "app" and not any(sv.is_trading_path(f) for f in docs)
-    assert sv.strategy_hash(REPO) == "a50dfa0b4eb1"
+    from tests.test_bf_d90_e5 import _strategy_hash_without_e5  # BF-D90 (jan2027-fixes)
+
+    assert _strategy_hash_without_e5(tmp_path) == "a50dfa0b4eb1"
     cfg = load_yaml((REPO / "config" / "bfast.yaml").read_text()) or {}
-    assert sv.config_hash(cfg) == "02589a19293b"
+    assert (
+        sv.config_hash(
+            {**cfg, "live_emg2_20": {k: v for k, v in cfg["live_emg2_20"].items() if k != "e5"}}
+        )
+        == "02589a19293b"
+    )
     assert "ledger_jsonl" in cfg["research"]  # an app-only section (NON_TRADING_CONFIG)
     # this build itself touches the Dockerfile, config and the classifiers: a trading update
     assert w["classify"](["deploy/Dockerfile", "config/bfast.yaml"]) == "strategy"

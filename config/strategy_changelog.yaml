@@ -3,6 +3,28 @@
 # Add an entry with every change to the strategy (config/bfast.yaml strategy settings,
 # trader/lines/, trader/universe.py, trader/features.py, trader/panel.py, the LIC list).
 versions:
+  - version: "EMG2-18 C6 v1.2 (E5, proposed)"
+    date: 2027-01-01
+    fingerprint: "0ad8e21de254"
+    what: >-
+      PROPOSED, not in force until you approve it on or after 1 Jan 2027 (BF-D90). Two
+      changes from the research of 25 Nov 2026 (research_bw "E5"). (1) Rule 14: when band C
+      has fewer than 150 names the book still buys nothing and keeps the A200 fund, but every
+      sale the rules require now goes ahead (stuck-price shares, rule C6 sales, and in fund
+      state every share, with the money going into A200). Before, rule 14 stopped all
+      trading, sales included. (2) The sweep: at each decision, anything above the A$10,000
+      the strategy works with (from A$500) is put into A200 in a "sweep sleeve" instead of
+      sitting in cash. The rules never sell, count or size on the sleeve; the scoreboard
+      counts it.
+    why: >-
+      Over 2002-2026 today's rules sat in cash about half the time and trailed A200 by about
+      1.7 points a year; this version led A200 by about 3.3 points a year before tax and
+      about 1.4 points after 47% tax. Neither figure is statistically reliable (t about 0.75).
+    tested: >-
+      Full test suite; the decision equals a transcription of the research engine's E5 code
+      on 1,200 random books and both switch states, normal months and thin bands; the
+      strategy hash differs from v1.1 only by this change; nothing changes before 1 Jan 2027.
+    takes_effect: "At the first decision on or after 1 Jan 2027 after you approve the update."
   - version: "EMG2-18 C6 v1.1"
     date: 2026-11-22
     fingerprint: "a50dfa0b4eb1"

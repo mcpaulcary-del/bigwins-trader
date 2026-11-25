@@ -35,6 +35,11 @@ live_emg2_20:
   sell_rule: C6                 # BF-D35 (AMENDMENT_live_EMG2_18_C6.md, owner after report 100): sell only
                                 #   after >= 6 month-ends held AND outside the top 40% of band C (BID_PEG,
                                 #   payouts, the L15 switch unchanged); L4 = the old rule (paper comparison)
+  e5:                           # BF-D90 PROPOSED (branch jan2027-fixes; owner approval on or after 1 Jan 2027)
+    rule14_sells: true          #   rule 14 (thin band C < 150) blocks buys and the fund sale only, never a sale
+    sweep: true                 #   at each decision, trading-book value above A$10,000 (>= A$500) buys A200
+    sweep_min_aud: 500          #   into a sleeve the rules never count, size on or sell
+    effective_from: 2027-01-01  #   decisions before this date use the frozen rules (the freeze, ledger seq 88)
 risk:
   order_value_max_aud: 800
   orders_per_day: {start: 24, normal: 20, hard: 80}   # review H6: buys only (sells never count);

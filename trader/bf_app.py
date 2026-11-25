@@ -103,6 +103,7 @@ from trader.loss_rule import (
     wind_down_qty,
 )
 from trader.orders import (
+    SLEEVE,
     OrderBatch,
     OrderIntent,
     OrderParams,
@@ -127,6 +128,7 @@ from trader.risk import (
     worst,
 )
 from trader.runner import reconcile_and_page
+from trader.sleeve import rules_positions, sleeve_cost, sleeve_units
 from trader.store_refresh import STORE_PAGE_SLOT, STORE_REFRESH_SLOTS, StoreRefresher
 from trader.universe import liquidity_table
 
@@ -483,11 +485,13 @@ class BfApp:
             start_day=start_day,
             positions=self.j.map_codes(broker.positions()),  # BF-D19: a code change
             settled_cash=cash,
-            holdings_cost=self.j.holdings_cost(book),
+            # BF-D90: the capital cap counts the rules' own holdings, never the sweep sleeve
+            holdings_cost=self.j.holdings_cost(book) - self._sleeve_cost(book),
             # BF-D34: a fund buy is capped on the fund's own cost; the shares still held
             # in FUND state are being sold and never block it
             fund_cost=(
                 self.j.cost_book(book).cost.get(self.s.band_trend.fund, Decimal(0))
+                - self._sleeve_cost(book)
                 if self.s.band_trend.enabled
                 else None
             ),
@@ -638,7 +642,8 @@ class BfApp:
             dec = None
             block = stale or (None if ready else "the day's closes are missing")
             if block is None:
-                state = BookState(book, self.j.cash(book), self._book_positions(book, day))
+                # BF-D90: the rules never see the sweep sleeve
+                state = BookState(book, self.j.cash(book), self._rules_positions(book, day))
                 order = self._random_order(seeds.get(book), day, now)
                 ages = (
                     self.holding_ages(book, day, state.holdings)
@@ -684,7 +689,7 @@ class BfApp:
             if book == self.s.book:
                 self._announce(
                     day, canary, dec.list_digest, batch.batch_id, ex.plan_pages,
-                    None if trend is None else self._describe_trend(day, trend),
+                    None if trend is None else self._describe_trend(day, trend), dec,
                 )  # fmt: skip
         if acted:
             self._note_decision_difference(day, now, acted)
@@ -814,7 +819,7 @@ class BfApp:
         buying = any(it.side is Side.BUY for it in open_)
         if sold and not buying and ref is not None and ref > 0:
             p = self.s.params
-            fund_cost = self.j.cost_book(book).cost.get(fund, Decimal(0))
+            fund_cost = self.j.cost_book(book).cost.get(fund, Decimal(0)) - self._sleeve_cost(book)
             cash = min(self.j.cash(book) - p.cash_reserve_aud, p.capital_cap_aud - fund_cost)
             lim = round_to_step(ref * (1 + band), Side.BUY)
             qty = int((cash / lim).to_integral_value(ROUND_DOWN)) if cash > 0 else 0
@@ -979,11 +984,23 @@ class BfApp:
         batch_id: str,
         pages: Sequence[str],
         state: str | None = None,
+        dec: Emg2_20Decision | None = None,
     ) -> None:
         head = f"Decision {day} ({'start, canary first' if canary else 'regular'}); "
         head += f"list {list_digest[:12]}; {len(self.j.intents_of(batch_id))} order(s)"
         if state is not None:
             head += "\n" + state
+        if dec is not None and dec.thin_band is not None:  # BF-D90
+            head += (
+                f"\nThin band ({dec.thin_band}): nothing is bought and the fund is not sold; "
+                "the sales the rules require still go ahead"
+            )
+        sw = dec.sweep_buy if dec is not None else None
+        if sw is not None:  # BF-D90
+            head += (
+                f"\nSweep: A${sw.value_aud} above the A$10,000 cap goes into the A200 sweep "
+                "sleeve (the rules never sell it; the scoreboard counts it)"
+            )
         if self.s.params.sell_rule == "C6":  # BF-D35
             head += (
                 "\nsell rule C6: a share is sold after >= 6 month-ends held and only outside "
@@ -1184,7 +1201,12 @@ class BfApp:
                 replace(
                     it,
                     client_order_id=client_order_id(
-                        book, it.decision_date, ent, it.side, it.attempt + 1
+                        book,
+                        it.decision_date,
+                        ent,
+                        it.side,
+                        it.attempt + 1,
+                        tag="SW" if SLEEVE in it.flags else "",  # BF-D90: still the sleeve's
                     ),
                     entity=ent,
                     qty=qty,
@@ -1337,6 +1359,28 @@ class BfApp:
     def _held_codes(self) -> frozenset[str]:
         books = (self.s.book, *(b for b, _ in self._sim_brokers()))
         return frozenset(e for b in books for e in self.j.positions(b))
+
+    # ------------------------------------------------------------ BF-D90 sweep sleeve
+    def sleeve_units(self, book: str, day: date | None = None) -> int:
+        """Units of the fund in ``book``'s sweep sleeve (``trader.sleeve``)."""
+        if not self.s.band_trend.enabled:
+            return 0
+        fund = self.s.band_trend.fund
+        held = dict(self.j.positions(book)).get(fund, 0)
+        return sleeve_units(self.j, book, held)
+
+    def _rules_positions(self, book: str, day: date) -> dict[str, int]:
+        """The holdings the rules decide on: ``_book_positions`` less the sweep sleeve."""
+        pos = self._book_positions(book, day)
+        return rules_positions(pos, self.s.band_trend.fund, self.sleeve_units(book, day))
+
+    def _sleeve_cost(self, book: str) -> Decimal:
+        units = self.sleeve_units(book)
+        if not units:
+            return Decimal(0)
+        cb = self.j.cost_book(book)
+        fund = self.s.band_trend.fund
+        return sleeve_cost(cb.cost.get(fund, Decimal(0)), cb.qty.get(fund, Decimal(0)), units)
 
     def _calendar(self, codes: Mapping[str, int] | frozenset[str], day: date) -> CaCalendar | None:
         if self.ca_source is None:

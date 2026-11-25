@@ -47,7 +47,7 @@ from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 
 from trader.loss_rule import stage_of
-from trader.orders import CommissionModel, OrderIntent, Side, is_valid_step
+from trader.orders import SLEEVE, CommissionModel, OrderIntent, Side, is_valid_step
 
 CENT = Decimal("0.01")
 
@@ -204,7 +204,8 @@ def _pre_checks(  # noqa: PLR0911, PLR0912 - one return per breaker rule
         return Verdict.REJECT, "PRICE_BAND"
     if not buy and it.qty > ctx.positions.get(it.entity, 0):
         return Verdict.REJECT, "NO_SHORT"  # (the running count per name: check_intents)
-    max_value = lim.fund_order_max_aud if "FUND" in it.flags else lim.order_value_max_aud
+    fundlike = "FUND" in it.flags or SLEEVE in it.flags  # BF-D90: the sleeve's fund buy too
+    max_value = lim.fund_order_max_aud if fundlike else lim.order_value_max_aud
     if buy and it.value_at_limit > max_value:
         return Verdict.REJECT, "MAX_ORDER_VALUE"
     return None
@@ -254,6 +255,13 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
                 "(L15 band-trend switch, BF-D28)"
             )
             reasons.append("FUND_ABOVE_ORDER_LIMIT")
+        sleeve = SLEEVE in cur.flags
+        if sleeve and cur.value_at_limit > lim.order_value_max_aud:
+            pages.append(
+                f"sweep-sleeve buy {cur.entity} A${cur.value_at_limit} above the L10 share-order "
+                "limit (cash above the A$10,000 cap, BF-D90)"
+            )
+            reasons.append("SLEEVE_ABOVE_ORDER_LIMIT")
         # BW-RSK-06 participation
         if cur.tv_med20 is None or cur.tv_med20 <= 0:
             if cur.side is Side.BUY:
@@ -286,13 +294,15 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             if cur.value_at_ref < lim.min_parcel_aud:
                 out.append(RiskResult(it, Verdict.REJECT, (*reasons, "MIN_PARCEL")))
                 continue
-            if day.buys + cur.value_at_limit > buy_cap:
+            # BF-D90: the sweep sleeve holds only money above the cap, so the cap and the
+            # day's share-buy value limit do not apply to its buy (the other checks do)
+            if not sleeve and day.buys + cur.value_at_limit > buy_cap:
                 out.append(RiskResult(it, Verdict.REJECT, ("MAX_BUYS_PER_DAY",)))
                 continue
             base = day.cost
             if "FUND" in cur.flags and day.fund_cost is not None:
                 base = day.fund_cost  # BF-D34
-            if base + cur.value_at_limit > lim.capital_cap_aud:
+            if not sleeve and base + cur.value_at_limit > lim.capital_cap_aud:
                 out.append(RiskResult(it, Verdict.REJECT, ("CAPITAL_CAP",)))
                 continue
         # review H6: sells (C6 / L11 wind-down / forced) never count against the L10
@@ -312,8 +322,9 @@ def check_intents(  # noqa: PLR0912, PLR0915 - one branch per breaker rule, kept
             day.sold[cur.entity] = day.sold.get(cur.entity, 0) + cur.qty
         if cur.side is Side.BUY:
             day.buy_orders += 1
-            day.buys += cur.value_at_limit
             day.cash -= cur.value_at_limit + ctx.commission(cur.value_at_limit)
+        if cur.side is Side.BUY and not sleeve:
+            day.buys += cur.value_at_limit
             day.cost += cur.value_at_limit
             if day.fund_cost is not None and "FUND" in cur.flags:
                 day.fund_cost += cur.value_at_limit

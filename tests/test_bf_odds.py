@@ -196,14 +196,16 @@ def test_BF_D88_missing_score_in_the_record_is_not_enough_data(tmp_path: Path) -
 # ---------------------------------------------------------------- the strategy is frozen
 
 
-def test_BF_D88_strategy_hash_and_settings_hash_unchanged() -> None:
+def test_BF_D88_strategy_hash_and_settings_hash_unchanged(tmp_path: Path) -> None:
     """A read-only display of descriptive history: the strategy hash and the strategy
     settings hash are exactly as before (91cbaad)."""
-    from trader.strategy_version import config_hash, is_trading_path, strategy_hash
+    from tests.test_bf_d90_e5 import _strategy_hash_without_e5  # BF-D90 (jan2027-fixes)
+    from trader.strategy_version import config_hash, is_trading_path
     from trader.yamlio import load_yaml
 
-    assert strategy_hash(REPO) == "a50dfa0b4eb1"
+    assert _strategy_hash_without_e5(tmp_path) == "a50dfa0b4eb1"
     cfg = load_yaml((REPO / "config" / "bfast.yaml").read_text()) or {}
+    cfg["live_emg2_20"].pop("e5")
     assert config_hash(cfg) == "02589a19293b"
     assert not is_trading_path("research/odds_table/build_odds_table.py")  # never deployed
 

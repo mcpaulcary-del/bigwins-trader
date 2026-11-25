@@ -30,7 +30,7 @@ from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from enum import StrEnum
 
 from trader.canonical import sha256_json
-from trader.lines.emg2 import BT_FUND_BUY, Emg2_20Decision
+from trader.lines.emg2 import BT_FUND_BUY, E5_SWEEP_BUY, Emg2_20Decision
 
 CENT = Decimal("0.01")
 
@@ -108,10 +108,18 @@ def tiered_commission(fees_rate: Decimal = Decimal("0.00005")) -> CommissionMode
     return CommissionModel(Decimal("5.00"), Decimal("0.0008"), "tiered", fees_rate, Decimal("0.10"))
 
 
-def client_order_id(book: str, d: date, entity: str, side: Side, attempt: int = 1) -> str:
+SLEEVE = "SLEEVE"  # BF-D90: an order of the sweep sleeve (flag; coid tag ``SW``)
+
+
+def client_order_id(
+    book: str, d: date, entity: str, side: Side, attempt: int = 1, tag: str = ""
+) -> str:
+    """``tag``: BF-D90's sweep-sleeve buy (``SW``) has its own id, so it never collides
+    with the rules' own fund buy of the same decision; untagged ids are unchanged."""
     if attempt < 1:
         raise ValueError("attempt starts at 1")
-    return f"{book}-{d.isoformat()}-{entity}-{side.value}-{attempt}"
+    mid = f"{entity}-{tag}" if tag else entity
+    return f"{book}-{d.isoformat()}-{mid}-{side.value}-{attempt}"
 
 
 @dataclass(frozen=True)
@@ -234,9 +242,10 @@ def build_orders(
         if qty <= 0 or b.ref_close * qty < p.min_parcel_aud:
             skipped.append((b.entity, "MIN_PARCEL"))
             continue
+        sleeve = b.reason == E5_SWEEP_BUY  # BF-D90: the sweep sleeve's buy
         intents.append(
             OrderIntent(
-                client_order_id(decision.book, d, b.entity, Side.BUY),
+                client_order_id(decision.book, d, b.entity, Side.BUY, tag="SW" if sleeve else ""),
                 bid,
                 0,
                 line,
@@ -254,6 +263,7 @@ def build_orders(
                 flags=(
                     *(("CANARY",) if canary else ()),
                     *(("FUND",) if b.reason == BT_FUND_BUY else ()),  # L15 fund order (BF-D28)
+                    *((SLEEVE,) if sleeve else ()),
                 ),
             )
         )
