@@ -50,5 +50,4 @@ archives:
     - {id: asic_short, name: "Short selling", what: "The regulator's daily list of how much of each company is sold short.", since: "Public history back to 2010; collected daily", reading: "Tested in November 2026: no wreck warning in ranks 301-600, where almost nothing is shorted"}
     - {id: estimates, name: "Analyst estimates", what: "A daily snapshot of forecasts for the top 300, and since November 2026 for ranks 301-600.", since: "November 2026 for ranks 301-600", reading: "With EST-C, at 24 months (late 2028)"}
     - {id: shares_on_issue, name: "Shares on issue", what: "How many shares each company has issued, to spot dilution.", since: "November 2026 for ranks 301-600", reading: "With DIL-C, at 24 months (late 2028)"}
-in_progress:      # design slots; each becomes a library card (status: testing) and is removed from here when it reports
-  - {study: research_us4, name: "US large-company 'leaders' round"}
+in_progress: []   # design slots; each becomes a library card (status: testing) and is removed from here when it reports

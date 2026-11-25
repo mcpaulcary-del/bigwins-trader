@@ -334,9 +334,9 @@ def test_BF_D89_trial_count_live_fallback_behind(content: ar.Content, tmp_path: 
     assert (t.n, t.seq, t.live, t.behind) == (3147, 101, True, False)
     assert ar.trials_text(t) == "3,147 tests counted · record entry 101"
     fb = ar.trials(content, tmp_path / "missing.jsonl")
-    assert (fb.n, fb.live) == (3147, False)
-    assert ar.trials_text(fb) == "3,147 tests counted · as of 25 Nov 2026"
-    newer = _ledger(tmp_path / "L2.jsonl", [{"seq": 105, "n_trials": 3170}])
+    assert (fb.n, fb.live) == (3172, False)
+    assert ar.trials_text(fb) == "3,172 tests counted · as of 25 Nov 2026"
+    newer = _ledger(tmp_path / "L2.jsonl", [{"seq": 105, "n_trials": 3190}])
     tb = ar.trials(content, newer)
     assert tb.behind and ar.BEHIND in ar.highlights_page(content, tb, WRITTEN)
     assert ar.BEHIND in ar.library_page(content, tb, "all")
@@ -351,15 +351,15 @@ def test_BF_D89_trial_count_live_fallback_behind(content: ar.Content, tmp_path: 
 
 
 def test_BF_D89_live_count_on_the_pages_and_health(demo: Any, tmp_path: Path) -> None:
-    lg = _ledger(tmp_path / "LEDGER.jsonl", [{"seq": 105, "n_trials": 3170}])
+    lg = _ledger(tmp_path / "LEDGER.jsonl", [{"seq": 105, "n_trials": 3190}])
     app = _app(demo, ledger=lg)
     st, html = _get(app, "/research")
-    assert st == 200 and "3,170 tests counted · record entry 105" in html and ar.BEHIND in html
+    assert st == 200 and "3,190 tests counted · record entry 105" in html and ar.BEHIND in html
     st, html = _get(app, "/health")
     assert st == 200 and "Research content" in html and ">behind<" in html
     st, html = _get(_app(demo), "/research")
-    assert "Checked 25 Nov 2026 · 3,147 tests counted · as of 25 Nov 2026" in html
-    assert "Across 3,147 counted tests" in html  # {trials} filled
+    assert "Checked 25 Nov 2026 · 3,172 tests counted · as of 25 Nov 2026" in html
+    assert "Across 3,172 counted tests" in html  # {trials} filled
 
 
 def test_BF_D89_review_by_past_is_due(content: ar.Content) -> None:
@@ -413,8 +413,8 @@ def test_BF_D89_pages_content(demo: Any) -> None:
               'href="/research/glossary"'):  # fmt: skip
         assert s in html, s
     _, html = _get(app, "/research/library")
-    assert html.index("Still running") < html.index("Finished")
-    assert "US large-company" in html[: html.index("Finished")]
+    assert "Still running" not in html  # nothing in progress since research_us4 reported
+    assert "US large-company" in html[html.index("Finished") :]
     assert "Doesn&#x27;t work" in html and "no change passed" in html
     assert "Proposed" in html and "information only" in html
     assert "Mixed" in html and "describes, does not forecast" in html
