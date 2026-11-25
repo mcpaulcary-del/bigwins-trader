@@ -62,13 +62,23 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
             "ci": env.get("UPD_CI", "unknown"),  # review F13 (information only, BF-D84)
             "signed": env.get("UPD_SIGNED", ""),  # BF-D84: good | bad | none
             "seen_h": env.get("UPD_SEEN_H", ""),  # hours since the worker first saw it
+            "auto": env.get("UPD_AUTO", ""),  # BF-D90: auto | approval | off
         },
         # BF-D84: commit signatures (enforce | warn | nokey); BF-D82: the presence check
         "signing": env.get("SIGN_MODE", ""),
         "presence_ping_set": env.get("PRESENCE_PING_SET") == "1",
         "presence_ping": env.get("PRESENCE_PING", ""),
         "claude_remote": env.get("CLAUDE_REMOTE", ""),  # BF-D85: "" or the start time
+        "autoupdate": _json(env.get("AU_STATUS", "")),  # BF-D90: deploy/autoupdate.py status
     }  # fmt: skip
+
+
+def _json(text: str) -> dict[str, Any]:
+    try:
+        d = json.loads(text) if text else {}
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 #                secret <name> | check | claude | remote | app | demo | login | vapid |
 #                install-worker | worker | backup | restore-test | onedrive | restore |
 #                start-trader <date> | ibkr | seed-data | new-totp | signing <...> |
-#                fetch-archive <url> | offsite2
+#                fetch-archive <url> | offsite2 | autoupdate on|off|status
 # Server-only settings (your Tailscale log-in, tax rate, paper account id...) go in
 # config/bfast.local.yaml: not in git, laid over config/bfast.yaml (BF-D39).
 set -uo pipefail
@@ -24,7 +24,7 @@ OD_REMOTE=bigwins-onedrive                    # the rclone remote for OneDrive
 OD_PATH="$OD_REMOTE:Big Wins server backups"
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
-TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url healthchecks_presence_url app_passphrase healthchecks_backup_url"
+TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url healthchecks_presence_url app_passphrase healthchecks_backup_url github_ci_token"
 INFO_SCRIPT=$DEPLOY/info_archive.py         # BF-D78: the private info archive (host job)
 IMAGE=asx-trader-bfast-trader               # the image compose builds (:local; :prev = BF-D80)
 # BF-D84 / BF-D85: root-only settings outside the repository (a pushed commit cannot change them)
@@ -33,6 +33,8 @@ SIGNERS=$ETC/allowed_signers                 # the engineer's public signing key
 SIGN_ENFORCE=$ETC/require_signed             # present = refuse unsigned updates (else warn only)
 OD2_REMOTE=bigwins-offsite2                  # BF-D86: optional second off-site copy (any rclone remote)
 INFO_CAP_MB=500                              # BF-D86: the info archive is backed up up to this size
+AU_SWITCH=$ETC/autoupdate                    # BF-D90: on | off (absent: on while paper, off when live)
+AU_PUBLIC=/var/lib/bigwins/public            # BF-D90: auto-update status for the demo app (no secrets)
 
 g() { printf '\033[32m%s\033[0m\n' "$*"; }
 y() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -124,6 +126,7 @@ cmd_status() {
   else
     y "  server worker: not installed (menu option 13)"
   fi
+  echo "  automatic app updates: $(au_enabled && echo on || echo off) (bigwins autoupdate status)"
 }
 
 app_url() {  # the server's Tailscale name, e.g. https://bigwins.tailnet-name.ts.net
@@ -143,17 +146,24 @@ cmd_app() {  # BF-D37: the phone app, on your tailnet only (HTTPS, 127.0.0.1:808
 
 cmd_demo() {  # the phone app with DEMO data, before the trader has started (no secrets, no database)
   cd $REPO || return 1
-  git pull --ff-only -q || y "Could not update the code; using the version already here."
+  do_update || y "Could not update the code; using the version already here."  # BF-D84 checks
   echo "Building the app (a few minutes the first time)..."
-  docker build -q -t asx-trader-bfast-trader:local -f deploy/Dockerfile . >/dev/null || { r "Build failed."; return 1; }
-  docker rm -f bigwins-demo >/dev/null 2>&1
-  docker run -d --name bigwins-demo --restart unless-stopped -p 127.0.0.1:8080:8080 \
-    -v $REPO/config:/app/config:ro --read-only --tmpfs /tmp --cap-drop ALL \
-    --security-opt no-new-privileges:true -e TZ=Australia/Sydney \
-    asx-trader-bfast-trader:local trader-bf dashboard --demo --host 0.0.0.0 --port 8080 >/dev/null \
-    || { r "Could not start the demo app."; return 1; }
+  demo_build || { r "Build failed."; return 1; }
+  demo_start || { r "Could not start the demo app."; return 1; }
   g "Demo app running (made-up numbers, marked DEMO; its buttons are simulated)."
   cmd_app
+}
+
+demo_build() { (cd $REPO && docker build -q --build-arg BUILD_SHA="$(git rev-parse HEAD)" -t "$IMAGE:local" -f deploy/Dockerfile . >/dev/null); }
+
+demo_start() {  # (re)start the demo container from the built image; BF-D90: the real auto-update status
+  mkdir -p "$AU_PUBLIC" && chmod 755 "$AU_PUBLIC"
+  docker rm -f bigwins-demo >/dev/null 2>&1
+  docker run -d --name bigwins-demo --restart unless-stopped -p 127.0.0.1:8080:8080 \
+    -v $REPO/config:/app/config:ro -v "$AU_PUBLIC:/app/autoupdate:ro" --read-only --tmpfs /tmp --cap-drop ALL \
+    --security-opt no-new-privileges:true -e TZ=Australia/Sydney \
+    "$IMAGE:local" trader-bf dashboard --demo --host 0.0.0.0 --port 8080 \
+    --autoupdate-status /app/autoupdate/status.json >/dev/null
 }
 
 cmd_logs() {
@@ -171,6 +181,7 @@ do_update() {  # no questions asked (the app's server worker uses it too)
     r "(git -C $REPO diff config/bfast.yaml shows them), then: git -C $REPO checkout config/bfast.yaml"
     return 1
   fi
+  au_lock || { r "Another update is running; try again in a few minutes."; return 1; }  # BF-D90
   local before; before=$(git -C $REPO rev-parse HEAD 2>/dev/null)
   git -C $REPO fetch -q origin "$BRANCH" || { r "Update failed: git fetch (no changes made)."; return 1; }
   local tip; tip=$(git -C $REPO rev-parse "origin/$BRANCH")
@@ -201,6 +212,8 @@ after_update() {  # secrets the new code needs, then rebuild and restart
     # F3: the output volume belongs to the trader's user (once; a no-op afterwards)
     dc exec -T -u 0 trader chown -R 10001:10001 /app/out >/dev/null 2>&1
     docker image prune -f >/dev/null 2>&1  # F11
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx bigwins-demo; then  # BF-D90
+    demo_build && demo_start && g "Code updated and the DEMO app restarted on it." || r "Demo rebuild failed: bigwins demo"
   else
     g "Code updated. (The trader is not started yet, so nothing to restart.)"
   fi
@@ -242,11 +255,12 @@ update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing el
   if ! git -C $REPO diff --quiet -- config/bfast.yaml 2>/dev/null; then
     echo "refused: config/bfast.yaml was edited on this server (move those settings to config/bfast.local.yaml)"; return 1
   fi
+  au_lock || { echo "refused: an automatic update is running; approve it again in a few minutes"; return 1; }
   git -C $REPO fetch -q origin "$BRANCH" || { echo "refused: git fetch failed"; return 1; }
   before=$(git -C $REPO rev-parse HEAD)
   git -C $REPO merge-base --is-ancestor "$before" "$commit" || { echo "refused: the approved commit does not follow the running one"; return 1; }
   git -C $REPO merge-base --is-ancestor "$commit" "origin/$BRANCH" || { echo "refused: the approved commit is not on origin/$BRANCH"; return 1; }
-  kind=$(git -C $REPO diff --name-only "$before" "$commit" | python3 "$DEPLOY/classify.py")
+  kind=$(git -C $REPO diff --no-renames --name-only "$before" "$commit" | python3 "$DEPLOY/classify.py")  # BF-D90: both sides of a rename
   if [ "$kind" = strategy ] && [ $((flags & 4)) = 0 ]; then
     echo "refused: this commit changes trading code but was approved as app-only; approve it again"; return 1
   fi
@@ -349,6 +363,7 @@ print(d["User"][str(d["Self"]["UserID"])]["LoginName"])' 2>/dev/null)
 
 do_rollback() {  # BF-D45/D49: back to the commit recorded before the last update, then restart
   local want=${1:-} flags=${2:-0} head prev
+  au_lock || { r "refused: an automatic update is running; try again in a few minutes"; return 1; }  # BF-D90
   head=$(git -C $REPO rev-parse HEAD)
   prev=$(python3 "$DEPLOY/gitops.py" target "$STATE" "$head") || { r "No previous version recorded."; return 1; }
   [ -z "$want" ] || [ "$want" = "$prev" ] || { r "refused: the job's commit is not the recorded previous one"; return 1; }
@@ -371,7 +386,7 @@ update_check() {  # BF-D45: every 10 minutes, is the branch ahead, and what woul
   UPD_HEAD=$(git -C $REPO rev-parse HEAD 2>/dev/null)
   UPD_REMOTE=$(git -C $REPO rev-parse "origin/$BRANCH" 2>/dev/null)
   UPD_AHEAD=$(git -C $REPO rev-list --count "HEAD..origin/$BRANCH" 2>/dev/null || echo 0)
-  UPD_FILES=$(git -C $REPO diff --name-only HEAD "origin/$BRANCH" 2>/dev/null | head -300)
+  UPD_FILES=$(git -C $REPO diff --no-renames --name-only HEAD "origin/$BRANCH" 2>/dev/null | head -300)
   UPD_CFG=$(git -C $REPO show "origin/$BRANCH:config/bfast.yaml" 2>/dev/null)
   UPD_LOG=$(git -C $REPO show "origin/$BRANCH:config/strategy_changelog.yaml" 2>/dev/null)
   UPD_SUBJECT=$(git -C $REPO log -1 --format=%s "origin/$BRANCH" 2>/dev/null)
@@ -389,7 +404,8 @@ update_check() {  # BF-D45: every 10 minutes, is the branch ahead, and what woul
       || printf '%s %s\n' "$UPD_REMOTE" "$(date +%s)" > "$STATE/seen_remote"
     UPD_SIGNED=$(commit_sig "$UPD_REMOTE"); UPD_SEEN_H=$(seen_hours "$UPD_REMOTE")
   fi
-  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG UPD_CI UPD_SIGNED UPD_SEEN_H
+  UPD_AUTO=$(au_verdict "$UPD_HEAD" "$UPD_REMOTE")  # BF-D90: auto | approval | off (for the alert)
+  export UPD_HEAD UPD_REMOTE UPD_AHEAD UPD_FILES UPD_CFG UPD_LOG UPD_SUBJECT UPD_PREV UPD_PREV_MIG UPD_CI UPD_SIGNED UPD_SEEN_H UPD_AUTO
 }
 
 host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no secrets)
@@ -412,6 +428,7 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
     TIMERS="$(command -v systemctl >/dev/null && timer_states)" \
     SIGN_MODE="$(sign_mode)" PRESENCE_PING_SET="$(presence_url && echo 1 || echo 0)" \
     PRESENCE_PING="$(head -c 10 "$STATE/presence_ping_day" 2>/dev/null)" \
+    AU_STATUS="$(au_status_json 2>/dev/null)" \
     CLAUDE_REMOTE="$(tmux has-session -t remote 2>/dev/null && date -d "@$(cat "$STATE/claude_remote_started" 2>/dev/null || date +%s)" '+%a %H:%M' 2>/dev/null)" \
     python3 "$DEPLOY/host_status.py"
 }
@@ -676,6 +693,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
       dc exec -T trader trader-bf server-jobs "$kept" < "$STATE/last_$kept.json" >/dev/null 2>&1 && rm -f "$STATE/last_$kept.json"
     fi
   done
+  au_flush  # BF-D90: automatic-update messages kept while the trader was down
   ensure_timers
   local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
@@ -705,7 +723,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
         finish_job "$id" REFUSED "refused: a rollback is applied outside ASX hours; ask again after 16:15"
         return 0
       fi;;
-    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin) ;;
+    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin|autoupdate_on|autoupdate_off) ;;
     *) finish_job "$id" REFUSED "refused: not an allowed server action"; return 0;;
   esac
   case "$action" in  # the fixed list only; nothing from the app is ever run as a command
@@ -726,6 +744,8 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     hc_ping) out=$(u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null); case "$u" in https://*) curl -fsS -m 10 -o /dev/null "$u" && echo "ping ok";; *) echo "heartbeat is off (healthchecks_url is none)";; esac 2>&1); rc=$?;;
     info_archive) out=$(start_unit info do_info_archive 2>&1); rc=$?;;  # BF-D81: never blocks
     prev_twin) out=$(start_unit twin do_prev_twin 2>&1); rc=$?;;
+    autoupdate_on) out=$(au_set on 2>&1); rc=$?;;  # BF-D90: the app's Settings switch (code)
+    autoupdate_off) out=$(au_set off 2>&1); rc=$?;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
   esac
   if [ "$rc" = 0 ]; then finish_job "$id" DONE "$out"; else finish_job "$id" FAILED "$out"; fi
@@ -840,7 +860,8 @@ do_prev_twin() {  # BF-D80: replay the previous and the current version from the
 }
 
 EXTRA_UNITS="info|info-archive|private info archive (BF-D78; off unless switched on)|Tue..Sat *-*-* 07:40:00
-twin|prev-twin|previous-version twin (BF-D80)|Tue..Sat *-*-* 01:20:00"
+twin|prev-twin|previous-version twin (BF-D80)|Tue..Sat *-*-* 01:20:00
+autoupdate|autoupdate-run|automatic app updates (BF-D90; app-only, outside ASX hours)|*-*-* *:07/30:00"
 
 write_extra_units() {  # BF-D78 / BF-D80: the archive the morning after each trading day; the twins
   local n c d t
@@ -855,14 +876,15 @@ write_extra_units() {  # BF-D78 / BF-D80: the archive the morning after each tra
 
 ensure_timers() {  # BF-D81 (review S7): after an update the worker adds missing timers itself
   [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/bigwins-worker.timer ] || return 0
-  [ -f /etc/systemd/system/bigwins-info.timer ] && [ -f /etc/systemd/system/bigwins-twin.timer ] && return 0
+  [ -f /etc/systemd/system/bigwins-info.timer ] && [ -f /etc/systemd/system/bigwins-twin.timer ] \
+    && [ -f /etc/systemd/system/bigwins-autoupdate.timer ] && return 0
   write_extra_units && systemctl daemon-reload \
-    && systemctl enable --now bigwins-info.timer bigwins-twin.timer >/dev/null 2>&1
+    && systemctl enable --now bigwins-info.timer bigwins-twin.timer bigwins-autoupdate.timer >/dev/null 2>&1
 }
 
 timer_states() {  # "worker:1 backup:1 ..." for the app's Health screen (BF-D81 S7)
   local n out=""
-  for n in worker backup weekly info twin; do
+  for n in worker backup weekly info twin autoupdate; do
     if systemctl is-enabled "bigwins-$n.timer" >/dev/null 2>&1; then out="$out $n:1"; else out="$out $n:0"; fi
   done
   echo "$out"
@@ -941,7 +963,7 @@ EOF
   write_extra_units
   systemctl daemon-reload  # review F19: before enabling the new units
   systemctl enable --now bigwins-backup.timer bigwins-weekly.timer >/dev/null 2>&1 || y "Backup timers not started."
-  systemctl enable --now bigwins-info.timer bigwins-twin.timer >/dev/null 2>&1 || y "Info / twin timers not started."
+  systemctl enable --now bigwins-info.timer bigwins-twin.timer bigwins-autoupdate.timer >/dev/null 2>&1 || y "Info / twin / auto-update timers not started."
   if systemctl enable --now bigwins-worker.timer; then
     g "Server worker installed. The app's Server tab fills in within a minute."
   else
@@ -1243,6 +1265,223 @@ r=json.loads(sys.stdin.read() or "{}")
 print(json.dumps({"onedrive_checked":True,"onedrive_ok":bool(r.get("ok")),"onedrive_archive":os.environ["NAME"],"onedrive_error":r.get("error","")}))'
 }
 
+# ---------------------------------------------------------------- automatic app updates (BF-D90)
+# The bigwins-autoupdate timer runs do_autoupdate every 30 minutes (:07 and :37). It applies
+# APP-ONLY updates by itself (screens, docs, research pages; deploy/autoupdate.py has the
+# allow-list and the gates), outside ASX hours, after GitHub CI passed, and restarts only
+# the app (the dashboard, or the demo container): never the trader. Everything else waits
+# for the owner's approval in the app as before. Off: bigwins autoupdate off (or the app's
+# Settings, with the 6-digit code).
+au_lock() {  # one update at a time (the worker's update / rollback, bigwins update, this)
+  mkdir -p "$STATE" && exec 7>"$STATE/update.lock" && flock -w "${1:-900}" 7
+}
+
+au_live() {  # a live book: mode live, or an account id that is not a paper (DU...) one
+  is_live && return 0
+  grep -hsE '^ +account_id:' "$CONFIG" "$LOCAL" | sed -e 's/#.*//' -e 's/.*account_id://' -e "s/[\"' ]//g" \
+    | grep -vE '^(|null|~|none|DU[0-9]+)$' | grep -q .
+}
+
+au_enabled() {  # the switch: on | off; absent = on while paper, off on a live book
+  local v; v=$(head -c 8 "$AU_SWITCH" 2>/dev/null | tr -d '[:space:]')
+  case "$v" in on) return 0;; off) return 1;; esac
+  ! au_live
+}
+
+au_set() {  # on | off (root-only file outside the repository: a pushed commit cannot change it)
+  case "$1" in on|off) ;; *) echo "refused: on or off only"; return 1;; esac
+  mkdir -p "$ETC" && chmod 755 "$ETC" && printf '%s\n' "$1" > "$AU_SWITCH" && chmod 644 "$AU_SWITCH" || return 1
+  echo "Automatic app updates: $1."
+  [ "$1" = on ] && au_live && [ "$(sign_mode)" != enforce ] \
+    && echo "Note: live book: nothing is applied automatically until signing is enforced (bigwins signing enforce)."
+  return 0
+}
+
+au_min_age_h() {  # BF-D84 / BF-D90: 1 hour on paper, 24 live; a larger /etc/bigwins number wins
+  local d v; if au_live; then d=24; else d=1; fi
+  v=$(cat "$ETC/update_min_age_hours" 2>/dev/null)
+  [[ "$v" =~ ^[0-9]{1,3}$ ]] && [ "$v" -gt "$d" ] && d=$v
+  echo "$d"
+}
+
+au_slug() {  # owner/repo of origin on GitHub (for the CI result)
+  git -C $REPO remote get-url origin 2>/dev/null \
+    | sed -n 's#^.*github\.com[:/]\([A-Za-z0-9_.-]*/[A-Za-z0-9_.-]*\)$#\1#p' | sed 's/\.git$//'
+}
+
+au_mode() {  # what the phone app runs as now: app (the stack's dashboard) | demo | none
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx bigwins-demo; then echo demo
+  elif [ -f "$DEPLOY/.env" ] && dc ps --services --status running 2>/dev/null | grep -qx dashboard; then echo app
+  else echo none; fi
+}
+
+au_env() {  # run a command with the auto-update facts every step needs
+  env AU_STATE="$STATE" AU_OUTBOX="$STATE/autoupdate_outbox.jsonl" AU_PUBLIC="$AU_PUBLIC" \
+    AU_ENABLED="$(au_enabled && echo 1 || echo 0)" AU_LIVE="$(au_live && echo 1 || echo 0)" \
+    AU_SIGN_MODE="$(sign_mode)" AU_MIN_AGE_H="$(au_min_age_h)" AU_SLUG="$(au_slug)" \
+    AU_TOKEN_FILE="$SECRETS/github_ci_token" "$@"
+}
+
+au_sessions() {  # the ASX trading days from the image's calendar helper, refreshed daily
+  local f="$STATE/asx_sessions"
+  if [ ! -s "$f" ] || [ "$(date -r "$f" +%F 2>/dev/null)" != "$(date +%F)" ]; then
+    docker run --rm --network none --read-only "$IMAGE:local" python -c 'from datetime import date
+from trader.bfast_cli import _sessions
+print("\n".join(str(d) for d in _sessions(date.today())))' > "$f.new" 2>/dev/null \
+      && [ -s "$f.new" ] && mv -f "$f.new" "$f"
+    rm -f "$f.new"
+  fi
+  [ -s "$f" ] && echo "$f"  # none: every weekday counts as a trading day (fails safe)
+}
+
+au_verdict() {  # head remote: would this update apply by itself? auto | approval | off
+  [[ "$2" =~ ^[0-9a-f]{40}$ ]] && [ "$1" != "$2" ] || { echo ""; return; }
+  local files k
+  files=$(git -C $REPO diff --no-renames --name-only "$1" "$2" 2>/dev/null)
+  k=$(printf '%s\n' "$files" | python3 "$DEPLOY/autoupdate.py" kind | head -1)
+  [ "$k" = auto ] && [ "$(printf '%s\n' "$files" | python3 "$DEPLOY/classify.py")" = app ] || { echo approval; return; }
+  au_enabled || { echo off; return; }
+  if au_live && [ "$(sign_mode)" != enforce ]; then echo approval; else echo auto; fi
+}
+
+au_timer() { [ -f /etc/systemd/system/bigwins-autoupdate.timer ] && echo 1 || echo 0; }
+
+au_status_json() {  # for the app's Health screen (host status) and the demo's banner
+  au_env AU_TIMER="$(au_timer)" AU_MODE="$(au_mode)" python3 "$DEPLOY/autoupdate.py" status
+}
+
+au_page_outside() {  # text: when the real trader is not running, page through healthchecks.io
+  case "$(envval TRADER_CMD)" in "trader-bf run"*) return 0;; esac  # the trader pushes it
+  local u; u=$(cat "$SECRETS/healthchecks_url" 2>/dev/null)
+  case "$u" in https://*) curl -fsS -m 10 -o /dev/null --data-raw "$1" "$u/fail" || true;; esac
+}
+
+au_pages() {  # the "page <text>" lines of autoupdate.py's answer
+  local line
+  while IFS= read -r line; do
+    case "$line" in "page "*) echo "${line#page }"; au_page_outside "${line#page }";; esac
+  done <<<"$1"
+}
+
+au_flush() {  # the events (applied, rolled back, blocked) to the app's Inbox, once each
+  local f="$STATE/autoupdate_outbox.jsonl" line keep=""
+  [ -s "$f" ] && [ -f "$DEPLOY/.env" ] || return 0
+  dc exec -T trader true >/dev/null 2>&1 || return 0  # the trader is down: kept for later
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s' "$line" | dc exec -T trader trader-bf server-jobs autoupdate >/dev/null 2>&1 \
+      || keep="$keep$line"$'\n'
+  done < "$f"
+  printf '%s' "$keep" > "$f"
+}
+
+au_result() {  # what head tip reason: record it (Health, Inbox) and page when it went wrong
+  local res
+  res=$(au_env AU_HEAD="$2" AU_TIP="$3" AU_REASON="$4" \
+        AU_TITLE="$(git -C $REPO log -1 --format=%s "$3" 2>/dev/null)" \
+        python3 "$DEPLOY/autoupdate.py" result "$1")
+  au_pages "$res"
+}
+
+au_preflight() {  # the new image loads every app module (before anything is restarted)
+  docker run --rm --network none --read-only -v "$REPO/config:/app/config:ro" "$IMAGE:local" \
+    python -c 'import trader.dashboard, trader.app_pages, trader.app_ops, trader.app_research, trader.webui, trader.ops_view, trader.info_view, trader.odds, trader.tax_screen, trader.app_notify, trader.ops_hooks, trader.server_status, trader.dashboard_demo, trader.share_pages' \
+    >/dev/null 2>&1
+}
+
+au_healthy() {  # the app answers /healthz (up to 3 minutes) and still does 20 seconds later
+  local i ok=0
+  for i in $(seq 1 "${AU_TRIES:-36}"); do
+    if curl -fsS -m 5 -o /dev/null http://127.0.0.1:8080/healthz 2>/dev/null; then ok=1; break; fi
+    sleep "${AU_PAUSE:-5}"
+  done
+  [ "$ok" = 1 ] || return 1
+  sleep "${AU_SETTLE:-20}"
+  curl -fsS -m 5 -o /dev/null http://127.0.0.1:8080/healthz 2>/dev/null
+}
+
+au_restart() {  # mode: rebuild the image and restart the phone app only (never the trader)
+  AU_WHY=""
+  case "$1" in
+    app)
+      dc build trader >/dev/null 2>&1 || { AU_WHY="the build failed"; return 1; }  # the shared image (with BUILD_SHA); nothing restarts
+      au_preflight || { AU_WHY="the new code does not load"; return 1; }
+      dc up -d --no-deps dashboard >/dev/null 2>&1 || { AU_WHY="the app did not start"; return 1; }
+      au_healthy || { AU_WHY="the app does not answer"; return 1; };;
+    demo)
+      demo_build >/dev/null 2>&1 || { AU_WHY="the build failed"; return 1; }
+      au_preflight || { AU_WHY="the new code does not load"; return 1; }
+      demo_start >/dev/null 2>&1 || { AU_WHY="the demo app did not start"; return 1; }
+      au_healthy || { AU_WHY="the demo app does not answer"; return 1; };;
+    *) return 0;;  # nothing runs: the next start builds the new code
+  esac
+}
+
+au_apply() {  # head tip: fast-forward, restart the app, health check; else back to head and PAGE
+  local head=$1 tip=$2 mode prev why
+  mode=$(au_mode)
+  prev=$(cat "$STATE/previous_commit" 2>/dev/null)
+  if ! git -C $REPO merge --ff-only -q "$tip"; then
+    au_result failed "$head" "$tip" "the fast-forward failed (nothing changed)"; return 1
+  fi
+  python3 "$DEPLOY/gitops.py" record "$STATE" "$head"  # the app's Roll back goes to head
+  if au_restart "$mode"; then
+    au_result applied "$head" "$tip" ""
+    echo "auto-update: applied $(git -C $REPO log --oneline -1) (restarted: $mode)"
+    return 0
+  fi
+  why="the new version failed its check: $AU_WHY"
+  git -C $REPO reset -q --keep "$head" || why="$why; going back FAILED (run: bigwins update)"
+  if [ -n "$prev" ]; then printf '%s\n' "$prev" > "$STATE/previous_commit"; else rm -f "$STATE/previous_commit"; fi
+  au_restart "$mode" || why="$why; the previous version does not answer either ($AU_WHY)"
+  au_result rolled_back "$head" "$tip" "$why"
+  echo "auto-update: ROLLED BACK to ${head:0:10}: $why"
+  return 1
+}
+
+do_autoupdate() {  # one check (the timer); applies an app-only update when every gate passes
+  mkdir -p "$STATE" && chmod 700 "$STATE"
+  au_lock 0 || { echo "auto-update: another update is running; next check later"; return 0; }
+  local ff=0 head tip files cls desc=0 dirty=0 res action
+  if git -C $REPO fetch -q origin "$BRANCH" 2>/dev/null; then date +%s > "$STATE/last_fetch"; else ff=1; fi
+  update_check  # the newest remote commit, its title, and since when this server knows it
+  head=$UPD_HEAD; tip=$UPD_REMOTE
+  files=$(git -C $REPO diff --no-renames --name-only "$head" "$tip" 2>/dev/null | head -2000)
+  cls=$(printf '%s\n' "$files" | python3 "$DEPLOY/classify.py")
+  git -C $REPO merge-base --is-ancestor "$head" "$tip" 2>/dev/null && desc=1
+  git -C $REPO diff --quiet -- config/bfast.yaml 2>/dev/null || dirty=1
+  res=$(au_env AU_HEAD="$head" AU_TIP="$tip" AU_TITLE="$UPD_SUBJECT" AU_FILES="$files" \
+        AU_CLASS="$cls" AU_DESC="$desc" AU_DIRTY="$dirty" AU_FETCH_FAILED="$ff" \
+        AU_SIG="$(commit_sig "$tip")" AU_SEEN_H="$(seen_hours "$tip")" AU_SESSIONS="$(au_sessions)" \
+        python3 "$DEPLOY/autoupdate.py" decide)
+  action=$(sed -n 1p <<<"$res")
+  echo "auto-update: $action: $(sed -n 2p <<<"$res")"
+  au_pages "$res"
+  [ "$action" = apply ] && au_apply "$head" "$tip"
+  au_flush
+  au_status_json >/dev/null 2>&1  # refresh the demo's copy
+  return 0
+}
+
+cmd_autoupdate() {  # bigwins autoupdate on | off | status
+  case "${1:-status}" in
+    on|off) [ "$(id -u)" = 0 ] || { r "Run as root (sudo bigwins autoupdate $1)."; return 1; }; au_set "$1";;
+    run) do_autoupdate;;
+    *)
+      echo "Automatic app updates: $(au_enabled && echo ON || echo OFF)$( [ -f "$AU_SWITCH" ] || echo ' (default)')"
+      echo "  book: $(au_live && echo LIVE || echo paper) · signatures: $(sign_mode) · minimum age: $(au_min_age_h) hour(s)"
+      if [ "$(au_timer)" = 1 ]; then echo "  timer: installed (every 30 minutes)"; else y "  timer: NOT installed (sudo bigwins install-worker)"; fi
+      echo "  the app runs as: $(au_mode)"
+      au_status_json 2>/dev/null | python3 -c 'import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+la=d.get("last_applied") or {}; l=d.get("last") or {}; p=d.get("pending") or {}
+print("  last applied: " + (f"{la.get(\"title\",\"\")[:70]} ({la.get(\"commit\",\"\")[:10]}) at {la.get(\"at\",\"\")[:16]}" if la else "none yet"))
+print("  last check: " + (f"{l.get(\"at\",\"\")[:16]}: {l.get(\"action\",\"\")}: {l.get(\"reason\",\"\")}" if l else "none yet"))
+if p: print(f"  waiting: {p.get(\"title\",\"\")[:70]} ({p.get(\"commit\",\"\")[:10]}): {p.get(\"reason\",\"\")}")
+print("  next check: " + (d.get("next_check") or "")[:16])';;
+  esac
+}
+
 menu() {
   cmd_status
   echo
@@ -1277,7 +1516,8 @@ case ${1:-} in
   info-archive) do_info_archive;; prev-twin) do_prev_twin;;  # BF-D78, BF-D80 (timers)
   new-totp) cmd_new_totp;; signing) cmd_signing "${2:-}";;  # BF-D83, BF-D84
   fetch-archive) cmd_fetch_archive "${2:-}" "${3:-}";; offsite2) cmd_offsite2;;  # BF-D86
+  autoupdate) cmd_autoupdate "${2:-}";; autoupdate-run) do_autoupdate;;  # BF-D90 (the timer)
   __lib__) ;;  # tests: load the functions only
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key|new-totp|signing status|key|enforce|warn|fetch-archive <url> [name]|offsite2]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key|new-totp|signing status|key|enforce|warn|fetch-archive <url> [name]|offsite2|autoupdate on|off|status]";;
 esac
