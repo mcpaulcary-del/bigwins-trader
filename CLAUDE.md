@@ -18,4 +18,7 @@
 - Scan for secrets before every push; never force-push.
 - Read docs/HANDOVER.md first: the whole picture and current status.
 - Code changes go GitHub -> tests -> owner approval in the app; never edit the live trader in place.
+  Exception (owner decision 25 Nov 2026, BF-D90): app-only changes (display files, docs, tests, research
+  content) auto-apply outside ASX hours after CI passes; anything touching trading, config or deploy still
+  needs the owner's approval with the 6-digit code.
 - Server set-up: deploy/server_bootstrap.sh, then docs/GO_LIVE_GUIDE.md part B.
