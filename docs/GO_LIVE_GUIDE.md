@@ -276,7 +276,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **twelve** files in `deploy/secrets/` (review F16: the eight you type below plus four that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key` and `app_passphrase`, which holds `none` until you set your passphrase, BF-D83; thirteen with Telegram on). Optional, read only by the server worker and never by a container: `healthchecks_backup_url` (C5), `healthchecks_daily_url` (C5) and `healthchecks_presence_url` (F8). Exactly these names
+Compose needs **twelve** files in `deploy/secrets/` (review F16: the eight you type below plus four that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key` and `app_passphrase`, which holds `none` until you set your passphrase, BF-D83; thirteen with Telegram on). Optional, read only by the server worker and never by a container: `healthchecks_backup_url` (C5), `healthchecks_daily_url` (C5), `healthchecks_presence_url` (F8) and `github_ci_token` (C7 step 9, only if the repository is private). Exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -342,6 +342,7 @@ mode, which the containers cannot see.
 | `healthchecks_backup_url` | server worker only: pinged after each good backup (C5) | `deploy/bigwins.sh` `hc_backup_ping` |
 | `healthchecks_daily_url` | server worker only: pinged after each good daily cycle (C5) | `deploy/bigwins.sh` `daily_ping` |
 | `healthchecks_presence_url` | server worker only: pinged once a day while you have used the app in the last 14 days; your second contact is on its alerts (F8) | `deploy/bigwins.sh` `presence_ping` |
+| `github_ci_token` | server worker only, optional: a read-only GitHub token (Actions: read, this repository only) so the automatic app updates can read the CI result while the repository is private; not needed while it is public (BF-D90) | `deploy/autoupdate.py` `ci_status` |
 
 ### B7. Your settings in `config/bfast.local.yaml` (this server only)
 
@@ -589,6 +590,39 @@ outside ASX hours (10:00-16:15 Sydney):
    approval). From now on the worker pings the heartbeat even before the paper trader
    starts, so a dead server is caught today; the 14-day presence clock starts when the
    paper trader runs.
+
+9. **Automatic app updates (25 Nov 2026, BF-D90), once by hand.** This update changes the
+   server scripts, so it cannot apply itself; after it, app-only updates do. In Termius, as
+   root (any time while only the demo runs; otherwise outside 10:00-16:15):
+   1. `git -C /srv/asx-trader pull --ff-only && bigwins update`
+      (in demo mode this also rebuilds and restarts the demo app; with the trader set up it
+      rebuilds and restarts as before).
+   2. `bigwins autoupdate status`. If it says **timer: NOT installed** (it should appear by
+      itself within a minute when the server worker is installed), run
+      `sudo bigwins install-worker` and answer `y`.
+
+   That is all. From then on the server looks at GitHub every 30 minutes (at :07 and :37)
+   and **applies app-only updates by itself** (screens, documents, research pages) outside
+   ASX hours, once GitHub CI has passed for that exact commit and the commit is at least
+   1 hour old here; it rebuilds and restarts **only the app** (the demo container, or the
+   dashboard), checks that it answers, and goes back to the previous version by itself if
+   it does not (and pages you). Anything else (trading code, settings, deploy scripts, the
+   worker and this auto-updater, timers, compose, the Dockerfile, secrets handling) still
+   waits for you: with the trader running you get one push "Update ready: <title> — tap to
+   review and approve" and approve it in Server > Strategy with your 6-digit code (and
+   passphrase). **In demo mode there is no trader to approve in**: the demo app shows
+   "Update ready on the server: …" at the top, and you apply it in Termius with
+   `bigwins update` (one line; it rebuilds the demo too).
+   - Switch: `bigwins autoupdate off` / `on` / `status`, or in the app Settings >
+     Automatic app updates (6-digit code; turning it on also asks for the passphrase).
+   - Health shows "Auto-update: on, last applied <title> at <time>, next check <time>";
+     each automatic update is in the Inbox (once the paper trader runs).
+   - CI result: read from GitHub's public API (the repository is public today; no key).
+     If the repository is made private, auto-updates wait with "GitHub CI result not
+     known" until you add a read-only token: github.com > Settings > Developer settings >
+     Fine-grained tokens > Generate: repository `bigwins-trader` only, permission
+     **Actions: read-only**, expiry 1 year; then `bigwins secret github_ci_token` and paste
+     it.
 
 ### C8. Backups (server + OneDrive) and the recovery key
 
@@ -876,6 +910,7 @@ February 2027**; real money (A$10,000) starts around **March 2027**, not in Dece
 | - | **Recovery key saved** (Backups > Show recovery key, fingerprint matches) and a **restore drill on a second server, from the phone only, timed** (F4; fill in the timing table there) | before real money |
 | - | **Passphrase set** (`bigwins secret app_passphrase`, C4); Health shows "Passphrase: set" | before real money |
 | - | **Update signatures enforced** (F5b: the engineer's signing key on the server, `bigwins signing enforce`); Health shows "Update signatures: enforce" | before real money |
+| - | **Signing enforced before live auto-updates** (BF-D90): on a live book the server applies NOTHING by itself until `bigwins signing enforce`; then app-only updates still wait 24 hours, outside ASX hours, after CI. Decide at go-live whether automatic app updates stay on (`bigwins autoupdate on`) or off (`bigwins autoupdate off`; the default on a live book is off) | before real money |
 | - | **Second contact added** to the owner-presence check on healthchecks.io, and the emergency card (`docs/EMERGENCY_CARD.md`) filled in by hand and given to them (F8) | before real money |
 | - | **Break-glass root password tested** in the BinaryLane web console (F3) | before real money |
 | - | **IBKR trading-only user** for the live gateway (F7) | before real money |
@@ -1136,8 +1171,10 @@ IBKR Mobile if it asks. Then `bigwins new-totp` only if the phone was lost too.
   are no updates until you are back in; a restore uses the code inside the backup (F4 C).
   Recover with GitHub's backup codes (`github.com/login` > "Use a recovery code").
 - **Someone else may have pushed code**: the app tells you about **every** new commit
-  ("New code on GitHub (not applied)"). **Do not approve an update you did not expect.**
-  Nothing changes until you approve it in the app (with your code and passphrase), and
+  ("Update ready ... New code on GitHub (not applied)"). **Do not approve an update you did
+  not expect.** Nothing that touches trading code, settings or the server changes until you
+  approve it in the app (with your code and passphrase; app-only updates: see the next
+  bullet), and
   with signing enforced (F5b) the server refuses code that your engineer did not sign.
   Then: change the GitHub password, check 2-step verification, and look at the repository's
   Settings: **Deploy keys** (exactly one, "sydney server", read-only), **Collaborators**
@@ -1145,6 +1182,27 @@ IBKR Mobile if it asks. Then `bigwins new-totp` only if the phone was lost too.
   not know). Tell your engineer.
 - The **"CI passed"** label on an update is information only: anyone who can push can
   fake it. The signature is what counts.
+- **Automatic app updates (BF-D90)**: while paper, app-only commits (screens, documents,
+  research pages) are applied **without your approval** after 1 hour, outside ASX hours,
+  once GitHub CI has passed, even unsigned (warn mode). So if someone else may be pushing
+  code: first `bigwins autoupdate off` (Termius) or Settings > Automatic app updates > Turn
+  off (code), then the steps above. The new-code alert for such a commit says "New app
+  update on GitHub ... applies by itself"; an update that needs you says "Update ready".
+
+**What automatic updates can and cannot do (BF-D90).** *Can*: move the server to a newer
+commit of `bigwins-fast` that only changes the app's screens (`trader/dashboard.py`,
+`app_pages.py`, the other display-only files), `docs/`, `tests/` or `research/`; rebuild
+the image; restart the app (dashboard or demo container); roll itself back and page you if
+the app does not answer. *Cannot*: change trading code, the strategy or its settings (the
+strategy hash and the settings hash cannot change: every input of both needs approval),
+the config, database migrations, deploy scripts, the server worker or the auto-updater
+itself, the timers, compose, the Dockerfile, dependencies, CI workflows or anything about
+secrets; restart the trader; apply during ASX hours (09:30-16:30 Sydney on trading days),
+apply a commit that is not a fast-forward, that CI failed, or (signing enforced) that your
+engineer did not sign. **On a live book** it applies nothing until signing is enforced
+(`bigwins signing enforce`), and then only commits it has known for 24 hours; it is off by
+default when live. App-only display code that the trader process also loads (alerts, the
+digest) takes effect only at the trader's next restart.
 
 **F5b. The engineer's signing key (before real money; until then the server only warns).**
 The server checks every update with `git verify-commit` against a public key kept on the

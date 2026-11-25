@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89)
+# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89, automatic app updates BF-D90)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -106,6 +106,26 @@ Real money around March 2027.
    count from the record's `LEDGER.jsonl` once the record is on the server. This build is
    a trading / infrastructure update (Dockerfile, config, classifiers): deploy before the
    first decision (C7). Later content-only commits are app-only.
+   **25 Nov 2026 (BF-D90, owner request "Need to auto update")**: automatic app updates.
+   The host timer `bigwins-autoupdate` (every 30 min, :07/:37; installed and repaired by
+   the worker like the other timers) applies **app-only** commits of `bigwins-fast` by
+   itself (allow-list: the display-only `UI_ONLY` files, `docs/`, `tests/`, `research/`,
+   top-level `*.md` except CLAUDE.md; `deploy/autoupdate.py`) outside ASX hours (09:30-
+   16:30 Sydney on trading days blocked; weekends and holidays allowed), fast-forward only,
+   after GitHub CI passed for that exact commit (public Actions API; optional
+   `github_ci_token` if the repo goes private), at least 1 h old here (24 h live), signed
+   when enforced, and on a live book only with signing enforced (off by default when live).
+   It rebuilds and restarts only the app (dashboard, or the demo container), never the
+   trader; health check, else automatic rollback + PAGE. Everything else (trading code,
+   config, deploy scripts, the worker and the auto-updater itself, timers, compose,
+   Dockerfile, secrets handling) gets one "Update ready: <title> — tap to review and
+   approve" push and the existing approval flow; in demo mode (no trader) the demo app
+   shows "Update ready on the server" and the owner runs `bigwins update`. Switch:
+   `bigwins autoupdate on|off|status` or Settings > Automatic app updates (code). Health
+   shows the last applied update and the next check; the Inbox gets each one. This build
+   itself is infrastructure: the owner applies it once by hand (GO_LIVE_GUIDE C7 step 9).
+   Note: CLAUDE.md still says code changes need owner approval in the app; app-only
+   changes now auto-apply by owner decision (BF-D90). CLAUDE.md is the owner's to amend.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
@@ -145,7 +165,10 @@ changes (bump `version`, `checked`, `trials_total`, `trials_ledger_seq`), `testi
 `placeholder: true`. Aggregated numbers and plain text only: no vendor price rows, no
 per-company series, no paths, names, emails or account ids; full reports stay on OneDrive
 (`report: null`). Run `tests/test_bf_d89_research.py` (limits, traceability, privacy).
-A content-only commit is an app update; it reaches the phone after Approve update.
+A content-only commit is an app update; since BF-D90 the server applies it by itself
+(outside ASX hours, after CI passes, at least an hour after the push); keep such commits
+content-only (never mix in deploy, config or trading files, or the whole commit waits for
+approval).
 
 ## Rules that never change
 Paper only until the checklist passes · never read or show secrets · no automated access to
