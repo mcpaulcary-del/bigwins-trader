@@ -29,7 +29,7 @@ report: null
 | Salary dollar in super v invested personally | about 70c v 53c |
 
 ## What it means for you
-Your super is the first place for new money: salary sacrifice up to the cap, in your fund's index option. Invest the rest in an Australian-listed index fund, in lumps of $2,000 or more. Ask your accountant about the cap.
+At your salary, your employer's super already fills the yearly cap, so salary sacrifice adds nothing. Choose your fund's index option. Invest the rest in an Australian-listed index fund, in lumps of $2,000 or more. Ask your accountant about after-tax contributions.
 
 ## How sure are we?
 The auditor read the actual code and re-ran every affected test once, with the fix locked in first. Nothing it found would have turned a loser into a winner.
