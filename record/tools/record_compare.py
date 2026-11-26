@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -209,11 +210,20 @@ def compare(cloud_manifest: Mapping[str, Any], server_files: Mapping[str, str],
 
 
 def shadow_files(root: Path, archive_days: Sequence[str]) -> dict[str, str]:
+    """Content hashes of this machine's side. On the server the announcements archive is
+    kept outside the tree (``BW_INFO_DIR``: it is mounted into the container at the code's
+    path); its files are listed under the same names the cloud uses."""
     rels = [paths.REL_STATE, paths.REL_MULTI_STATE, paths.REL_RECORD + "/paper",
-            paths.REL_RECORD + "/multi", paths.REL_DATA + "/asic_short"]  # fmt: skip
+            paths.REL_RECORD + "/multi"]  # fmt: skip
+    arch = ["asic_short"]
     for d in archive_days:
-        rels += [f"{paths.REL_DATA}/asx_notices/{d}", f"{paths.REL_DATA}/newsc/{d}"]
-    return hashing.tree(root, rels)
+        rels.append(f"{paths.REL_DATA}/newsc/{d}")
+        arch.append(f"asx_notices/{d}")
+    out = hashing.tree(root, rels)
+    info = os.environ.get("BW_INFO_DIR", "")
+    base = Path(info) if info else root / paths.REL_DATA
+    out.update({f"{paths.REL_DATA}/{k}": v for k, v in hashing.tree(base, arch).items()})
+    return out
 
 
 def shadow_entries(root: Path, day: str) -> list[Mapping[str, Any]]:

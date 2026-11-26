@@ -567,6 +567,25 @@ def test_compare_rules_by_class(tmp_path: Path) -> None:
     assert record_compare.load_allow() == ()  # the written allow-list is empty and frozen
 
 
+def test_server_archive_outside_the_tree_is_compared_under_the_clouds_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the server the announcements archive is a separate folder mounted into the
+    container; the comparison lists it under the same paths as the cloud's in-tree copy."""
+    cloud, server = tmp_path / "cloud", tmp_path / "server"
+    day = "2026-12-14"
+    S.archive_day(cloud, day)
+    moved = S.archive_day(server, day)
+    info = tmp_path / "info"
+    (info / "asx_notices").mkdir(parents=True)
+    shutil.move(str(moved), str(info / "asx_notices" / day))
+    want = record_compare.shadow_files(cloud, [day])
+    assert not any("asx_notices" in k for k in record_compare.shadow_files(server, [day]))
+    monkeypatch.setenv("BW_INFO_DIR", str(info))
+    assert record_compare.shadow_files(server, [day]) == want
+    assert f"{paths.REL_DATA}/asx_notices/{day}/list.csv" in want
+
+
 def test_bundle_apply_refuses_anything_unsafe(tmp_path: Path) -> None:
     root = tmp_path / "t"
     root.mkdir()

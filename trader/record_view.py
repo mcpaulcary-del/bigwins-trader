@@ -716,7 +716,9 @@ EXPECT: dict[str, tuple[str, str, str, str]] = {
     "export": ("Record sent to OneDrive (relay)", "after every record job", "session", "21:45"),
     "compare": ("Shadow compare (parallel run)", "every ASX day by 23:15", "session", "23:15"),
 }
-WRITER_ONLY = ("intraday", "collect")  # not run in the parallel week
+# the parallel week: the server only replays the cloud's day (after the cloud's own job),
+# collects the archive, dry-runs NEWS-C and compares; the comparison covers the replay
+WRITER_ONLY = ("daily", "intraday", "collect", "export")
 SHADOW_ONLY = ("compare",)
 _CLEAN = re.compile(r"[^\x20-\x7e]")
 

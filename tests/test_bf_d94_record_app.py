@@ -407,9 +407,13 @@ def test_BF_D93_missed_job_alarm_covers_every_moved_job() -> None:
     # parallel week: no intraday / collect expected, the compare is
     j2 = Journal.sqlite()
     _mode(j2, "shadow")
-    record_record(j2, {"kind": "job", "job": "daily", "ok": True, "mode": "shadow"}, t_ok)
+    record_record(j2, {"kind": "job", "job": "archive", "ok": True, "mode": "shadow"}, t_ok)
     keys = {f.key for f in rv.freshness(j2, sess[:2], at)}
-    assert "rec-compare" in keys and "rec-intraday" not in keys and "rec-collect" not in keys
+    assert keys == {
+        "rec-archive",
+        "rec-newsc-record",
+        "rec-compare",
+    }  # the compare covers the replay
 
 
 def test_BF_D93_alarm_pages_once_per_incident() -> None:

@@ -57,11 +57,11 @@ rec_as() {  # run a command as the record's user (never root), no extra groups
 }
 
 rec_tool() {  # the record tools on the host, reading only (root)
-  BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
+  BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_INFO_DIR="$(rec_info)" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
 }
 
 rec_tool_u() {  # the record tools writing into the tree: as the record's user
-  rec_as env BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
+  rec_as env BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_INFO_DIR="$(rec_info)" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
 }
 
 rec_dirs() {  # the folders, once (root only)
@@ -437,6 +437,12 @@ rec_seed() {  # the record tree and its private data from OneDrive, every file c
   if ! REC_ROOT_OVERRIDE="$REC_SHADOW" rec_tool seed-verify "$REC_SHADOW/SEED_MANIFEST.json"; then
     r "FAIL: the seed does not match the cloud's manifest (lines above). Nothing was switched on."; return 1
   fi
+  # the archive's history lives in the shadow's own info folder (mounted at the code's path)
+  local ad
+  for ad in asx_notices asic_short; do
+    [ -d "$REC_SHADOW/bigwins_forward/data/$ad" ] && [ ! -e "$REC_SHADOW/info/$ad" ] \
+      && mkdir -p "$REC_SHADOW/info" && mv "$REC_SHADOW/bigwins_forward/data/$ad" "$REC_SHADOW/info/$ad"
+  done
   [ -f "$REC_SHADOW/$REC_RECORD/WRITER.json" ] && mv -f "$REC_SHADOW/$REC_RECORD/WRITER.json" "$REC_SHADOW/$REC_RECORD/WRITER.cloud.json"
   REC_ROOT_OVERRIDE="$REC_SHADOW" rec_tool_u fence-init --writer server --role shadow --epoch 1 >/dev/null \
     || { r "Could not write the shadow's fence."; return 1; }
@@ -500,12 +506,14 @@ rec_cutover() {  # plan 4.2 steps 3-5: the owner's one command on Saturday eveni
   mkdir -p "$REC_SHADOW/shadow_kept" && cp -a "$REC_SHADOW/$rec/LEDGER.jsonl" "$REC_SHADOW/$rec/WRITER.json" "$REC_SHADOW/shadow_kept/" 2>/dev/null
   cp -a "$stage/$rec/." "$REC_SHADOW/$rec/" || { r "Could not install the record files; nothing was accepted."; return 1; }
   rm -rf "$stage"
-  [ -e "$REC_TREE" ] && mv "$REC_TREE" "$REC_TREE.before-cutover.$(date +%s)"
-  mv "$REC_SHADOW" "$REC_TREE" || { r "Could not move the tree to $REC_TREE."; return 1; }
-  if ! REC_ROOT_OVERRIDE="$REC_TREE" rec_tool_u accept; then
-    r "The acceptance entry was NOT written. The cloud is still the writer by its own ledger;"
-    r "tell Claude to cancel the handover (plan 4.4)."; return 1
+  if ! REC_ROOT_OVERRIDE="$REC_SHADOW" rec_tool_u accept; then
+    # put the shadow's own ledger and fence back: the parallel run simply carries on
+    cp -a "$REC_SHADOW/shadow_kept/LEDGER.jsonl" "$REC_SHADOW/shadow_kept/WRITER.json" "$REC_SHADOW/$rec/" 2>/dev/null
+    r "The acceptance entry was NOT written; the server is still only the shadow. The cloud is"
+    r "the writer by its own ledger: tell Claude to cancel the handover (plan 4.4)."; return 1
   fi
+  [ -e "$REC_TREE" ] && mv "$REC_TREE" "$REC_TREE.before-cutover.$(date +%s)"
+  mv "$REC_SHADOW" "$REC_TREE" || { r "Could not move the tree to $REC_TREE (the record is accepted: tell Claude)."; return 1; }
   # 4. the app (GO_LIVE_GUIDE C10): archive, RECORD_DIR, the switch, checks, restart, backup
   local info; info=$(info_dir)
   mkdir -p "$info" && cp -an "$REC_TREE/info/." "$info/" 2>/dev/null; chown -R "$REC_UID:$REC_UID" "$info"; chmod -R a+rX "$info"
