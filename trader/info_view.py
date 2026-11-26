@@ -10,6 +10,9 @@ mounted read-only into the app):
   (Appendix 3Y / 3X / 3Z) and capital-raising notices;
 * ``asic_short/RR<YYYYMMDD>-<ver>-SSDailyAggShortPos.csv.gz`` (ASIC's daily short positions).
 
+BF-D92 (the News tab): ``feed`` lists the headlines of the held shares together and
+``pdf_file`` finds a stored ``pdf/<CODE>_<idsId>.pdf``; still read-only, nothing is fetched.
+
 INFORMATION ONLY: nothing here feeds the strategy, a paper line or an order. The data is
 private (personal, non-commercial use): it is shown only inside the owner's app.
 
@@ -71,6 +74,7 @@ class Notice:
     ids_id: str
     flags: tuple[str, ...] = ()
     trade: DirectorTrade | None = None
+    pdf: bool = False  # BF-D92: the archive stores this notice's PDF
 
 
 @dataclass(frozen=True)
@@ -177,6 +181,74 @@ def notices(root: Path | None, code: str, today: date, days: int = 90) -> list[N
                               r.get("price_sensitive", "").strip() == "1", ids, fl, trade))  # fmt: skip
     out.sort(key=lambda n: (n.day, _minutes(n.time)), reverse=True)
     return out
+
+
+# ---------------------------------------------------------------- the News tab (BF-D92)
+
+REINSTATE = re.compile(r"reinstatement to (official )?quotation", re.I)
+PDF_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+PDF_NAME = re.compile(r"^([A-Z0-9]{1,6})_(\d{1,12})\.pdf$")
+
+
+def latest_day(root: Path | None) -> date | None:
+    """The newest day the archive holds a list for (None = nothing collected yet)."""
+    if root is None:
+        return None
+    days = [d for d, p in _day_dirs(root) if (p / "list.csv").is_file()]
+    return days[-1] if days else None
+
+
+def feed(root: Path | None, codes: Sequence[str], today: date,
+         days: int = 14) -> list[Notice] | None:  # fmt: skip
+    """BF-D92: the announcements of several shares (the ones held) in the last ``days``
+    days as one list, newest first; None when the archive has collected nothing yet.
+    Headlines only: no notice text is read, so nothing here rates or judges a notice."""
+    if root is None:
+        return None
+    dirs = [(d, p) for d, p in _day_dirs(root) if (p / "list.csv").is_file()]
+    if not dirs:
+        return None
+    want = [c.upper() for c in dict.fromkeys(codes)]
+    since = today - timedelta(days=days)
+    out: list[Notice] = []
+    for d, p in dirs:
+        if not since <= d <= today:
+            continue
+        by = _rows_by_code(p)
+        for code in want:
+            for r in by.get(code, []):
+                head = r.get("headline", "").strip()
+                ids = re.sub(r"\D", "", r.get("ids_id", ""))[:12]
+                has = bool(ids) and pdf_file(root, str(d), f"{code}_{ids}.pdf") is not None
+                out.append(Notice(d, r.get("time", "").strip()[:12], code, head[:300],
+                                  r.get("price_sensitive", "").strip() == "1", ids,
+                                  flags_of(head), None, has))  # fmt: skip
+    out.sort(key=lambda n: (n.day, _minutes(n.time), n.code), reverse=True)
+    return out
+
+
+def stamp(n: Notice) -> int:
+    """A number that grows with a notice's day and time (the News tab's unread dot)."""
+    return int(f"{n.day:%Y%m%d}") * 10000 + _minutes(n.time)
+
+
+def pdf_file(root: Path | None, day_s: str, name: str) -> Path | None:
+    """The stored PDF ``asx_notices/<day>/pdf/<CODE>_<idsId>.pdf``, or None. The day and
+    the name are matched against fixed patterns and the file must lie inside the archive
+    (no link is followed out of it) and start like a PDF."""
+    if root is None or not PDF_NAME.match(name) or not PDF_DAY.match(day_s):
+        return None
+    f = root / "asx_notices" / day_s / "pdf" / name
+    try:
+        base = (root / "asx_notices").resolve()
+        real = f.resolve()
+        ok = base in real.parents and real.is_file() and not f.is_symlink()
+        if ok:
+            with real.open("rb") as fh:
+                ok = fh.read(5) == b"%PDF-"
+    except OSError:
+        return None
+    return real if ok else None
 
 
 def _minutes(t: str) -> int:

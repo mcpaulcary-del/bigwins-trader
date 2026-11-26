@@ -809,7 +809,7 @@ class Dashboard:
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
                "/strategy", "/setup", "/backups", "/accounts", "/shares",
                "/forecast-method", "/calendar", "/compare", "/search.json",
-               "/health", "/costs", "/digest", "/research")  # fmt: skip
+               "/health", "/costs", "/digest", "/research", "/news")  # fmt: skip
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
@@ -874,6 +874,18 @@ class Dashboard:
         x.names = self.names(v)
         x.changelog = app_pages.safe(self.changelog, [])
         html_t = "text/html; charset=utf-8"
+        if path.startswith("/news/pdf/"):  # BF-D92: a stored announcement, read-only
+            from trader import info_view
+
+            parts = path.split("/")
+            f = info_view.pdf_file(src.info_dir, parts[3], parts[4]) if len(parts) == 5 else None
+            return None if f is None else ("application/pdf", f.read_bytes())
+        from trader import app_ops as _ops
+
+        if path not in ("/search.json", "/tax.csv"):  # the News tab's unread dot
+            x.news_latest = app_pages.safe(lambda: _ops.news_stamp(src, v), 0)
+        if path == "/news":
+            return html_t, _ops.news_page(v, x, _ops.collect_news(src, v), qs).encode()
         sess: Sequence[date] = src.sessions() if src.sessions else []
         research = path == "/research" or path.startswith("/research/")
         if path in ("/", "/health", "/costs", "/digest", "/server", "/strategy") or research:
@@ -1083,7 +1095,7 @@ class Dashboard:
         else:
             qs = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query).items()}
             known = p in self.SCREENS or p.startswith(
-                ("/holdings/", "/orders/", "/shares/", "/replay/", "/research/")
+                ("/holdings/", "/orders/", "/shares/", "/replay/", "/research/", "/news/pdf/")
             )
             if p == "/search.json":
                 hdrs["Cache-Control"] = "no-store"
@@ -1093,6 +1105,9 @@ class Dashboard:
             ctype, out = res
             if p == "/tax.csv":
                 hdrs["Content-Disposition"] = 'attachment; filename="bigwins_tax.csv"'
+            if ctype == "application/pdf":  # BF-D92: shown by the browser's own viewer
+                hdrs["Content-Disposition"] = "inline"
+                hdrs.pop("Content-Security-Policy", None)
         hdrs["Content-Type"] = ctype
         if p == "/sw.js":
             hdrs["Service-Worker-Allowed"] = "/"

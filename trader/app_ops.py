@@ -1024,3 +1024,247 @@ def server_rows(o: Ops) -> str:
             + menu_row("/costs", "chart", "Running costs", "Monthly and this year, % of account",
                        nav=True)
             + menu_row("/digest", "calendar", "Weekly digest", "Fridays after the close", nav=True))  # fmt: skip
+
+
+# ---------------------------------------------------------------- the News tab (BF-D92)
+
+NEWS_DAYS = 14  # the feed's window; each share's page keeps 90 days
+BIG_MOVE = 0.05  # a day's move of 5% or more, either way
+HALT_DAYS = 7
+TAKEOVER_DAYS = 30
+NEWS_INFO = "Information only, not a trading signal."
+
+
+@dataclass(frozen=True)
+class Mover:
+    """One row of "Big moves and halts": a fact about a held share, never a view on it."""
+
+    code: str
+    what: str
+    move: float | None = None
+    kind: str = "move"  # move | quiet | halt | back | takeover
+
+
+@dataclass
+class News:
+    codes: list[str] = field(default_factory=list)
+    items: list[iv.Notice] | None = None  # None = the archive has collected nothing yet
+    archive_day: date | None = None
+    price_day: date | None = None
+    book_move: float | None = None
+    index_move: float | None = None
+    index_label: str = "A200"
+    movers: list[Mover] = field(default_factory=list)
+
+    @property
+    def latest(self) -> list[iv.Notice]:
+        return [n for n in self.items or [] if n.day == self.archive_day]
+
+    @property
+    def stamp(self) -> int:
+        """The newest price-sensitive notice on a held share (0 = none): the tab's dot."""
+        return max((iv.stamp(n) for n in self.items or [] if n.price_sensitive), default=0)
+
+
+def news_stamp(src: Any, v: Any) -> int:
+    """For every screen's tab bar: cheap (the archive's lists are cached by file time)."""
+    today = v.now.astimezone(ASX_TZ).date()
+    codes = [h.code for h in v.holdings]
+    items = iv.feed(getattr(src, "info_dir", None), codes, today, NEWS_DAYS) if codes else None
+    return max((iv.stamp(n) for n in items or [] if n.price_sensitive), default=0)
+
+
+def _day_moves(src: Any, v: Any, nw: News, today: date) -> None:
+    """The last price day's move of each held share, of them together (weighted by what
+    is held) and of the index, from the closes the app already has."""
+    prices = getattr(src, "prices", None)
+    if prices is None or not v.holdings:
+        return
+    hist: dict[str, list[tuple[date, float]]] = {}
+    for h in v.holdings:
+        try:
+            rows = [(d, float(c)) for d, c in prices(h.code) if d <= today and c > 0]
+        except Exception:
+            rows = []
+        hist[h.code] = rows[-3:]
+    last = [p[-1][0] for p in hist.values() if p]
+    if not last:
+        return
+    ref = nw.price_day = max(last)
+    was = now_v = 0.0
+    for h in v.holdings:
+        p = hist[h.code]
+        if not p:
+            continue
+        if p[-1][0] < ref:  # held, but no close on the last price day
+            was += h.qty * p[-1][1]
+            now_v += h.qty * p[-1][1]
+            nw.movers.append(Mover(h.code, f"No trade recorded on {ref:%a %-d %b} "
+                                   f"(last price {p[-1][0]:%-d %b})", None, "quiet"))  # fmt: skip
+            continue
+        if len(p) < 2:
+            continue
+        m = p[-1][1] / p[-2][1] - 1
+        was += h.qty * p[-2][1]
+        now_v += h.qty * p[-1][1]
+        if abs(m) >= BIG_MOVE:
+            nw.movers.append(Mover(h.code, f"{'Up' if m > 0 else 'Down'} {pct(abs(m), False)} "
+                                   f"on {ref:%a %-d %b}", m))  # fmt: skip
+    if was > 0:
+        nw.book_move = now_v / was - 1
+    level = getattr(src, "index", None)  # the same index line as Home's comparison
+    ix = [p for p in (safe(level, []) if level else v.index) if p[0] <= ref and p[1] > 0][-2:]
+    if len(ix) == 2 and ix[-1][0] == ref and ix[0][1] > 0:
+        nw.index_move = ix[1][1] / ix[0][1] - 1
+
+
+def _notice_movers(nw: News, today: date) -> None:
+    """Halts, suspensions and takeover or scheme notices, from the stored headlines."""
+    seen: set[tuple[str, str]] = set()
+    for n in nw.items or []:  # newest first: the latest of each kind per share
+        age = (today - n.day).days
+        if "halt" in n.flags and (n.code, "halt") not in seen and age <= HALT_DAYS:
+            seen.add((n.code, "halt"))
+            back = bool(iv.REINSTATE.search(n.headline))
+            nw.movers.append(Mover(
+                n.code, ("Back on the market: " if back else "Halt or suspension announced: ")
+                + f"“{n.headline[:80]}”, {n.day:%a %-d %b}", None, "back" if back else "halt"))  # fmt: skip
+        if "takeover" in n.flags and (n.code, "tk") not in seen and age <= TAKEOVER_DAYS:
+            seen.add((n.code, "tk"))
+            nw.movers.append(Mover(n.code, f"Takeover or scheme notice: “{n.headline[:80]}”, "
+                                   f"{n.day:%a %-d %b}", None, "takeover"))  # fmt: skip
+
+
+def collect_news(src: Any, v: Any) -> News:
+    """What the News tab shows, each part failing soft. Read-only: the closes and the
+    index the app already has, and the headlines the private archive already stores."""
+    nw = News(codes=[h.code for h in v.holdings], index_label=v.index_label)
+    today = v.now.astimezone(ASX_TZ).date()
+    info_dir = getattr(src, "info_dir", None)
+    nw.archive_day = safe(lambda: iv.latest_day(info_dir), None)
+    nw.items = safe(lambda: iv.feed(info_dir, nw.codes, today, NEWS_DAYS), None)
+    safe(lambda: _day_moves(src, v, nw, today), None)
+    safe(lambda: _notice_movers(nw, today), None)
+    order = {"halt": 0, "quiet": 1, "takeover": 2, "move": 3, "back": 4}
+    nw.movers.sort(key=lambda m: (order.get(m.kind, 9), -abs(m.move or 0.0), m.code))
+    return nw
+
+
+MOVER_PILL = {"halt": ("bad", "Halt"), "quiet": ("amber", "No trade"), "back": ("", "Trading again"),
+              "takeover": ("amber", "Takeover")}  # fmt: skip
+
+
+def _share(code: str, names: Mapping[str, str]) -> str:
+    nm = names.get(code, "")
+    return f"{e(nm)} <span class='ncode'>{e(code)}</span>" if nm else e(code)
+
+
+def _news_row(n: iv.Notice, names: Mapping[str, str]) -> str:
+    pills = ['<span class="pill amber">Price sensitive</span>'] if n.price_sensitive else []
+    pills += [f'<span class="pill {FLAG_PILL[f]}">{e(dict(iv.FLAG_WORDS)[f])}</span>'
+              for f in n.flags]  # fmt: skip
+    if n.pdf:
+        pills.append(f'<a class="pdfl" href="/news/pdf/{n.day}/{e(n.code)}_{e(n.ids_id)}.pdf" '
+                     f'target="_blank" rel="noopener" aria-label="Open the announcement (PDF)">'
+                     f"{icon('external')}PDF</a>")  # fmt: skip
+    return (f'<li class="ann nws" data-ps="{int(n.price_sensitive)}">'
+            f'<a class="nwho" href="/holdings/{e(n.code)}" data-nav>{_share(n.code, names)}</a>'
+            f'<span class="sub"> · {e(n.time)}</span>'
+            f"<div>{e(n.headline)}</div>"
+            + (f'<div class="pills">{"".join(pills)}</div>' if pills else "") + "</li>")  # fmt: skip
+
+
+def news_summary(nw: News) -> str:
+    """The headline card: is there news, the day's move against the index, the label."""
+    late = nw.latest
+    ps = sum(1 for n in late if n.price_sensitive)
+    if not nw.codes:
+        head, sub = "You hold no shares right now", "News appears here once the book holds shares."
+    elif nw.items is None:
+        head = "Announcements are not collected yet"
+        sub = ("The private announcements archive has stored nothing on this server so far. "
+               "Big moves still show below.")  # fmt: skip
+    elif not late and not nw.movers:
+        head = "No news on your shares today"
+        sub = (f"Announcements last collected for {nw.archive_day:%a %-d %b}."
+               if nw.archive_day else "")  # fmt: skip
+    else:
+        head = (plural(len(late), "announcement") + " on your shares"
+                + (f", {ps} price sensitive" if ps else "")) if late else "No new announcements"  # fmt: skip
+        sub = (f"Announcements of {nw.archive_day:%a %-d %b}, collected the morning after."
+               if nw.archive_day else "")  # fmt: skip
+        if nw.movers:
+            sub = (plural(len(nw.movers), "big move or halt", "big moves or halts")
+                   + " to know about. " + sub)  # fmt: skip
+    mkt = ""
+    if nw.book_move is not None and nw.price_day is not None:
+        ix = (f'<span class="mk1">{e(nw.index_label)} '
+              f"{signed(nw.index_move, pct(nw.index_move))}</span>"
+              if nw.index_move is not None else "")  # fmt: skip
+        mkt = (
+            f'<p class="mkt"><span class="mk1">Your shares '
+            f"{signed(nw.book_move, pct(nw.book_move))}</span>{ix}"
+            f'<span class="sub">close of {nw.price_day:%a %-d %b}</span></p>'
+        )
+    return (f'<section class="newshead"><p class="verdict">{e(head)}</p>'
+            + (f'<p class="bigsub">{e(sub)}</p>' if sub else "") + mkt
+            + f'<p class="luck">{icon("info")}<span>{NEWS_INFO} It is here so you know what is '
+            "happening to the shares you hold and why.</span></p></section>")  # fmt: skip
+
+
+def news_movers(nw: News, names: Mapping[str, str]) -> str:
+    if not nw.codes:
+        return ""
+    if not nw.movers:
+        day_s = f" on {nw.price_day:%a %-d %b}" if nw.price_day else ""
+        body = (f'<p class="allok">{icon("check")}<span>No big moves or halts on your shares'
+                f'{day_s}.</span></p>')  # fmt: skip
+    else:
+        rows = []
+        for m in nw.movers:
+            t, lab = MOVER_PILL.get(m.kind, ("", ""))
+            right = (f'<span class="nmv num">{signed(m.move, pct(m.move))}</span>'
+                     if m.move is not None else f'<span class="pill {t}">{e(lab)}</span>')  # fmt: skip
+            rows.append(f'<li><a class="nrow" href="/holdings/{e(m.code)}" data-nav>'
+                        f'<span class="grow"><b>{_share(m.code, names)}</b>'
+                        f'<span class="sub">{e(m.what)}</span></span>{right}{chev()}</a></li>')  # fmt: skip
+        body = f'<ul class="list nlist">{"".join(rows)}</ul>'
+    return section("Big moves and halts", body + '<p class="caption">A big move is 5% or more '
+                   "in a day, from the closing prices. Halts and takeover notices are read from "
+                   "the announcement headlines.</p>", cls="moves")  # fmt: skip
+
+
+def news_feed(nw: News, names: Mapping[str, str], only_ps: bool) -> str:
+    if not nw.codes or nw.items is None:
+        return ""
+    items = [n for n in nw.items if n.price_sensitive] if only_ps else nw.items
+    chips = ('<div class="chips" role="group" aria-label="Show">'
+             f'<a class="chip{"" if only_ps else " on"}" href="/news" data-nav>All</a>'
+             f'<a class="chip{" on" if only_ps else ""}" href="/news?f=ps" data-nav>'
+             "Price sensitive</a></div>")  # fmt: skip
+    if not items:
+        body = ('<p class="muted">No price-sensitive announcements on your shares in the last '
+                f"{NEWS_DAYS} days.</p>" if only_ps else
+                f'<p class="muted">No announcements on your shares in the last {NEWS_DAYS} days.</p>')  # fmt: skip
+    else:
+        rows, cur = [], None
+        for n in items[:80]:
+            if n.day != cur:
+                cur = n.day
+                tag = " · latest" if n.day == nw.archive_day else ""
+                rows.append(f'<li class="day">{n.day:%a %-d %b}{tag}</li>')
+            rows.append(_news_row(n, names))
+        body = f'<ul class="list">{"".join(rows)}</ul>'
+        if len(items) > 80:
+            body += f"<p class='caption'>{len(items) - 80} older not shown.</p>"
+    return section("Announcements", chips + body
+                   + f"<p class='caption'>The last {NEWS_DAYS} days, newest first, collected the "
+                   "morning after each trading day. Each share's page keeps 90 days. Private, "
+                   "for your own use.</p>", cls="newsfeed")  # fmt: skip
+
+
+def news_page(v: Any, x: Extras, nw: News, qs: Mapping[str, str]) -> str:
+    """The News tab: is there news, big moves and halts, then the announcements."""
+    body = (news_summary(nw) + news_movers(nw, x.names)
+            + news_feed(nw, x.names, qs.get("f") == "ps"))  # fmt: skip
+    return shell(v, x, "News", f'<div class="news">{body}</div>', "news")
