@@ -126,6 +126,15 @@ Real money around March 2027.
    itself is infrastructure: the owner applies it once by hand (GO_LIVE_GUIDE C7 step 9).
    Note: CLAUDE.md still says code changes need owner approval in the app; app-only
    changes now auto-apply by owner decision (BF-D90). CLAUDE.md is the owner's to amend.
+   **26 Nov 2026 (BF-D91, owner request "the report display needs a lot more work")**: the
+   report screens were rebuilt for the phone, display only: Home's scoreboard as two bars and a
+   gap chart with "mostly luck at this stage" while the record is under 24 months, the approval
+   card and a "Needs you" card directly under it; daily reports and approval requests open in
+   the Inbox as cards (the stored text is kept under "Original message"); the weekly digest,
+   Running costs, Health and the research pages put the answer and the action first. App-only
+   (`UI_ONLY` files), so it applies by itself (BF-D90). The daily report's text
+   (`trader/report.py`) and the share pages (`trader/share_pages.py`, `trader/app_viz.py`,
+   `trader/app_more.py`) were not touched: those files need the owner's approval.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
