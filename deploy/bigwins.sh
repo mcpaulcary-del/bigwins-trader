@@ -5,7 +5,8 @@
 #                secret <name> | check | claude | remote | app | demo | login | vapid |
 #                install-worker | worker | backup | restore-test | onedrive | restore |
 #                start-trader <date> | ibkr | seed-data | new-totp | signing <...> |
-#                fetch-archive <url> | offsite2 | autoupdate on|off|status
+#                fetch-archive <url> | offsite2 | autoupdate on|off|status |
+#                record status|view|seed|shadow|cutover|handback|requests   (BF-D93)
 # Server-only settings (your Tailscale log-in, tax rate, paper account id...) go in
 # config/bfast.local.yaml: not in git, laid over config/bfast.yaml (BF-D39).
 set -uo pipefail
@@ -24,7 +25,7 @@ OD_REMOTE=bigwins-onedrive                    # the rclone remote for OneDrive
 OD_PATH="$OD_REMOTE:Big Wins server backups"
 STATE=$DEPLOY/.worker  # BF-D45: the worker's own notes (the commit before the last update)
 BRANCH=bigwins-fast
-TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url healthchecks_presence_url app_passphrase healthchecks_backup_url github_ci_token"
+TYPED_SECRETS="tws_password db_password totp_seed eodhd_api_token healthchecks_url ibkr_flex_token ibkr_flex_query_id telegram_bot_token healthchecks_daily_url healthchecks_presence_url app_passphrase healthchecks_backup_url github_ci_token healthchecks_record_url"
 INFO_SCRIPT=$DEPLOY/info_archive.py         # BF-D78: the private info archive (host job)
 IMAGE=asx-trader-bfast-trader               # the image compose builds (:local; :prev = BF-D80)
 # BF-D84 / BF-D85: root-only settings outside the repository (a pushed commit cannot change them)
@@ -158,9 +159,11 @@ demo_build() { (cd $REPO && docker build -q --build-arg BUILD_SHA="$(git rev-par
 
 demo_start() {  # (re)start the demo container from the built image; BF-D90: the real auto-update status
   mkdir -p "$AU_PUBLIC" && chmod 755 "$AU_PUBLIC"
+  mkdir -p "$REC_VIEW" "$RELAY/inbox/validated"  # BF-D94: the REAL paper record and nightly report (read-only)
   docker rm -f bigwins-demo >/dev/null 2>&1
   docker run -d --name bigwins-demo --restart unless-stopped -p 127.0.0.1:8080:8080 \
     -v $REPO/config:/app/config:ro -v "$AU_PUBLIC:/app/autoupdate:ro" --read-only --tmpfs /tmp --cap-drop ALL \
+    -v "$REC_VIEW:/data/recordview:ro" -v "$RELAY/inbox/validated:/data/relay:ro" \
     --security-opt no-new-privileges:true -e TZ=Australia/Sydney \
     "$IMAGE:local" trader-bf dashboard --demo --host 0.0.0.0 --port 8080 \
     --autoupdate-status /app/autoupdate/status.json >/dev/null
@@ -187,14 +190,24 @@ do_update() {  # no questions asked (the app's server worker uses it too)
   local tip; tip=$(git -C $REPO rev-parse "origin/$BRANCH")
   check_signed "$tip" || { r "Update refused (no changes made)."; return 1; }  # BF-D84
   git -C $REPO merge --ff-only -q "$tip" || { r "Update failed (no changes made)."; return 1; }
+  rm -f "$STATE/update_kind"
   if [ "$(git -C $REPO rev-parse HEAD)" != "$before" ]; then
     python3 "$DEPLOY/gitops.py" record "$STATE" "$before"  # BF-D45: the rollback target
     new_strategy_version "$before" HEAD && note_prev_version "$before"  # BF-D80
+    # BF-D93: a change of the paper record's code only rebuilds the record image
+    git -C $REPO diff --no-renames --name-only "$before" HEAD | python3 "$DEPLOY/classify.py" > "$STATE/update_kind"
   fi
 }
 
 after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
+  local kind; kind=$(head -c 12 "$STATE/update_kind" 2>/dev/null | tr -d '[:space:]'); rm -f "$STATE/update_kind"
+  if [ "$kind" = record ]; then  # BF-D93: the trader and the app are not rebuilt or restarted
+    case "$(rec_mode)" in shadow|writer) rec_build && g "Paper-record code updated; the record image was rebuilt. The trader was not touched.";;
+      *) g "Paper-record code updated (the record is not on this server yet). The trader was not touched.";; esac
+    rec_ensure_timers
+    return 0
+  fi
   if [ "$(id -u)" = 0 ] && ! command -v pdftotext >/dev/null; then  # BF-D78: notice texts
     apt-get -y -qq install poppler-utils >/dev/null 2>&1 || y "Could not install poppler-utils (pdftotext)."
   fi
@@ -208,6 +221,7 @@ after_update() {  # secrets the new code needs, then rebuild and restart
         | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
       return 1
     fi
+    case "$(rec_mode)" in shadow|writer) rec_build;; esac  # BF-D93: the record image follows the code
     dc up -d && g "Updated and restarted."
     # F3: the output volume belongs to the trader's user (once; a no-op afterwards)
     dc exec -T -u 0 trader chown -R 10001:10001 /app/out >/dev/null 2>&1
@@ -275,6 +289,7 @@ update_to() {  # BF-D48: fast-forward to exactly the approved commit, nothing el
   new_strategy_version "$before" "$commit" && note_prev_version "$before"  # BF-D80
   git -C $REPO merge --ff-only -q "$commit" || { echo "refused: fast-forward failed (no changes made)"; return 1; }
   python3 "$DEPLOY/gitops.py" record "$STATE" "$before"
+  mkdir -p "$STATE" && printf '%s\n' "$kind" > "$STATE/update_kind"  # BF-D93: "record" = no trader restart
   echo "now at $(git -C $REPO log --oneline -1)"
   bash "$DEPLOY/bigwins.sh" after-pull  # BF-D61: the new script's steps, not this shell's
 }
@@ -429,6 +444,7 @@ host_status() {  # BF-D42: a small JSON snapshot for the app's Server tab (no se
     SIGN_MODE="$(sign_mode)" PRESENCE_PING_SET="$(presence_url && echo 1 || echo 0)" \
     PRESENCE_PING="$(head -c 10 "$STATE/presence_ping_day" 2>/dev/null)" \
     AU_STATUS="$(au_status_json 2>/dev/null)" \
+    RECORD_STATUS="$(rec_host_status 2>/dev/null)" \
     CLAUDE_REMOTE="$(tmux has-session -t remote 2>/dev/null && date -d "@$(cat "$STATE/claude_remote_started" 2>/dev/null || date +%s)" '+%a %H:%M' 2>/dev/null)" \
     python3 "$DEPLOY/host_status.py"
 }
@@ -469,6 +485,9 @@ do_backup() {  # BF-D64: one encrypted backup, local + OneDrive, and the readabl
   # BF-D86 (DR review M4): the deployed code itself, so a restore does not need GitHub
   git -C $REPO bundle create "$stage/code.bundle" HEAD >/dev/null 2>&1 || notes="code bundle failed"
   info=$(info_dir)  # BF-D86: the private info archive, up to INFO_CAP_MB
+  # BF-D93: without its PDFs (they travel one encrypted file a day, rec_backup_pdfs): the
+  # lists, texts and PDF hashes can no longer fall out of the backup at the size cap
+  local light; light=$(rec_info_light "$stage/info_light") && info=$light
   if [ -d "$info" ]; then
     mb=$(du -sm "$info" 2>/dev/null | cut -f1)
     if [ "${mb:-0}" -gt "$INFO_CAP_MB" ]; then notes="${notes:+$notes; }info archive not backed up: ${mb} MB is over ${INFO_CAP_MB} MB"; info=""; fi
@@ -476,7 +495,7 @@ do_backup() {  # BF-D64: one encrypted backup, local + OneDrive, and the readabl
     info=""
   fi
   COMPOSE="$(compose_json)" JDB="$jdb" STAGE="$stage" OUT="$BACKUP_DIR" KEY="$BKEY" REMOTE="$remote" \
-  REMOTE2="$remote2" INFO="$info" NOTES="$notes" \
+  REMOTE2="$remote2" INFO="$info" NOTES="$notes" REC_SOURCES="$(rec_backup_sources)" \
   REPO="$REPO" DEPLOY="$DEPLOY" SECRETS="$SECRETS" STATE="$stage/worker_state" RECORD="$(envval RECORD_DIR)" \
   FSTORE="$(envval FORWARD_STORE)" REFDIR="$(envval REF_DIR)" FLEX="$(envval FLEX_INBOX)" \
   COMMIT="$(git -C $REPO rev-parse HEAD 2>/dev/null)" python3 - <<'PY'
@@ -504,6 +523,10 @@ if os.path.isfile(e["STAGE"] + "/code.bundle"):  # BF-D86
     src.append(["code.bundle", e["STAGE"] + "/code.bundle"])
 if e.get("INFO"):
     src.append(["info_archive", e["INFO"]])
+for line in e.get("REC_SOURCES", "").splitlines():  # BF-D93: the record's states and daily data
+    name, _, path = line.partition("|")
+    if name and path and os.path.isdir(path):
+        src.append([name, path])
 plan = {"out_dir": e["OUT"], "key_file": e["KEY"], "remote": e.get("REMOTE") or None,
         "remote2": e.get("REMOTE2") or None, "notes": [x for x in e.get("NOTES", "").split("; ") if x],
         "commit": e.get("COMMIT", ""), "local_keep": [7, 0],
@@ -522,6 +545,7 @@ r=json.loads(sys.stdin.read() or "{}"); r["kind"]="backup"; r["onedrive"]=sys.ar
   record_backup "$res"
   [ "$rc" = 0 ] && hc_backup_ping
   rm -rf "$stage"
+  rec_backup_pdfs >/dev/null 2>&1  # BF-D93 (D4): the archive's PDFs, one encrypted file a day
   echo "$res"
   return $rc
 }
@@ -649,6 +673,16 @@ print("; ".join(bad)); sys.exit(1 if bad or not want else 0)' $(compose_json | p
   if [ -d "$tmp/info_archive" ]; then  # BF-D86: the private info archive (written as uid 10001)
     mkdir -p "$(info_dir)" && cp -a "$tmp/info_archive/." "$(info_dir)/" && chown -R 10001:10001 "$(info_dir)"
   fi
+  # BF-D93: the paper record's states and daily data, into the record tree. The ledger and
+  # the fence came back with the record folder above; the first record job then checks the
+  # relay's fence, so a server restored from an old backup cannot write over a newer writer.
+  local rd rp
+  for rd in bigwins_forward/out bigwins_forward/data/bulk bigwins_forward/data/estimates_pit \
+            bigwins_forward/data/newlist bigwins_forward/data/newsc asic_daily; do
+    rp="$tmp/record_$(echo "$rd" | tr '/' '_')"
+    [ -d "$rp" ] && mkdir -p "$REC_TREE/$rd" && cp -a "$rp/." "$REC_TREE/$rd/"
+  done
+  [ -d "$REC_TREE" ] && chown -R "$REC_UID:$REC_UID" "$REC_TREE" && [ "$(rec_mode)" = writer ] && chown -R "$REC_UID:$REC_UID" "$(info_dir)"
   dc up -d && dc exec -T trader sh -c 'tar -C /app/out -xf -' < "$tmp/trader_out.tar" 2>/dev/null
   g "Restored. Then: bigwins 9 (phone app on Tailscale; the server's Tailscale name may be new),"
   g "bigwins 11 (allow my phone), sudo bigwins install-worker, and in the app: Turn on alerts again."
@@ -694,6 +728,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     fi
   done
   au_flush  # BF-D90: automatic-update messages kept while the trader was down
+  rec_flush  # BF-D93: record job results kept while the trader was down
   ensure_timers
   local job id action force out rc commit flags created sig
   job=$(dc exec -T trader trader-bf server-jobs claim 2>/dev/null) || return 0
@@ -723,7 +758,7 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
         finish_job "$id" REFUSED "refused: a rollback is applied outside ASX hours; ask again after 16:15"
         return 0
       fi;;
-    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin|autoupdate_on|autoupdate_off) ;;
+    check|claude_remote|claude_stop|backup_now|restore_test|backup_key|fetch|hc_ping|info_archive|prev_twin|autoupdate_on|autoupdate_off|record_daily) ;;
     *) finish_job "$id" REFUSED "refused: not an allowed server action"; return 0;;
   esac
   case "$action" in  # the fixed list only; nothing from the app is ever run as a command
@@ -746,6 +781,10 @@ cmd_worker() {  # BF-D42: one pass of the host worker (systemd timer, every 30 s
     prev_twin) out=$(start_unit twin do_prev_twin 2>&1); rc=$?;;
     autoupdate_on) out=$(au_set on 2>&1); rc=$?;;  # BF-D90: the app's Settings switch (code)
     autoupdate_off) out=$(au_set off 2>&1); rc=$?;;
+    record_daily)  # BF-D93: "Book the paper day now" (confirm only): the daily timer's unit, never blocks
+      if [ -f /etc/systemd/system/bigwins-rec-daily.service ] && [ "$(rec_mode)" = writer ]; then
+        out=$(systemctl start --no-block bigwins-rec-daily.service 2>&1 && echo "started: the result shows on Server > Health in a few minutes"); rc=$?
+      else out="the paper record is not written on this server"; rc=1; fi;;
     check) out=$({ cd $DEPLOY && ./check_secrets.sh; dc ps --format '{{.Service}}: {{.Status}}'; } 2>&1); rc=$?;;
   esac
   if [ "$rc" = 0 ]; then finish_job "$id" DONE "$out"; else finish_job "$id" FAILED "$out"; fi
@@ -777,6 +816,9 @@ do_info_archive() {  # BF-D78: the private info archive, as the trader's uid (ne
   mkdir -p "$STATE"
   exec 8>"$STATE/info_archive.lock"
   flock -n 8 || { echo "the archive is already running"; return 0; }  # timer and manual run
+  case "$(rec_mode)" in shadow|writer)  # BF-D93: ONE collector a server: the record's archive job
+    echo "the announcements are collected by the paper record's own job (bigwins record run morning)"; return 0;;
+  esac
   if ! info_enabled; then
     echo "info archive is switched off (info_archive.archive_enabled: false)"; return 0
   fi
@@ -876,6 +918,7 @@ write_extra_units() {  # BF-D78 / BF-D80: the archive the morning after each tra
 
 ensure_timers() {  # BF-D81 (review S7): after an update the worker adds missing timers itself
   [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/bigwins-worker.timer ] || return 0
+  [ "$(rec_mode)" = off ] || rec_ensure_timers  # BF-D93: version-aware (a changed set is rewritten)
   [ -f /etc/systemd/system/bigwins-info.timer ] && [ -f /etc/systemd/system/bigwins-twin.timer ] \
     && [ -f /etc/systemd/system/bigwins-autoupdate.timer ] && return 0
   write_extra_units && systemctl daemon-reload \
@@ -1044,7 +1087,10 @@ golden_checks() {  # batch 3 M2: the record-data checks must pass before a trade
   dc run --rm --no-deps trader trader-bf golden-check
 }
 
-cmd_weekly() { do_restore_test >/dev/null; docker builder prune -f --filter until=168h >/dev/null 2>&1; }
+cmd_weekly() {
+  do_restore_test >/dev/null; docker builder prune -f --filter until=168h >/dev/null 2>&1
+  rec_backup_set stores >/dev/null 2>&1; rec_backup_set base >/dev/null 2>&1  # BF-D93: only when changed
+}
 
 cmd_check() { cd $DEPLOY && ./check_secrets.sh; }
 
@@ -1482,6 +1528,10 @@ print("  next check: " + (d.get("next_check") or "")[:16])';;
   esac
 }
 
+# ---------------------------------------------------------------- the paper record (BF-D93)
+# shellcheck source=deploy/record.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/record.sh"
+
 menu() {
   cmd_status
   echo
@@ -1517,7 +1567,8 @@ case ${1:-} in
   new-totp) cmd_new_totp;; signing) cmd_signing "${2:-}";;  # BF-D83, BF-D84
   fetch-archive) cmd_fetch_archive "${2:-}" "${3:-}";; offsite2) cmd_offsite2;;  # BF-D86
   autoupdate) cmd_autoupdate "${2:-}";; autoupdate-run) do_autoupdate;;  # BF-D90 (the timer)
+  record) cmd_record "${2:-}" "${3:-}" "${4:-}";;  # BF-D93: the paper record on this server
   __lib__) ;;  # tests: load the functions only
   ""|menu) menu;;
-  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key|new-totp|signing status|key|enforce|warn|fetch-archive <url> [name]|offsite2|autoupdate on|off|status]";;
+  *) echo "Usage: bigwins [status|logs|update|restart|secret <name>|check|claude|remote|app|demo|login|vapid|install-worker|worker|backup|restore-test|onedrive|restore|start-trader <date>|ibkr|seed-data|new-backup-key|new-totp|signing status|key|enforce|warn|fetch-archive <url> [name]|offsite2|autoupdate on|off|status|record status|view on|off|seed|shadow on|off|cutover|handback|requests]";;
 esac

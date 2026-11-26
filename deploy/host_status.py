@@ -70,6 +70,8 @@ def snapshot(env: dict[str, str], proc: str = "/proc") -> dict[str, Any]:
         "presence_ping": env.get("PRESENCE_PING", ""),
         "claude_remote": env.get("CLAUDE_REMOTE", ""),  # BF-D85: "" or the start time
         "autoupdate": _json(env.get("AU_STATUS", "")),  # BF-D90: deploy/autoupdate.py status
+        # BF-D93: the paper record on this server (mode, writer, epoch, head, disk, timers)
+        "record": _json(env.get("RECORD_STATUS", "")),
     }  # fmt: skip
 
 

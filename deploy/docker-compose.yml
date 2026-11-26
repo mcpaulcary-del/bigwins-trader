@@ -179,6 +179,11 @@ services:
       # announcements archive (share pages). Both read-only.
       - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro
       - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
+      # BF-D94: the paper record's display copy (scorecards, holdings, movers; kept by the
+      # host worker) and the cloud's nightly report from the OneDrive relay (validated
+      # files only). Read-only; the dashboard has no other view of the record tree.
+      - ${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro
+      - ${RELAY_VIEW_DIR:-/var/lib/bigwins/relay/inbox/validated}:/data/relay:ro
     read_only: true
     mem_limit: 512m  # review F11
     tmpfs: [/tmp]
