@@ -776,6 +776,10 @@ class Digest:
     alerts: list[str] = field(default_factory=list)
     needs: list[str] = field(default_factory=list)
     sentence: str = ""
+    # the same facts as the lines above, kept as figures for the Digest screen (display only)
+    board: Scoreboard | None = None
+    week: tuple[Decimal, Decimal] | None = None
+    lines: list[ResearchLine] | None = None
 
     def text(self) -> str:
         parts = [f"Weekly digest: week to {self.week_end:%a %d %b %Y}"]
@@ -829,7 +833,7 @@ def digest(
     needs: Sequence[str] = (),
 ) -> Digest:
     mon, fri = week_of(friday)
-    dg = Digest(fri, mon)
+    dg = Digest(fri, mon, board=sb, week=week, lines=lines)
     if sb is None:
         dg.main.append("The main strategy has not started yet.")
     else:

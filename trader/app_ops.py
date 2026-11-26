@@ -6,6 +6,7 @@ fixed running costs) goes through the trader's control server (``/act/costs``)."
 
 from __future__ import annotations
 
+import re
 import time as _time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -137,6 +138,109 @@ def _bulk_day(name: str) -> date | None:
 # ---------------------------------------------------------------- Home: the scoreboard
 
 
+def signed(x: float | Decimal | None, text: str) -> str:
+    """A gain / loss with its arrow (never colour alone, BF-D62)."""
+    t = tone(x)
+    mark = {"up": '<span class="arr">▲</span>', "down": '<span class="arr">▼</span>'}.get(t, "")
+    return f'<span class="{t}">{mark}{e(text)}</span>'
+
+
+def cmp_bars(rows: Sequence[tuple[str, str, float | None, str]], note: str = "") -> str:
+    """Two (or more) bars on one scale: each is the gain or loss on the money put in, so
+    "who is ahead" is visible at a glance. ``rows``: (label, value, change as a fraction,
+    bar class). A loss runs left of the zero line; the sign is also in the text."""
+    vals = [p for _, _, p, _ in rows if p is not None]
+    lo, hi = min([0.0, *vals]), max([0.0, *vals])
+    span = (hi - lo) or 1.0
+    zero = -lo / span * 100
+    out = []
+    for label, value, p, cls in rows:
+        if p is None:
+            bar = ""
+        else:
+            w = max(abs(p) / span * 100, 1.5)
+            left = zero if p >= 0 else max(zero - w, 0.0)
+            bar = f'<i class="{cls}" style="left:{left:.1f}%;width:{min(w, 100 - left):.1f}%"></i>'
+        axis = f'<u style="left:{zero:.1f}%"></u>' if lo < 0 else ""
+        out.append(
+            f'<div class="cmpr"><div class="cmph"><span class="cmpl">{e(label)}</span>'
+            f'<span class="cmpv"><b>{e(value)}</b>'
+            + (signed(p, pct(p)) if p is not None else "")
+            + f'</span></div><div class="cmpt">{bar}{axis}</div></div>'
+        )
+    cap = f'<p class="caption cmpn">{e(note)}</p>' if note else ""
+    return f'<div class="cmp">{"".join(out)}</div>{cap}'
+
+
+def gap_chart(series: Sequence[tuple[date, float]], label: str) -> str:
+    """Big Wins minus A200 over time, with the zero line ("level") drawn in and the two
+    end dates named: above the line is ahead, below is behind."""
+    pts = [(d, float(x)) for d, x in series]
+    if len(pts) < 2:
+        return ""
+    vs = [x for _, x in pts]
+    lo, hi = min([0.0, *vs]), max([0.0, *vs])
+    span = (hi - lo) or 1.0
+    w, h, pad = 100.0, 44.0, 3.0
+
+    def y(x: float) -> float:
+        return pad + (hi - x) / span * (h - 2 * pad)
+
+    n = len(pts) - 1
+    xy = [(i / n * w, y(x)) for i, (_, x) in enumerate(pts)]
+    line = " ".join(f"{'M' if i == 0 else 'L'}{px:.2f},{py:.2f}" for i, (px, py) in enumerate(xy))
+    z = y(0.0)
+    area = f"{line} L{w:.0f},{z:.2f} L0,{z:.2f} Z"
+    last = vs[-1]
+    now = ("level" if abs(last) < 1 else
+           f"{aud(abs(last), dp=0)} {'ahead' if last > 0 else 'behind'}")  # fmt: skip
+    return (
+        '<div class="gapc"><div class="gaph"><span>Gap to A200 over time</span>'
+        f"<b>{signed(last if abs(last) >= 1 else 0, now)}</b></div>"
+        f'<svg class="gapsvg" viewBox="0 0 {w:.0f} {h:.0f}" preserveAspectRatio="none" role="img" '
+        f'aria-label="{e(label)}"><defs><clipPath id="gcu"><rect x="0" y="0" width="{w:.0f}" '
+        f'height="{z:.2f}"/></clipPath><clipPath id="gcd"><rect x="0" y="{z:.2f}" width="{w:.0f}" '
+        f'height="{h - z:.2f}"/></clipPath></defs>'
+        f'<path class="gapa au" clip-path="url(#gcu)" d="{area}"/>'
+        f'<path class="gapa ad" clip-path="url(#gcd)" d="{area}"/>'
+        f'<line class="gapz" x1="0" x2="{w:.0f}" y1="{z:.2f}" y2="{z:.2f}"/>'
+        f'<path class="gapl" d="{line}"/></svg>'
+        f'<div class="gapx"><span>{pts[0][0]:%-d %b}</span><span>dashed line = level with A200'
+        f"</span><span>{pts[-1][0]:%-d %b}</span></div></div>"
+    )
+
+
+LUCK_DAYS = 730  # under 24 months a gap says little (the research pages' rule, BF-D89)
+
+
+def how_long(days: int) -> str:
+    if days < 14:
+        return plural(max(days, 0), "day")
+    if days < 70:
+        return plural(days // 7, "week")
+    return plural(round(days / 30.44), "month")
+
+
+def luck_line(s: ov.Scoreboard) -> str:
+    """The honest label on a young record: the words every short result carries."""
+    n = (s.end - s.start).days
+    if n >= LUCK_DAYS:
+        return ""
+    return (f'<p class="luck">{icon("info")}<span>Only {how_long(n)} in: a gap this early is '
+            f"<b>{e(ov.LUCK)}</b>.</span></p>")  # fmt: skip
+
+
+def score_bars(s: ov.Scoreboard) -> str:
+    """The two-bar comparison of the scoreboard (Home and the digest)."""
+    mine = "Big Wins, " + s.basis
+    return cmp_bars(
+        [(mine[:1].upper() + mine[1:], aud(s.after_costs, dp=0), s.mine_pct, "me"),
+         ("Same money in A200", aud(s.a200, dp=0) if s.a200 is not None else "no fund prices yet",
+          s.a200_pct, "ix")],
+        f"Bars: gain or loss on the {aud(s.capital, dp=0)} put in.",
+    )  # fmt: skip
+
+
 def score_card(o: Ops, v: Any) -> str:
     """The Home headline (BF-D75): the main line after costs against A200. Without a
     tax rate it says "after running costs, before tax" (BF-D81, review M2)."""
@@ -147,22 +251,11 @@ def score_card(o: Ops, v: Any) -> str:
     t = tone(g) if g is not None else ""
     head = (f'<p class="verdict {t}">{icon("arrow-up-right" if (g or 0) > 0 else "arrow-down-right")}'
             f"{e(s.sentence)}</p>") if g is not None else f'<p class="verdict">{e(s.sentence)}</p>'  # fmt: skip
-    mine = "Big Wins, " + s.basis
-    stats = (
-        '<dl class="stats two">'
-        + stat(mine[:1].upper() + mine[1:], aud(s.after_costs, dp=0),
-               pct(s.mine_pct) + " on money put in", tone(s.mine_pct))
-        + stat("Same money in A200", aud(s.a200, dp=0) if s.a200 is not None else "–",
-               (pct(s.a200_pct) + " on money put in") if s.a200 is not None
-               else "no fund prices yet", tone(s.a200_pct))
-        + "</dl>"
-    )  # fmt: skip
+    stats = score_bars(s)
     gap = ""
     if len(o.after_series) > 1:
-        gap = ('<div class="gaprow"><span class="caption">Gap over time</span>'
-               + spark([x for _, x in o.after_series], 160, 28, "spk",
-                       "Big Wins after running costs minus A200, over time", stretch=True)
-               + "</div>")  # fmt: skip
+        gap = gap_chart(o.after_series, "Big Wins after running costs minus A200, over time")
+    gap += luck_line(s)
     fc = o.fixed
     fixed_lab = {"app": "set in the app", "config": "from the server settings",
                  "total": "one yearly total"}.get(fc.source if fc else "", "")  # fmt: skip
@@ -286,14 +379,71 @@ TIMER_WORDS = {"worker": "server worker", "backup": "nightly backup", "weekly": 
                "autoupdate": "automatic app updates"}  # fmt: skip
 
 
+def health_attention(  # noqa: PLR0912 - one branch per card of the screen
+    v: Any, x: Extras, o: Ops
+) -> list[tuple[str, str, str]]:
+    """What on this screen needs a look, most serious first: (tone, what, detail). Only
+    restates what the cards below already show."""
+    red: list[tuple[str, str, str]] = []
+    amber: list[tuple[str, str, str]] = []
+    for f in o.fresh:
+        if f.bad:
+            red.append(("bad", f"{f.name}: {f.status}", f.detail or f"last {f.last}"))
+    if v.disk_free and v.disk_free[0] < TWO_GB:
+        red.append(("bad", "Disk nearly full", f"{v.disk_free[0] / 1024**3:.1f} GB free"))
+    for rec, name in ((x.backup, "Last backup"), (x.restore_test, "Last restore test")):
+        if rec and not rec[0].get("ok"):
+            red.append(("bad", f"{name} failed", when(rec[1])))
+    if x.heartbeat and not x.heartbeat[0].get("ok"):
+        red.append(("bad", "Outside alarm: the last heartbeat failed", ago(x.heartbeat[1], v.now)))
+    p = x.presence
+    if p is not None and p.tracking and p.last is not None and p.pause_at is not None:
+        if v.now >= p.pause_at:
+            red.append(("bad", "Buying is paused: no action from you",
+                        "Controls: Resume with your code"))  # fmt: skip
+        elif p.warn_at is not None and v.now >= p.warn_at:
+            amber.append(("wait", "Tap I'm here",
+                          f"buying pauses {p.pause_at.astimezone(ASX_TZ):%a %d %b}"))  # fmt: skip
+    if x.actions_locked:
+        amber.append(("wait", "Actions are locked", "approvals wait until you unlock"))
+    if x.passphrase_set is False:
+        amber.append(("wait", "Passphrase not set", "needed before real money"))
+    today = v.now.astimezone(ASX_TZ).date()
+    from trader.presence import REMINDERS
+
+    for k, label in REMINDERS:
+        d = x.reminders.get(k)
+        if d is not None and (d - today).days <= 30:
+            left = (d - today).days
+            item = ("bad" if left <= 7 else "wait", f"{label}: " + ("expired" if left < 0 else
+                    f"renew within {plural(left, 'day')}"), f"{d:%-d %b %Y}")  # fmt: skip
+            (red if left <= 7 else amber).append(item)
+    st = o.research_status
+    if st is not None and st.state != "ok":
+        amber.append(("wait", "Research pages: " + RESEARCH_PILL.get(st.state, ("", st.state))[1],
+                      st.text))  # fmt: skip
+    return red + amber
+
+
+def health_summary(v: Any, x: Extras, o: Ops) -> str:
+    """The top of Health: what needs a look, or one line that all is well."""
+    none: list[tuple[str, str, str]] = []
+    items = safe(lambda: health_attention(v, x, o), none)
+    if not items:
+        return ('<p class="statusline"><span class="sd ok"></span>Everything is working</p>'
+                "<p class='caption'>Jobs on time, backups good, nothing due.</p>")  # fmt: skip
+    worst = "bad" if any(t == "bad" for t, _, _ in items) else "wait"
+    rows = "".join(
+        f'<li><span class="sd {t}"></span><span class="grow"><b>{e(what)}</b>'
+        f'<span class="sub">{e(detail)}</span></span></li>' for t, what, detail in items)  # fmt: skip
+    return (f'<p class="statusline"><span class="sd {worst}"></span>'
+            f"{plural(len(items), 'thing')} to look at</p>"
+            f'<section class="needs"><ul class="list attn">{rows}</ul></section>')  # fmt: skip
+
+
 def health(v: Any, x: Extras, o: Ops, version: str) -> str:
     parts = [backlink("/server", "Server") + "<h1>Health</h1>"]
-    bad = [f for f in o.fresh if f.bad]
-    parts.append(
-        f'<p class="statusline"><span class="sd {"bad" if bad else "ok"}"></span>'
-        + (f"{plural(len(bad), 'job')} late or failed" if bad else "Every job on time")
-        + "</p>"
-    )
+    parts.append(health_summary(v, x, o))
     rows = (
         "".join(
             f'<li class="frow"><span class="grow"><b>{e(f.name)}</b><span class="sub">'
@@ -549,6 +699,23 @@ def renewals_section(x: Extras, today: date) -> str:
 # ---------------------------------------------------------------- Costs (BF-D76)
 
 
+def split_bar(parts: Sequence[tuple[str, float, str, str]]) -> str:
+    """One bar cut into its parts, with a legend that carries each figure (the picture
+    is never the only place a number lives). ``parts``: (label, size, class, figure)."""
+    total = sum(max(x, 0.0) for _, x, _, _ in parts)
+    if total <= 0:
+        return ""
+    segs = "".join(
+        f'<i class="{cls}" style="flex:{max(x, 0.0) / total * 100:.2f} 0 0"></i>'
+        for _, x, cls, _ in parts if x > 0
+    )  # fmt: skip
+    keys = "".join(
+        f'<li><i class="{cls}"></i><span class="grow">{e(lab)}</span><b>{e(fig)}</b></li>'
+        for lab, _, cls, fig in parts
+    )
+    return f'<div class="split" aria-hidden="true">{segs}</div><ul class="splitk">{keys}</ul>'
+
+
 def costs(v: Any, x: Extras, o: Ops) -> str:
     parts = [backlink("/server", "Server") + "<h1>Running costs</h1>"]
     c = o.costs
@@ -561,8 +728,37 @@ def costs(v: Any, x: Extras, o: Ops) -> str:
     tone_ = (
         "bad" if (c.annual_pct or 0) >= 0.05 else ("amber" if (c.annual_pct or 0) >= 0.02 else "ok")
     )
-    parts.append(f'<p class="verdict2"><span class="pill {tone_}">{e(c.verdict.split(":")[0])}</span> '
-                 f"{e(c.verdict.split(':', 1)[1].strip() if ':' in c.verdict else c.verdict)}</p>")  # fmt: skip
+    level, _, rest = c.verdict.partition(":")
+    if not rest:
+        level, rest = "", c.verdict
+    # the verdict's own sentences: the figures are drawn below, the remarks stay as words
+    remarks = [t.strip() for t in re.split(r"(?<=\.)\s+", rest.strip())
+               if t.strip() and not t.strip().lower().startswith(("so far", "estimated", "about"))]  # fmt: skip
+    tot = c.since_start
+    first_year = c.days < 365 and c.so_far_pct is not None
+    big = aud(tot.total, dp=0) if first_year else f"about {(c.annual_pct or 0) * 100:.1f}%"
+    sub = (f"{pct(c.so_far_pct, False)} of the account in {plural(c.days, 'day')}" if first_year
+           else "of the account a year")  # fmt: skip
+    year = ""
+    if c.annual_pct is not None and c.fixed_annual is not None and c.trading_annual is not None:
+        lead = ("fixed costs are most of it" if c.fixed_annual >= c.trading_annual
+                else "trading costs are most of it")  # fmt: skip
+        year = (
+            (f"<p class='ylead'>Estimated for a full year: <b>about {c.annual_pct * 100:.1f}%</b> "
+             "of the account</p>" if first_year else "")
+            + split_bar([("Fixed (server, data, tools)", c.fixed_annual, "sg1",
+                          f"{c.fixed_annual * 100:.1f}% a year"),
+                         ("Trading (brokerage, spread)", c.trading_annual, "sg0",
+                          f"{c.trading_annual * 100:.1f}% a year")])
+            + f"<p class='caption'>{e(lead[:1].upper() + lead[1:])}.</p>"
+        )  # fmt: skip
+    notes = ("<ul class='bul small muted'>" + "".join(f"<li>{e(t)}</li>" for t in remarks) + "</ul>"
+             if remarks else "")  # fmt: skip
+    parts.append(section("Cost so far" if first_year else "Cost a year", (
+        f'<div class="bigrow"><div><div class="bignum num">{e(big)}</div>'
+        f'<div class="bigsub">{e(sub)}</div></div>'
+        + (f'<span class="pill {tone_}">{e(level)}</span>' if level else "") + "</div>"
+        + year + notes), "costhero"))  # fmt: skip
 
     def table(r: ov.CostRow) -> str:
         lines = [("Brokerage and fees", r.brokerage, "from the fills"),
@@ -580,8 +776,17 @@ def costs(v: Any, x: Extras, o: Ops) -> str:
                 f"</tr></tbody></table><p class='caption'>{r.start:%d %b %Y} – {r.end:%d %b %Y}; "
                 f"account {aud(r.account, dp=0)} at the end.</p>")  # fmt: skip
 
-    parts.append(section("This financial year (from 1 July)", table(c.ytd)))
-    parts.append(section("Since the start", table(c.since_start)))
+    made = split_bar([("Brokerage and fees", float(tot.brokerage), "sg0", aud(tot.brokerage, dp=0)),
+                      ("Spread (modelled)", float(tot.spread), "sg2", aud(tot.spread, dp=0)),
+                      ("Fixed costs", float(tot.fixed), "sg1", aud(tot.fixed, dp=0))])  # fmt: skip
+    same = (c.ytd.start == c.since_start.start and c.ytd.end == c.since_start.end
+            and c.ytd.total == c.since_start.total)  # fmt: skip
+    if same:  # the book started this financial year: one table, not the same one twice
+        parts.append(section("This financial year (from 1 July) · also since the start",
+                             made + table(c.ytd)))  # fmt: skip
+    else:
+        parts.append(section("This financial year (from 1 July)", table(c.ytd)))
+        parts.append(section("Since the start", made + table(c.since_start)))
     months = "".join(
         f"<tr><td>{e(r.label)}</td><td class='r'>{aud(r.brokerage + r.spread)}</td>"
         f"<td class='r'>{aud(r.fixed)}</td><td class='r'><b>{aud(r.total)}</b></td>"
@@ -637,26 +842,65 @@ def digest_page(src: Any, v: Any, x: Extras, o: Ops, qs: dict[str, str]) -> str:
         if not lines and not empty:
             return ""
         items = "".join(f"<li>{e(t)}</li>" for t in lines) or f"<li class='muted'>{e(empty)}</li>"
-        return section(title, f'<ul class="list">{items}</ul>')
+        return section(title, f'<ul class="list dlist">{items}</ul>')
 
-    s = o.score
+    s = dg.board if dg.board is not None else o.score
     head = ""
     if s is not None and s.gap is not None:
-        head = f'<p class="verdict {tone(s.gap)}">{e(s.sentence)}</p>'
+        head = (f'<p class="verdict {tone(s.gap)}">'
+                f'{icon("arrow-up-right" if s.gap > 0 else "arrow-down-right")}{e(s.sentence)}</p>')  # fmt: skip
+    if dg.needs:
+        needs = section("Needs you", '<ul class="list dlist">' + "".join(
+            f'<li><span class="sd wait"></span>{e(t)}</li>' for t in dg.needs) + "</ul>", "needs")  # fmt: skip
+    else:
+        needs = ('<section class="needs calm"><p class="allok">' + icon("check")
+                 + "<span><b>Nothing needs you.</b></span></p></section>")  # fmt: skip
+    if s is None:
+        main = block("Main strategy against A200", dg.main)
+    else:
+        wk = ""
+        if dg.week is not None:
+            wk = ('<h3 class="h3">This week</h3><dl class="stats two">'
+                  + stat("Big Wins", aud(dg.week[0], True, dp=0), "", tone(dg.week[0]))
+                  + stat("Same money in A200", aud(dg.week[1], True, dp=0), "", tone(dg.week[1]))
+                  + "</dl><p class='caption'>The week's change in dollars, before running "
+                  "costs.</p>")  # fmt: skip
+        main = section("Main strategy against A200", (
+            score_bars(s)
+            + f"<p class='caption'>Since {s.start:%-d %b %Y}. Account value {aud(s.value, dp=0)} "
+            f"before running costs.</p>{luck_line(s)}{wk}"))  # fmt: skip
     body = (
         backlink("/inbox", "Inbox")
-        + f"<h1>Weekly digest</h1><p class='caption'>{dg.week_start:%a %d %b} – {dg.week_end:%a %d %b %Y}</p>"
-        + nav + head
-        + block("Main strategy against A200", dg.main)
+        + f"<h1>Weekly digest</h1><p class='caption'>{dg.week_start:%a %-d %b} – {dg.week_end:%a %-d %b %Y}</p>"
+        + head + needs + main
         + section("Research lines (information only, unranked)",
-                  "<p class='caption'>Each " + e(ov.LUCK) + ".</p><ul class='list'>"
-                  + "".join(f"<li>{e(t)}</li>" for t in dg.research) + "</ul>"
+                  research_table(dg.lines, dg.research)
                   + f"<a class='rmore' href='/research/testing' data-nav>What we're testing{chev()}</a>")
         + block("Data collected", dg.data)
         + block("Alerts this week", dg.alerts, "No alerts.")
-        + block("Needs you", dg.needs, "Nothing needs you.")
+        + nav
     )  # fmt: skip
     return shell(v, x, "Digest", body, "inbox")
+
+
+def research_table(lines: Sequence[ov.ResearchLine] | None, fallback: Sequence[str] = ()) -> str:
+    """The kept paper lines as one compact table: the registered order (never sorted),
+    no colour, no rank, and the luck label on the block (information only)."""
+    luck = (f'<p class="luck">{icon("info")}<span>Paper money, listed in the registered order, '
+            f"not ranked. Each result is <b>{e(ov.LUCK)}</b>.</span></p>")  # fmt: skip
+    if lines is None:
+        return luck + "".join(f"<p class='muted'>{e(t)}</p>" for t in fallback)
+    going = [ln for ln in lines if ln.ret is not None]
+    idle = [ln for ln in lines if ln.ret is None]
+    rows = "".join(
+        f"<tr><td>{e(ln.name)}</td><td class='r'>{pct(ln.ret)}</td>"
+        f"<td class='r'>{pct(ln.vs_a200)}</td></tr>" for ln in going)  # fmt: skip
+    table = ("<table class='rtab'><thead><tr><th>Paper line</th><th class='r'>Since start</th>"
+             f"<th class='r'>v A200</th></tr></thead><tbody>{rows}</tbody></table>"
+             if going else "")  # fmt: skip
+    wait = (f"<p class='caption'>Not started yet: {e(', '.join(ln.name for ln in idle))}.</p>"
+            if idle else "")  # fmt: skip
+    return luck + table + wait
 
 
 # ---------------------------------------------------------------- announcements on a share (BF-D78)

@@ -772,6 +772,102 @@ section.rmeans p{margin:0}
 @media (min-width:860px){main:has(>.rtwo){display:block}
 .rtwo{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:0 24px;align-items:start}
 .rtwo>.rside{position:sticky;top:64px;max-height:calc(100vh - 160px);overflow:auto}.rtwo>.rside .ans{display:none}}
+/* report display (BF-D91): one headline per screen, action before detail, pictures for comparisons */
+.scorecard{border-left:0;padding-top:18px}
+.verdict{font:600 20px/26px var(--font);letter-spacing:-.01em;align-items:flex-start;margin:0 0 16px}
+.verdict .ic{width:22px;height:22px;margin-top:2px}
+.cmp{display:grid;gap:14px;margin:0}
+.cmph{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.cmpl{font:400 13px/18px var(--font);color:var(--ink-2);min-width:0}
+.cmpv{flex:none;white-space:nowrap;font:500 13px/20px var(--font);display:inline-flex;align-items:baseline;gap:8px}
+.cmpv b{font:700 20px/24px var(--font);color:var(--ink);letter-spacing:-.01em}
+.cmpt{position:relative;height:10px;border-radius:5px;background:var(--surface-2);margin-top:6px}
+.cmpt i{position:absolute;top:0;bottom:0;border-radius:5px;background:var(--ink)}
+.cmpt i.ix{background:var(--c-index)}
+.cmpt u{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:var(--ink-3);border-radius:1px}
+.cmpn{margin:8px 0 0}
+.gapc{margin:18px 0 0;padding-top:14px;border-top:1px solid var(--line)}
+.gaph{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font:400 13px/18px var(--font);color:var(--ink-2)}
+.gaph b{font:600 15px/20px var(--font);white-space:nowrap}
+.gapsvg{display:block;width:100%;height:56px;margin:8px 0 4px;overflow:visible}
+.gapl{fill:none;stroke:var(--ink);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.gapz{stroke:var(--line-strong);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
+.gapa{stroke:none}.gapa.au{fill:var(--up);fill-opacity:.16}.gapa.ad{fill:var(--down);fill-opacity:.16}
+.gapx{display:flex;justify-content:space-between;gap:8px;font:400 12px/16px var(--font);color:var(--ink-3)}
+.luck{display:flex;gap:8px;align-items:flex-start;margin:14px 0 0;padding:10px 12px;border-radius:var(--r-sm);
+background:var(--surface-2);font:400 14px/20px var(--font);color:var(--ink-2)}
+.luck .ic{width:18px;height:18px;margin-top:1px;color:var(--ink-3)}.luck b{color:var(--ink)}
+.scorecard .about{margin-top:6px}
+.todo>section{margin:12px 0}
+.needs>h2{color:var(--warn)}
+.nlist li{padding:0}
+.nrow{display:flex;align-items:center;gap:10px;min-height:56px;padding:8px 0;color:var(--ink);text-decoration:none}
+.nrow .grow{flex:1;min-width:0}.nrow b{display:block;font:600 15px/20px var(--font)}.nrow .sub{display:block}
+.nrow .sd{flex:none;margin:0}
+.needs.calm{padding:12px 16px}
+.allok{display:flex;gap:10px;align-items:flex-start;margin:0;font:400 15px/22px var(--font)}
+.allok .ic{flex:none;width:20px;height:20px;margin-top:1px;color:var(--up)}.allok .sub{display:inline}
+.home .hv{font-size:30px;line-height:36px}
+.home .hero{padding-top:12px}
+.bigrow{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.bignum{font:700 32px/38px var(--font);letter-spacing:-.02em}
+.bigsub{font:400 14px/20px var(--font);color:var(--ink-2);margin:2px 0 0}
+.ylead{font:400 15px/22px var(--font);margin:16px 0 8px;padding-top:14px;border-top:1px solid var(--line)}
+.split{display:flex;gap:2px;height:12px;margin:10px 0 8px;border-radius:6px;overflow:hidden}
+.split i{display:block;min-width:3px}
+.sg0{background:var(--ink)}.sg1{background:var(--c-index)}.sg2{background:var(--c1)}
+.splitk{list-style:none;margin:0 0 4px;padding:0;font:400 14px/20px var(--font)}
+.splitk li{display:flex;align-items:center;gap:8px;padding:3px 0}
+.splitk i{flex:none;width:10px;height:10px;border-radius:3px}.splitk .grow{flex:1;min-width:0;color:var(--ink-2)}
+.splitk b{font-weight:600;white-space:nowrap}
+.costhero .bul{margin-top:8px}
+.rtab th,.rtab td{padding:8px 0 8px 10px}.rtab th:first-child,.rtab td:first-child{padding-left:0}
+.rtab td.r,.rtab th.r{white-space:nowrap}.rtab td{font:400 15px/20px var(--font)}
+.dlist li{font:400 15px/22px var(--font)}
+.needs .dlist li{display:flex;gap:10px;align-items:flex-start}.needs .dlist .sd{flex:none;margin:7px 0 0}
+.attn li{display:flex;gap:10px;align-items:flex-start;padding:10px 0}.attn .sd{flex:none;margin:7px 0 0}
+.attn .grow{flex:1;min-width:0}.attn b{display:block;font:600 15px/20px var(--font)}.attn .sub{display:block}
+/* a message opened as a report */
+.rep{margin:10px 0 0;padding:14px;border-radius:var(--r-md);background:var(--surface-2)}
+.rep.txt{font:400 15px/22px var(--font);color:var(--ink)}
+.rep.txt p{margin:0 0 8px}.rep.txt p:last-child{margin-bottom:0}.rep.txt .h3{margin:12px 0 2px;font-size:15px}
+.rep.txt .bul{margin:0 0 8px}.rep.txt .bul li{margin:3px 0}
+.reph{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.rep .stats{margin:14px 0 4px}.rep .stats dd{white-space:normal}
+.kv{list-style:none;margin:12px 0 0;padding:0}
+.kv li,.repline{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:0;padding:9px 0;
+border-top:1px solid var(--line);font:400 14px/20px var(--font)}
+.kv li>span,.repline>span{flex:1;min-width:0;color:var(--ink-2)}
+.kv li>b,.repline>b{flex:none;max-width:62%;font-weight:600;text-align:right}
+.kv small{display:block;font:400 13px/18px var(--font);color:var(--ink-3)}
+.rep .fold{border-top:1px solid var(--line);margin:0}.rep .fold>summary{margin:0;padding:9px 0;color:var(--ink-2);font:400 14px/20px var(--font)}
+.rep .fold>.rtab{margin-bottom:8px}.rep .fold>.rtab td{font-size:14px}
+.rep .note{margin:10px 0}.rep>.caption{margin:10px 0 0}
+.rep .olist li{display:flex;align-items:baseline;gap:8px;padding:9px 0;font:400 15px/20px var(--font)}
+.rep .olist .rr{margin-left:auto}
+.orig{margin:6px 0 0}.orig>summary{color:var(--ink-3);font:400 13px/18px var(--font);margin:6px 0 0}
+.msg .rep pre{background:var(--surface);max-height:20em}
+/* research pages: what to do on the card, the grade as a meter, numbers that do not break */
+.hdo{margin:10px 0 0!important;padding:10px 12px;border-radius:var(--r-sm);background:var(--surface-2);font:400 15px/22px var(--font)}
+.hdo>span{display:block;font:600 12px/16px var(--font);text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:2px}
+.rhl details.why{margin-top:4px}.rhl>.caption{margin-top:8px}
+.rans{font:500 18px/26px var(--font);margin:10px 0 4px}
+section.rmeans{border-left:0;border-radius:var(--r-md);background:var(--surface);box-shadow:inset 3px 0 0 var(--ink)}
+section.rmeans p{font:400 16px/24px var(--font)}
+.rsure{background:var(--surface);border-radius:var(--r-md);padding:4px 16px;margin:12px 0}
+.rsure>summary,.rsure.nofold{display:flex;align-items:center;gap:10px;min-height:44px;margin:0;font:500 15px/20px var(--font);color:var(--ink-2)}
+.rsure.nofold{padding:4px 16px}.rsure>summary::-webkit-details-marker{display:none}.rsure>summary{list-style:none}
+.rsure>summary .chev{transition:transform .2s var(--ease)}.rsure[open]>summary .chev{transform:rotate(90deg)}
+.rsure>p{margin:4px 0 12px;font:400 15px/22px var(--font)}.rep .stats small{color:var(--ink-3)}
+.conf{display:inline-flex;gap:3px;flex:none}.conf span{width:14px;height:6px;border-radius:3px;background:var(--line)}
+.conf.c1 span:nth-child(-n+1),.conf.c2 span:nth-child(-n+2),.conf.c3 span:nth-child(-n+3){background:var(--ink)}
+.rnum td{font:400 15px/21px var(--font)}.rnum td.r.nw{white-space:nowrap}
+.rnum tr:first-child td{border-top:0}
+.rjump{margin:12px 0 4px}.rjump .chip{height:30px;font-size:13px;padding:0 10px}
+section[id]{scroll-margin-top:64px}
+.tline{padding:14px 0!important}.tline .tname{justify-content:space-between;margin-bottom:6px}
+.tline .tname b{font:600 16px/22px var(--font)}.tread{margin-top:6px!important}
+.pres>summary{margin:6px 0 0;font:400 13px/18px var(--font);color:var(--ink-3)}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 """
 

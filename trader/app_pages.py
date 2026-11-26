@@ -609,8 +609,58 @@ def waiting_card(x: Extras, demo: bool, now: datetime | None = None) -> str:
     return section("Needs your approval", "".join(out) + actions_note(x, demo), "waitcard")
 
 
-def _urgent(x: Extras, now: datetime) -> bool:
-    return any((w.by - now).total_seconds() < 2 * 3600 for w in x.waiting)
+def needs_items(v: Any, x: Extras) -> list[tuple[str, str, str, str]]:
+    """What the owner has to look at now, most serious first: (tone, text, detail, link).
+    Read only from what the screens already show (safety, the update card, late jobs,
+    the owner-presence clock); the approval card is separate (``waiting_card``)."""
+    out: list[tuple[str, str, str, str]] = []
+    lvl = getattr(v, "safety", "NORMAL")
+    if lvl != "NORMAL":
+        out.append(("bad" if lvl in ("KILLED", "HALTED_INTEGRITY") else "wait",
+                    SAFETY_WORDS.get(lvl, str(lvl)), "Controls: see why, or resume", "/act"))  # fmt: skip
+    ops = x.ops
+    for f in getattr(ops, "fresh", None) or []:
+        if f.bad:
+            out.append(("bad", f"{f.name} {f.status}", "Tap for Health", "/health"))
+    u = x.update
+    if safe(lambda: int(u.get("ahead") or 0) > 0, False) and u.get("auto") != "auto":
+        strat = bool(u.get("strategy", True))
+        out.append(("wait", ("A strategy update" if strat else "An app update")
+                    + " is waiting for your approval", "Read what changes, then approve or leave it",
+                    "/strategy"))  # fmt: skip
+    p = x.presence
+    if p is not None and p.tracking and p.last is not None and p.pause_at is not None:
+        if v.now >= p.pause_at:
+            out.append(("bad", "Buying is paused: no action from you for "
+                        f"{plural(p.days, 'day')}", "Controls: Resume with your code", "/act"))  # fmt: skip
+        elif p.warn_at is not None and v.now >= p.warn_at:
+            out.append(("wait", f"Tap I'm here before {p.pause_at.astimezone(ASX_TZ):%a %d %b}",
+                        "or buying pauses by itself", "/act/confirm?a=here"))  # fmt: skip
+    return out
+
+
+def needs_card(v: Any, x: Extras) -> str:
+    """Home's answer to "what do I need to do": the things that need the owner, or one
+    calm line that nothing does (the approval card sits directly above it)."""
+    items = needs_items(v, x)
+    nd = getattr(v, "next_decision", None)
+    nxt = f"Next decision: {nd:%a %-d %b}, 22:20." if nd else ""
+    if not items:
+        if x.waiting:
+            return ""
+        return ('<section class="needs calm" data-needs="0"><p class="allok">'
+                f'{icon("check")}<span><b>Nothing needs you right now.</b>'
+                + (f' <span class="sub">{e(nxt)}</span>' if nxt else "")
+                + "</span></p></section>")  # fmt: skip
+    rows = "".join(
+        f'<li><a class="nrow" href="{e(href)}"{"" if href.startswith("/act") else " data-nav"}>'
+        f'<span class="sd {t}"></span><span class="grow"><b>{e(text)}</b>'
+        f'<span class="sub">{e(detail)}</span></span>{chev()}</a></li>'
+        for t, text, detail, href in items
+    )
+    return (f'<section class="needs" data-needs="{len(items)}"><h2>'
+            f'{"Also needs you" if x.waiting else "Needs you"}</h2>'
+            f'<ul class="list nlist">{rows}</ul></section>')  # fmt: skip
 
 
 def _srow(label: str, value: str, body: str = "", href: str = "", tone: str = "") -> str:
@@ -681,7 +731,6 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
         + "</dl>"
     )
     wait = waiting_card(x, v.demo, v.now)
-    urgent = wait and _urgent(x, v.now)
     # status rows: the full cards stay one tap away (progressive disclosure, BF-D73)
     lvl = v.safety
     stone = (
@@ -714,34 +763,34 @@ def home(v: Any, x: Extras) -> str:  # noqa: PLR0915 - the Home screen in one pl
     if wi:
         rows.append(_srow("What if", "the market moves?", wi))
     ops = x.ops
-    score = jobs_note = ""
+    score = know = ""
     if ops is not None:  # BF-D75 / BF-D77: the honest scoreboard first, late jobs flagged
         from trader import app_ops
 
         score = app_ops.score_card(ops, v)
-        jobs_note = app_ops.fresh_note(ops)
         fr = app_ops.fresh_row(ops)
         if fr:
             rows.append(fr)
-        score += ops.know  # BF-D89: "What we know" directly under the scoreboard
+        know = ops.know  # BF-D89: "What we know" under the scoreboard and "Needs you"
         rows.append(app_ops.testing_row())  # BF-D89: replaces the folded research lines
     rows.append(_srow("Controls", "Pause, stop or kill", href="/act"))
     rows += dr_rows(v, x)  # BF-D82 / BF-D83
     status = section("Status", f'<ul class="srows">{"".join(rows)}</ul>')
     foot = "<footer>Not shown to beat the index.</footer>"
+    # the order answers, top down: am I winning (scoreboard), what do I need to do (the
+    # approval card and "Needs you"), what is happening (what we know, value, chart, status)
+    todo = wait + needs_card(v, x)
     col_a = (
         lock_note(x)
-        + jobs_note
         + (f'<div class="o0">{score}</div>' if score else "")
+        + (f'<div class="o0 todo">{todo}</div>' if todo else "")
+        + (f'<div class="o0">{know}</div>' if know else "")
         + f'<div class="hero-wrap o1">{hero_html}</div>'
-        + (f'<div class="o2">{wait}</div>' if urgent else "")
         + f'<div class="o3 perf" data-card="perf">{chart}</div>'
         + f'<div class="o5 homestats">{stats}</div>'
         + f'<div class="o7">{inbox_peek(x, v.book)}</div>'
     )
-    col_b = (
-        f'<div class="o4">{wait}</div>' if wait and not urgent else ""
-    ) + f'<div class="o6">{status}</div>'
+    col_b = f'<div class="o6">{status}</div>'
     body = (
         f'<div class="home"><div class="col-a">{col_a}</div><div class="col-b">{col_b}</div></div>'
     )
@@ -917,6 +966,24 @@ def msg_summary(title: str, kind: str, book: str = "") -> str:
     return (t[:1].upper() + t[1:]) if t else str(title)
 
 
+_LIST_ID = re.compile(r"\blist [0-9a-f]{8,}[;,]?\s*")
+
+
+def msg_line(r: Mapping[str, Any], book: str = "") -> str:
+    """The line under a message's kind. A daily report shows its result (the value, the
+    result on the money put in, the safety state) read from its own text; anything else
+    its tidied title, without the decision list's id."""
+    k = str(r["kind"])
+    if k == "report":
+        rep = safe(lambda: parse_daily_report(str(r.get("body") or "")), None)
+        if rep is not None:
+            lvl = str(rep["safety"])
+            words = SAFETY_WORDS.get(lvl, lvl).split(":")[0].split(" by ")[0]
+            return (f"{aud(rep['value'], dp=0)} · {pct(rep['result'])} on the money put in · "
+                    + (words.lower() if lvl == "NORMAL" else words))  # fmt: skip
+    return _LIST_ID.sub("", msg_summary(str(r["title"]), k, book)).strip(" ;,") or str(r["title"])
+
+
 def _msg_head(r: Mapping[str, Any], book: str, href: str = "") -> str:
     k = str(r["kind"])
     at = r["at"]
@@ -929,7 +996,7 @@ def _msg_head(r: Mapping[str, Any], book: str, href: str = "") -> str:
     return (
         f'{mic}<div class="mh"><span class="mk">{e(KIND_WORDS.get(k, k))}</span>'
         f'<span class="mt">{e(tm)}</span></div>'
-        f'<div class="t">{e(msg_summary(str(r["title"]), k, book))}</div>'
+        f'<div class="t">{e(msg_line(r, book))}</div>'
     )
 
 
@@ -1439,6 +1506,283 @@ FILTERS = (("all", "All"), ("alerts", "Alerts"), ("approval", "Approvals"),
            ("report", "Reports"), ("action", "My actions"))  # fmt: skip
 
 
+# ---- messages as reports (display only): the stored text is never changed; it is read
+# into figures for a card, and kept word for word under "Original message"
+
+_MONEY = r"A\$(-?[\d,]+(?:\.\d+)?)"
+_REP_HEAD = re.compile(r"^(?P<book>\S+) - (?P<day>\d{4}-\d{2}-\d{2}) - safety (?P<safety>\w+)$")
+_REP_VALUE = re.compile(rf"^Value {_MONEY} \(cash {_MONEY}\); capital in {_MONEY}; "
+                        r"result (?P<res>[+-][\d.]+)%$")  # fmt: skip
+_REP_BROK = re.compile(rf"^Brokerage to date {_MONEY} \((?P<p>[\d.]+)% of capital\)$")
+_REP_FIXED = re.compile(rf"^Fixed costs to date \(server, data\) {_MONEY} \((?P<p>[\d.]+)% of "
+                        r"capital\); result after all costs (?P<res>[+-][\d.]+)%$")  # fmt: skip
+_REP_TWIN = re.compile(rf"^Simulated twin {_MONEY} \(difference {_MONEY}\)$")
+_REP_RND = re.compile(r"^Simulated twin at the (?P<p>[\d.]+) percentile of (?P<n>\d+) random twins")
+_REP_A200 = re.compile(rf"^Same money in A200: {_MONEY}")
+_REP_HOLD = re.compile(rf"^\s+(?P<code>\S+)\s+(?P<q>-?\d+) @ (?P<px>\S+) = (?:{_MONEY}|no price)$")
+_REP_FILL = re.compile(rf"^\s+(?P<sg>[+-])(?P<q>\d+) (?P<code>\S+) @ (?P<px>\S+) comm {_MONEY}$")
+_REP_COUNT = re.compile(r"^(Holdings|Orders today|Fills today) \((\d+)\):$")
+_APP_ORDER = re.compile(rf"^\s*\d+\. (?P<side>BUY|SELL) (?P<q>\d+) (?P<code>\S+) (?P<typ>\S+)"
+                        rf"(?: lim (?P<lim>[\d.]+))?(?: \(ref [\d.]+, ~{_MONEY}\))?"
+                        r"(?P<rest>.*)$")  # fmt: skip
+_APP_BATCH = re.compile(r"^Batch (?P<id>\S+) \((?P<mode>\w+)\), decision (?P<d>\d{4}-\d{2}-\d{2}), "
+                        r"execution (?P<x>\d{4}-\d{2}-\d{2}):$")  # fmt: skip
+
+
+def _dec(text: str | None) -> Decimal | None:
+    try:
+        return Decimal(str(text).replace(",", "")) if text is not None else None
+    except ArithmeticError:
+        return None
+
+
+def parse_daily_report(  # noqa: PLR0912 - one branch per line of the report
+    body: str,
+) -> dict[str, Any] | None:
+    """The daily report's text (``trader.report.daily_report``) read back into figures.
+    Tolerant: a line it does not know is kept as words; without the header and the
+    value line it returns None and the screen shows the plain text."""
+    out: dict[str, Any] = {"banners": [], "notes": [], "holdings": [], "orders": [], "fills": [],
+                           "breaks": [], "flags": []}  # fmt: skip
+    part = "top"
+    for raw in str(body).splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        m = _REP_COUNT.match(line)
+        if m:
+            part = {"Holdings": "holdings", "Orders today": "orders", "Fills today": "fills"}[m[1]]
+            out[part + "_n"] = int(m[2])
+            continue
+        if line.startswith("RECONCILIATION BREAKS"):
+            part = "breaks"
+            continue
+        if line.startswith("Flags: "):
+            out["flags"] = [t.strip() for t in line[7:].split(";") if t.strip()]
+            part = "end"
+            continue
+        if part == "holdings":
+            m = _REP_HOLD.match(line)
+            if m:
+                out["holdings"].append((m["code"], int(m["q"]), _dec(m["px"]), _dec(m[4])))
+                continue
+        if part == "fills":
+            m = _REP_FILL.match(line)
+            if m:
+                out["fills"].append((m["sg"] == "+", int(m["q"]), m["code"], _dec(m["px"]),
+                                     _dec(m[5])))  # fmt: skip
+                continue
+        if part in ("orders", "breaks") and line.startswith("  "):
+            out[part].append(line.strip())
+            continue
+        if m := _REP_HEAD.match(line):
+            out.update(book=m["book"], day=date.fromisoformat(m["day"]), safety=m["safety"])
+        elif m := _REP_VALUE.match(line):
+            out.update(value=_dec(m[1]), cash=_dec(m[2]), capital=_dec(m[3]),
+                       result=float(m["res"]) / 100)  # fmt: skip
+        elif m := _REP_BROK.match(line):
+            out.update(brokerage=_dec(m[1]), brokerage_pct=float(m["p"]) / 100)
+        elif m := _REP_FIXED.match(line):
+            out.update(fixed=_dec(m[1]), fixed_pct=float(m["p"]) / 100,
+                       after=float(m["res"]) / 100)  # fmt: skip
+        elif m := _REP_TWIN.match(line):
+            out.update(twin=_dec(m[1]), twin_diff=_dec(m[2]))
+        elif m := _REP_RND.match(line):
+            out.update(rnd_pct=float(m["p"]), rnd_n=int(m["n"]))
+        elif m := _REP_A200.match(line):
+            out["a200"] = _dec(m[1])
+        elif "day" not in out:
+            out["banners"].append(line)
+        else:
+            out["notes"].append(line.strip())
+    if out.get("value") is None or "day" not in out:
+        return None
+    return out
+
+
+def _orig(body: str) -> str:
+    return ('<details class="orig"><summary>Original message</summary>'
+            f"<pre>{e(body)}</pre></details>")  # fmt: skip
+
+
+def _plain_money(t: str) -> str:
+    """Words for the eye: "A$" is "$" (every amount is AUD), ISO dates as "29 Feb 2024"."""
+    t = _ISO.sub(lambda m: day(m.group(0)), t.replace("A$", "$"))
+    return t.replace(">= ", "at least ")
+
+
+def daily_report_card(  # noqa: PLR0912 - one block per part of the card
+    body: str,
+) -> str | None:
+    """The daily report as a card: the result first, then costs, the twin check and the
+    holdings one tap away. None when the text is not a daily report this reads."""
+    r = parse_daily_report(body)
+    if r is None:
+        return None
+    lvl = str(r["safety"])
+    st = "ok" if lvl == "NORMAL" else ("bad" if lvl in ("KILLED", "HALTED_INTEGRITY") else "amber")
+    res = r["result"]
+    arr = {"up": '<span class="arr">▲</span>', "down": '<span class="arr">▼</span>'}.get(
+        tone(res), ""
+    )
+    head = (
+        f'<div class="reph"><span class="sub">Close of {r["day"]:%a %-d %b %Y}</span>'
+        f'<span class="pill {st}">{e(SAFETY_WORDS.get(lvl, lvl).split(":")[0].split(" by ")[0])}'
+        "</span></div>"
+        f'<div class="bignum num">{aud(r["value"], dp=0)}</div>'
+        f'<div class="bigsub"><span class="{tone(res)}">{arr}{pct(res)}</span> on the '
+        f"{aud(r['capital'], dp=0)} put in, before running costs</div>"
+    )
+    stats = []
+    if r.get("after") is not None:
+        stats.append(stat("After all costs", pct(r["after"]), "brokerage and fixed costs",
+                          tone(r["after"])))  # fmt: skip
+    if r.get("a200") is not None:
+        stats.append(stat("Same money in A200", aud(r["a200"], dp=0), "no fixed costs"))
+    stats.append(stat("Cash", aud(r["cash"], dp=0), "not invested"))
+    if r.get("twin") is not None:
+        d = r.get("twin_diff") or Decimal(0)
+        stats.append(stat("Simulated twin", aud(r["twin"], dp=0),
+                          "level with the book" if abs(d) < 1 else
+                          f"book {aud(abs(d), dp=0)} {'ahead' if d > 0 else 'behind'}"))  # fmt: skip
+    rows = []
+    if r.get("brokerage") is not None:
+        rows.append(("Brokerage so far", aud(r["brokerage"]),
+                     f"{r['brokerage_pct'] * 100:.1f}% of the money put in"))  # fmt: skip
+    if r.get("fixed") is not None:
+        rows.append(("Fixed costs so far", aud(r["fixed"]),
+                     f"{r['fixed_pct'] * 100:.1f}% · server and data"))  # fmt: skip
+    if r.get("rnd_pct") is not None:
+        p_ = r["rnd_pct"]
+        rows.append(("Twin check", "Passes" if p_ >= 10 else "Below the bar",
+                     f"ahead of {p_:.0f}% of {r['rnd_n']} random portfolios (needs 10%)"))  # fmt: skip
+    kv = "".join(f"<li><span>{e(k)}</span><b>{e(val)}<small>{e(sub)}</small></b></li>"
+                 for k, val, sub in rows)  # fmt: skip
+    notes = "".join(f"<p class='caption'>{e(_plain_money(t))}</p>" for t in r["notes"])
+    hold = ""
+    if r["holdings"]:
+        trs = "".join(
+            f"<tr><td><b>{e(code)}</b></td><td class='r'>{q:,}</td><td class='r'>{fmt_px(px_)}</td>"
+            f"<td class='r'>{aud(val, dp=0) if val is not None else 'no price'}</td></tr>"
+            for code, q, px_, val in r["holdings"])  # fmt: skip
+        hold = (f'<details class="fold"><summary>Holdings · {len(r["holdings"])}</summary>'
+                "<table class='rtab'><thead><tr><th>Share</th><th class='r'>Number</th>"
+                f"<th class='r'>Price</th><th class='r'>Value</th></tr></thead><tbody>{trs}"
+                "</tbody></table></details>")  # fmt: skip
+    elif r.get("holdings_n") == 0:
+        hold = "<p class='repline'><span>Holdings</span><b>none</b></p>"
+    if r["orders"]:
+        lis = "".join(f"<li>{e(t)}</li>" for t in r["orders"])
+        orders = (f'<details class="fold"><summary>Orders today · {len(r["orders"])}</summary>'
+                  f'<ul class="bul small mono">{lis}</ul></details>')  # fmt: skip
+    else:
+        orders = "<p class='repline'><span>Orders today</span><b>none</b></p>"
+    if r["fills"]:
+        lis = "".join(
+            f"<li>{'Bought' if buy else 'Sold'} {q:,} {e(code)} at {fmt_px(px_)}"
+            f"<span class='sub'> · fee {aud(fee)}</span></li>"
+            for buy, q, code, px_, fee in r["fills"])  # fmt: skip
+        fills = (f'<p class="repline"><span>Trades today</span><b>{len(r["fills"])}</b></p>'
+                 f'<ul class="bul small">{lis}</ul>')  # fmt: skip
+    else:
+        fills = "<p class='repline'><span>Trades today</span><b>none</b></p>"
+    alarm = ""
+    if r["breaks"]:
+        alarm += ("<div class='note bad'><b>The books do not match the broker</b> (trading is "
+                  "halted until checked):<ul class='bul'>"
+                  + "".join(f"<li>{e(t)}</li>" for t in r["breaks"]) + "</ul></div>")  # fmt: skip
+    if r["flags"]:
+        alarm += ("<div class='note'><b>Flags</b><ul class='bul'>"
+                  + "".join(f"<li>{e(_plain_money(t))}</li>" for t in r["flags"]) + "</ul></div>")  # fmt: skip
+    ban = " ".join(r["banners"])
+    return (
+        f'<div class="rep">{head}{alarm}<dl class="stats two">{"".join(stats)}</dl>'
+        + (f'<ul class="kv">{kv}</ul>' if kv else "")
+        + notes
+        + hold
+        + orders
+        + fills
+        + (f"<p class='caption'>{e(ban)}</p>" if ban else "")
+        + _orig(body)
+        + "</div>"
+    )
+
+
+def approval_card(body: str, channel: str = "app") -> str | None:
+    """An approval request as a list of orders (the buttons stay on the batch screen)."""
+    orders = []
+    head = ""
+    rest: list[str] = []
+    for raw in str(body).splitlines():
+        line = raw.rstrip()
+        if m := _APP_BATCH.match(line):
+            head = f"Decided {day(m['d'])} · orders go on {day(m['x'])}"
+        elif m := _APP_ORDER.match(line):
+            orders.append(m)
+        elif line.startswith(("Reply /ok", "Or tap a button")) and channel == "app":
+            continue  # Telegram's instructions: the channel is the app
+        elif line.strip() and line.strip() not in ("PAPER", "LIVE"):
+            rest.append(line.strip())
+    if not orders:
+        return None
+    lis = "".join(
+        f'<li><span class="side">{"Buy" if m["side"] == "BUY" else "Sell"}</span> '
+        f"<b>{int(m['q']):,} {e(m['code'])}</b>"
+        + (f" <span class='sub'>limit {fmt_px(_dec(m['lim']))}</span>" if m["lim"] else "")
+        + (f"<span class='rr'>≈ {aud(_dec(m[6]), dp=0)}</span>" if m[6] else "")
+        + "</li>"
+        for m in orders
+    )
+    extra = "".join(f"<p class='caption'>{e(_plain_money(t))}</p>" for t in rest[1:])
+    return (
+        f'<div class="rep"><p class="repline"><span>{e(head or "Orders")}</span>'
+        f"<b>{plural(len(orders), 'order')}</b></p>"
+        f'<ul class="list olist">{lis}</ul>{extra}{_orig(body)}</div>'
+    )
+
+
+def text_card(body: str) -> str:
+    """Any other message as readable text: paragraphs, "- " bullets, a short line before
+    bullets as a heading. The words are the message's own."""
+    out: list[str] = []
+    bullets: list[str] = []
+
+    def flush() -> None:
+        if bullets:
+            out.append("<ul class='bul'>" + "".join(f"<li>{t}</li>" for t in bullets) + "</ul>")
+            bullets.clear()
+
+    lines = [ln.rstrip() for ln in str(body).splitlines()]
+    for i, line in enumerate(lines):
+        t = e(_plain_money(line.strip()))
+        if not t:
+            flush()
+        elif line.lstrip().startswith("- "):
+            bullets.append(e(_plain_money(line.lstrip()[2:].strip())))
+        else:
+            flush()
+            nxt = lines[i + 1].lstrip() if i + 1 < len(lines) else ""
+            out.append(f'<p class="h3">{t}</p>' if nxt.startswith("- ") and len(line) < 90
+                       else f"<p>{t}</p>")  # fmt: skip
+    flush()
+    return f'<div class="rep txt">{"".join(out)}</div>'
+
+
+def message_body(r: Mapping[str, Any], channel: str = "app") -> str:
+    """The opened message: a report card where the text is one the app knows, readable
+    text otherwise; never fails (the plain text is the fallback)."""
+    body = str(r.get("body") or "")
+    k = str(r.get("kind") or "")
+    card: str | None = None
+    if k == "report":
+        card = safe(lambda: daily_report_card(body), None)
+    elif k == "approval":
+        card = safe(lambda: approval_card(body, channel), None)
+    if card is None:
+        card = safe(lambda: text_card(body), "") or f"<pre>{e(body)}</pre>"
+    return card
+
+
 def inbox(v: Any, x: Extras, kind: str = "all") -> str:
     chips = "".join(
         f'<a class="chip{" on" if k == kind else ""}" href="/inbox?kind={k}" data-filter="{k}">'
@@ -1463,7 +1807,7 @@ def inbox(v: Any, x: Extras, kind: str = "all") -> str:
             f'<li class="msg {e(k)}" id="m{int(r["id"])}" data-inbox-id="{int(r["id"])}" '
             f'data-kind="{e(k)}"{" hidden" if hide else ""}><details><summary>'
             f'<span class="grow">{_msg_head(r, v.book)}</span>{chev()}</summary>'
-            f"<pre>{e(r['body'])}</pre>"
+            f"{message_body(r, x.channel)}"
             f'<p class="meta">{meta}{" · " + go if go else ""}</p></details></li>'
         )
         # review item 18: quiet daily reports older than a week fold into one row
