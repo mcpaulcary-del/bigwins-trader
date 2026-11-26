@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89, automatic app updates BF-D90)
+# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89, automatic app updates BF-D90, report display BF-D91, News tab BF-D92)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -135,6 +135,18 @@ Real money around March 2027.
    (`UI_ONLY` files), so it applies by itself (BF-D90). The daily report's text
    (`trader/report.py`) and the share pages (`trader/share_pages.py`, `trader/app_viz.py`,
    `trader/app_more.py`) were not touched: those files need the owner's approval.
+   **26 Nov 2026 (BF-D92, owner request "a separate button on the bottom saying news")**: a
+   sixth tab, **News** (between Holdings and Orders): for the shares the book holds, whether
+   there is news, the held shares against A200 on the day, big moves and halts (5% or more,
+   no trade, halt or suspension, takeover or scheme notice) and one feed of announcements
+   (14 days, newest first, "Price sensitive" marker, a PDF link when the archive stores the
+   PDF), with an unread dot for a new price-sensitive announcement. Read-only, from what the
+   private info archive already stores plus the closes the app already has; nothing new is
+   fetched, the archive job is unchanged. "Information only, not a trading signal"; NEWS-C
+   ratings and cause labels are never shown. App-only (`UI_ONLY` files). While the archive
+   job is off it says "Announcements are not collected yet". `deploy/info_archive.py` still
+   stores PDFs for director-interest and capital-raising notices only: the 25 Nov widening
+   (price-sensitive PDFs) needs a deploy change with the owner's approval.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
