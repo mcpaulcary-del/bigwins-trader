@@ -4,7 +4,9 @@ name: ci
 
 on:
   push:
-    branches: [main, bigwins-fast]  # review F13: every push to the server's branch is checked
+    # review F13: every push to the server's branch is checked. server-move: the BF-D93
+    # build branch, checked before its review and merge (remove it from this list then)
+    branches: [main, bigwins-fast, server-move]
   pull_request:
 
 permissions:
