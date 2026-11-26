@@ -12,3 +12,5 @@ scripts
 migrations/**/__pycache__
 .claude
 *.sqlite
+# BF-D93: the paper record's code is not part of the trader image (its own container)
+record
