@@ -1,4 +1,4 @@
-# Alerts 2026-11-26 03:20Z (indicative, delayed; no trading decision)
+# Alerts 2026-11-26 05:20Z (indicative, delayed; no trading decision)
 
 - STALE/NO TRADE TODAY (quote not from this session): ['OML']
 - INDICATIVE top-30 band vs 2026-11-16: entering ['AIA', 'JHX'] leaving ['DDR', 'TWE']
