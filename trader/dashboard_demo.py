@@ -239,6 +239,26 @@ DEMO_3Y = (  # made-up Appendix 3Y texts in the layout pdftotext gives (syntheti
 )
 
 
+def demo_pdf(text: str) -> bytes:
+    """A one-page PDF saying ``text`` (made up; nothing is fetched)."""
+    safe_t = "".join(c for c in text if c.isalnum() or c in " :-.,")[:80]
+    stream = f"BT /F1 14 Tf 40 780 Td ({safe_t}) Tj ET".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]  # fmt: skip
+    out, offs = b"%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offs)
+    return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objs) + 1, xref)  # fmt: skip
+
+
 DEMO_BOOKS = {"REF": "EMG2_18_REF", "EMG2": "EMG2_10k", "H82": "H82_10k", "MOM": "MOM_10k",
               "BLIND3": "BLIND3_10k", "SWEEP": "EMG2_18_SIM_BT_C6_SWEEP",
               "WIDE": "EMG2_18_SIM_BT_C6_WIDE", "FIP": "EMG2_18_SIM_BT_C6_FIP",
@@ -276,13 +296,25 @@ def demo_ops(j: Journal, info_dir: Path, scorecard: Path, held: list[str],
                 continue
             head, ps = DEMO_HEADS[(i + c_i) % len(DEMO_HEADS)]
             ids = f"{9_000_000 + i * 100 + c_i:08d}"
-            rows.append([code, f"{d:%d/%m/%Y}", f"{8 + c_i}:{15 + i % 40:02d} am", ps, head, ids,
-                         int("Interest" in head or "issue" in head)])  # fmt: skip
+            hr = 8 + c_i
+            rows.append([code, f"{d:%d/%m/%Y}",
+                         f"{hr - 12 * (hr > 12)}:{15 + i % 40:02d} {'pm' if hr >= 12 else 'am'}",
+                         ps, head, ids, int("Interest" in head or "issue" in head)])  # fmt: skip
+            if ps:  # BF-D92: a made-up one-page PDF, as the archive stores them
+                (dd / "pdf" / f"{code}_{ids}.pdf").write_bytes(demo_pdf(f"DEMO: {head}"))
             if "Interest" in head:
                 t = DEMO_3Y[(i + c_i) % 2].format(
                     d=f"{d:%d %B %Y}", n=10000 + 500 * i, v=5250.0 + i
                 )
                 (dd / "pdf" / f"{code}_{ids}.txt").write_text(t)
+        if i == len(days) - 2:  # BF-D92: the News tab's latest day has something to show
+            for c_i, (code, k) in enumerate(zip(held[6:9], (2, 5, 4), strict=False)):
+                head, ps = DEMO_HEADS[k]
+                ids = f"{9_500_000 + c_i:08d}"
+                rows.append([code, f"{d:%d/%m/%Y}", f"{9 + c_i}:{5 + 20 * c_i:02d} am", ps, head,
+                             ids, 0])  # fmt: skip
+                if ps:
+                    (dd / "pdf" / f"{code}_{ids}.pdf").write_bytes(demo_pdf(f"DEMO: {head}"))
         rows += [[f"Z{n:02d}", f"{d:%d/%m/%Y}", "9:00 am", 0, "Daily fund update", f"{n:08d}", 0]
                  for n in range(3)]  # fmt: skip
         with (dd / "list.csv").open("w", newline="") as f:

@@ -185,6 +185,7 @@ class Extras:
     actions_locked: bool = False
     passphrase_set: bool | None = None  # None = not known yet (the trader has not started)
     reminders: dict[str, date] = field(default_factory=dict)
+    news_latest: int = 0  # BF-D92: the newest price-sensitive notice on a held share
 
     @property
     def latest_inbox(self) -> int:
@@ -572,7 +573,7 @@ def shell(v: Any, x: Extras, title: str, body: str, active: str) -> str:
     return page(title, body, active, demo=v.demo, subtitle=sub, notes=notes,
                 latest_inbox=x.latest_inbox, live=live,
                 inbox_ids=[int(r["id"]) for r in x.inbox[:99]],
-                waiting=sum(w.n for w in x.waiting))  # fmt: skip
+                waiting=sum(w.n for w in x.waiting), latest_news=x.news_latest)  # fmt: skip
 
 
 def actions_note(x: Extras, demo: bool) -> str:

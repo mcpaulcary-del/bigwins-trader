@@ -18,6 +18,7 @@ THEME = "#0f172a"  # BF-D73: icon navy (the light theme colour is the page backg
 TABS: tuple[tuple[str, str, str], ...] = (
     ("home", "/", "Home"),
     ("holdings", "/holdings", "Holdings"),
+    ("news", "/news", "News"),  # BF-D92
     ("orders", "/orders", "Orders"),
     ("inbox", "/inbox", "Inbox"),
     ("server", "/server", "Server"),
@@ -26,6 +27,7 @@ ICONS = {
     "home": '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
     "holdings": '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     "orders": '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6"/>',
+    "news": '<path d="M4 5h13v14a1 1 0 0 0 2 0V9h2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM8 9h5M8 13h5M8 17h5"/>',
     "inbox": '<path d="M3 13l3-9h12l3 9v7H3zM3 13h5l1 3h6l1-3h5"/>',
     "server": '<path d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01"/>',
     "gear": '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1'
@@ -136,6 +138,7 @@ def page(
     live: bool = False,
     confirm: bool = False,
     waiting: int = 0,
+    latest_news: int = 0,
 ) -> str:
     """One whole page: header (icon, name, the DEMO / PAPER / LIVE chip, search, settings),
     the body in ``<main>`` (a footer line with the book, the time and a refresh link) and
@@ -146,7 +149,7 @@ def page(
         + (' aria-current="page"' if key == active else "")
         + ">"
         f"{icon(key)}<span>{e(label)}</span>"
-        + ('<b class="dot" hidden></b>' if key == "inbox" else "")
+        + ('<b class="dot" hidden></b>' if key in ("inbox", "news") else "")
         + (
             f'<b class="dot n" aria-label="{plural(waiting, "order")} waiting">{waiting}</b>'
             if key == "orders" and waiting > 0
@@ -205,7 +208,7 @@ def page(
         f'<link rel="stylesheet" href="/app.css"></head>'
         f'<body data-tab="{e(active)}" data-latest-inbox="{latest_inbox}"'
         f' data-inbox-ids="{",".join(str(int(i)) for i in inbox_ids)}"'
-        f' data-waiting="{int(waiting)}"'
+        f' data-waiting="{int(waiting)}" data-latest-news="{int(latest_news)}"'
         f' data-refresh="{1 if refresh else 0}"{" class=notabs" if confirm else ""}>'
         f'{head}{strip}<div id="ptr" class="ptr" aria-hidden="true"><svg viewBox="0 0 24 24"><circle '
         'cx="12" cy="12" r="9" stroke-dasharray="0 63" transform="rotate(-90 12 12)"/></svg></div>'
@@ -868,6 +871,22 @@ section[id]{scroll-margin-top:64px}
 .tline{padding:14px 0!important}.tline .tname{justify-content:space-between;margin-bottom:6px}
 .tline .tname b{font:600 16px/22px var(--font)}.tread{margin-top:6px!important}
 .pres>summary{margin:6px 0 0;font:400 13px/18px var(--font);color:var(--ink-3)}
+/* News (BF-D92): six tabs still fit at 360 px; the feed of announcements on held shares */
+.tab{min-width:0}.tab span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.newshead .verdict{margin:0 0 4px}.newshead .bigsub{margin:0}
+.mkt{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:14px 0 0;padding-top:12px;
+border-top:1px solid var(--line);font:400 15px/22px var(--font)}
+.mkt .mk1{white-space:nowrap}.mkt .mk1>span{font-weight:600;font-variant-numeric:tabular-nums}
+.mkt .sub{flex-basis:100%}
+.ncode{font:500 12px/16px var(--font);color:var(--ink-3);letter-spacing:.02em;white-space:nowrap}
+.nmv{flex:none;font:600 15px/20px var(--font);white-space:nowrap}
+.moves .nrow .pill{flex:none}.moves .nrow .sub{overflow-wrap:anywhere}
+.nws .nwho{font:600 14px/20px var(--font);color:var(--ink);text-decoration:none}
+.nws div{overflow-wrap:anywhere}.nws .pills{align-items:center;margin-top:6px}
+.pdfl{display:inline-flex;align-items:center;gap:4px;min-height:32px;padding:0 10px;margin:-5px 0;border-radius:999px;
+border:1px solid var(--line-strong);font:600 12px/16px var(--font);color:var(--ink);text-decoration:none}
+.pdfl .ic{width:14px;height:14px}
+.newsfeed .chips{margin-bottom:4px}.newsfeed .list li.day:first-child{margin-top:8px}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 """
 
@@ -889,6 +908,9 @@ function badge(){
  var ids=(document.body.dataset.inboxIds||'').split(',').filter(Boolean).map(Number);
  if(document.body.dataset.tab==='inbox'&&latest){store('bw.seen',latest);}
  $$('[data-inbox-id]').forEach(function(m){var id=+m.dataset.inboxId;m.classList.toggle('unread',id>seen&&read.indexOf(id)<0);});
+ var nl=+(document.body.dataset.latestNews||0),nd=document.querySelector('.tab[data-tab=news] .dot');
+ if(document.body.dataset.tab==='news'&&nl)store('bw.newsSeen',nl);
+ if(nd){if(nl>+(store('bw.newsSeen')||0)){nd.hidden=false;nd.setAttribute('aria-label','New price-sensitive announcement');}else nd.hidden=true;}
  var d=document.querySelector('.tab[data-tab=inbox] .dot');if(!d)return;
  var n=ids.length?ids.filter(function(i){return i>seen&&read.indexOf(i)<0;}).length:Math.max(latest-seen,0);
  if(document.body.dataset.tab==='inbox')n=0;
@@ -1180,6 +1202,7 @@ function search(){var b=document.getElementById('searchbtn');if(!b||b.dataset.b)
  q.addEventListener('input',render);res.addEventListener('click',function(ev){if(ev.target.closest('a'))close();});b.addEventListener('click',open);}
 var TOUR=[['home','Home','Your account value, today\'s change and how the book compares with the index. Batches waiting for your approval show up here first.'],
  ['holdings','Holdings','What you hold: the heatmap, each share\'s detail, the Shares list with the historical range of similar picks, and Tax.'],
+ ['news','News','Announcements, big moves and halts on the shares you hold. Information only, not a trading signal.'],
  ['orders','Orders','Each month-end decision and its orders, the calendar of decision days and cut-offs, and a replay of how a month was decided.'],
  ['inbox','Inbox','Every message from the trader: approvals, alerts and the daily report. A dot marks unread ones.'],
  ['server','Server','The server\'s health, backups, updates and the Pause / Kill / Stop controls. Swipe left or right to move between tabs.']];
@@ -1203,7 +1226,7 @@ function skeleton(){main.innerHTML='<div class="skel s"></div><div class="skel">
 function swap(html,url,push){
  var doc=new DOMParser().parseFromString(html,'text/html');var m=doc.getElementById('main');if(!m){location.href=url;return;}
  var old=push?null:tileValues();main.innerHTML=m.innerHTML;document.title=doc.title;setTab(doc.body.dataset.tab||'');
- document.body.dataset.latestInbox=doc.body.dataset.latestInbox||0;document.body.dataset.inboxIds=doc.body.dataset.inboxIds||'';document.body.dataset.refresh=doc.body.dataset.refresh||'1';document.body.dataset.waiting=doc.body.dataset.waiting||'0';
+ document.body.dataset.latestInbox=doc.body.dataset.latestInbox||0;document.body.dataset.inboxIds=doc.body.dataset.inboxIds||'';document.body.dataset.refresh=doc.body.dataset.refresh||'1';document.body.dataset.waiting=doc.body.dataset.waiting||'0';document.body.dataset.latestNews=doc.body.dataset.latestNews||'0';
  if(push)history.pushState({},'',url);enhance();if(old)bumpNumbers(old);}
 function go(url,push){main.classList.add('fade');var sk=setTimeout(skeleton,180);
  fetch(url,{credentials:'same-origin'}).then(function(r){if(!r.ok&&r.status!==404)throw r;return r.text();})
