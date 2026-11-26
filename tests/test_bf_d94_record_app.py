@@ -489,7 +489,9 @@ def test_BF_D93_app_wiring() -> None:
     cli = (REPO / "trader/bfast_cli.py").read_text()
     assert '"autoupdate", "record"]' in cli and "tell_record(j, notifier.notify" in cli
     compose = (REPO / "deploy/docker-compose.yml").read_text()
-    assert "${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro" in compose
+    assert (
+        compose.count("${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro") == 2
+    )  # app + trader
     assert "${RELAY_VIEW_DIR:-/var/lib/bigwins/relay/inbox/validated}:/data/relay:ro" in compose
     from trader.bfast_config import load_bfast_config
 

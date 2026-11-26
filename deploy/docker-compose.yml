@@ -112,6 +112,9 @@ services:
       - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
       # BF-D78: the private info archive (written by the host job, read here for the digest)
       - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
+      # BF-D94: the paper record's display copy, read-only: only for the plain numbers of the
+      # "Paper record booked" Inbox message (never read by a decision)
+      - ${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro
       # BF-D81 (S3 b): the previous-version twins' own volume (written by the worker's
       # throwaway dry runs, never the live output), read here for the app
       - twins:/data/twins:ro
