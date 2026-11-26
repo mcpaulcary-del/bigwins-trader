@@ -82,7 +82,15 @@ RISK_REDUCING = frozenset({"pa", "ki", "so", "lock"})
 # BF-D64 / BF-D65: low-risk server jobs: a confirm screen, no code (they change nothing the
 # trader trades with); still signed for the worker, still only for allowed log-ins
 NO_CODE_SERVER = frozenset(
-    {"backup_now", "restore_test", "fetch", "hc_ping", "info_archive", "prev_twin"}
+    {
+        "backup_now",
+        "restore_test",
+        "fetch",
+        "hc_ping",
+        "info_archive",
+        "prev_twin",
+        "record_daily",  # BF-D93
+    }
 )  # allowed even when the app's address changed
 ONE_TAP = frozenset({"pa", "st", "here", "lock"})
 # BF-D83 (DR review M2): the riskiest actions also need the memorised passphrase (once set)
@@ -131,6 +139,7 @@ SRV_TITLE = {
     "hc_ping": ("Healthchecks ping", "Send the ping"),
     "info_archive": ("Collect announcements", "Collect now"),
     "prev_twin": ("Previous-version twin", "Run it now"),
+    "record_daily": ("Book the paper day", "Book it now"),  # BF-D93
     "autoupdate_on": ("Automatic app updates", "Turn them on"),  # BF-D90
     "autoupdate_off": ("Automatic app updates", "Turn them off"),
 }  # fmt: skip
@@ -1198,7 +1207,11 @@ class Control:
         strat = self._is_strategy(act)
         rows = []
         if act == "update":
-            kind = "Strategy update" if strat else "App-only update (the strategy does not change)"
+            kind = "App-only update (the strategy does not change)"
+            if strat:
+                kind = "Strategy update"
+            elif u.get("record"):  # BF-D93
+                kind = "Paper-record update (the trader and its strategy do not change)"
             rows.append(f"<p><b>{e(kind)}</b> · {plural(_ahead(u), 'new commit')}</p>")
             notes = u.get("notes") or {}
             for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),

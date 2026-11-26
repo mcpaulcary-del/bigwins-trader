@@ -244,6 +244,10 @@ class Sources:
     # BF-D90: demo only: the server's REAL automatic-update status (a read-only file the
     # host worker writes; commit ids, titles, times and reasons only)
     autoupdate_status: Path | None = None
+    # BF-D94: the paper record's display copy (kept by the host worker) and the validated
+    # relay inbox with the cloud's nightly report; both read-only
+    record_view: Path | None = None
+    relay_dir: Path | None = None
 
 
 def _jobs(j: Journal, prefix: str, newest: int | None = None) -> list[tuple[str, Any, datetime]]:
@@ -809,7 +813,8 @@ class Dashboard:
     SCREENS = ("/", "/holdings", "/orders", "/inbox", "/server", "/settings", "/tax", "/tax.csv",
                "/strategy", "/setup", "/backups", "/accounts", "/shares",
                "/forecast-method", "/calendar", "/compare", "/search.json",
-               "/health", "/costs", "/digest", "/research", "/news")  # fmt: skip
+               "/health", "/costs", "/digest", "/research", "/news",
+               "/record", "/record/report", "/record/scorecard", "/record/costs")  # fmt: skip
 
     def share_ctx(self, v: View) -> Any:
         """BF-D66: what the share screens read (read-only)."""
@@ -886,6 +891,9 @@ class Dashboard:
             x.news_latest = app_pages.safe(lambda: _ops.news_stamp(src, v), 0)
         if path == "/news":
             return html_t, _ops.news_page(v, x, _ops.collect_news(src, v), qs).encode()
+        if path == "/record" or path.startswith("/record/"):  # BF-D94: the real paper record
+            out = _ops.record_screen(src, v, x, path, qs)
+            return None if out is None else (html_t, out.encode())
         sess: Sequence[date] = src.sessions() if src.sessions else []
         research = path == "/research" or path.startswith("/research/")
         if path in ("/", "/health", "/costs", "/digest", "/server", "/strategy") or research:

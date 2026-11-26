@@ -381,6 +381,9 @@ def _app_wiring(
         hooks.append(lambda now: tell_server_jobs(j, notifier))
         hooks.append(lambda now: tell_backups(j, notifier))  # BF-D64
         hooks.append(lambda now: tell_autoupdate(j, notifier.notify))  # BF-D90
+        hooks.append(
+            lambda now: tell_record(j, notifier.notify, cfg.research.record_view_dir)
+        )  # BF-D93
         hooks.append(lambda now: page_host(j, app.say, now))  # review F9
         sleep = ctl.wait
     hb = Heartbeat(ping_url(read_secret("healthchecks_url")), j, app.say,
@@ -548,6 +551,16 @@ def tell_backups(j: Journal, notifier: AppNotifier) -> int:
     return n
 
 
+def tell_record(j: Journal, notify: Callable[..., object], record_dir: Path | None) -> int:
+    """BF-D93: the paper record's Inbox messages (booked, report ready, compare, relay)."""
+    from trader.ops_hooks import tell_record as tell
+
+    try:
+        return tell(j, notify, record_dir)
+    except Exception:  # a message is never worth a crash of the trader's loop
+        return 0
+
+
 def tell_autoupdate(j: Journal, notify: Callable[..., object]) -> int:
     """BF-D90: each automatic-update event once (Inbox; a rollback or a refusal PAGEs)."""
     from trader.ops_hooks import tell_autoupdate as tell
@@ -704,6 +717,12 @@ def cmd_server_jobs(args: argparse.Namespace) -> int:  # noqa: PLR0911, PLR0912,
                                json.loads(sys.stdin.read() or "{}"), now)  # fmt: skip
         print("previous-version twin stored: " + ("ok" if rec["ok"] else "FAILED"))
         return 0
+    if args.op == "record":  # BF-D93: a paper-record job result / compare / report / relay
+        from trader.ops_hooks import record_record
+
+        ev = record_record(j, json.loads(sys.stdin.read() or "{}"), now)
+        print("record event stored: " + str(ev.get("kind") or "ignored"))
+        return 0
     if args.op == "autoupdate":  # BF-D90: an automatic app update applied / rolled back
         from trader.ops_hooks import record_autoupdate
 
@@ -759,6 +778,7 @@ def update_info(u: dict[str, object], old_config: str | None) -> dict[str, objec
     return {
         "ahead": ahead, "head": h(u.get("head")), "remote": h(u.get("remote")),
         "previous": h(u.get("previous")), "strategy": cls["strategy"], "reasons": cls["reasons"],
+        "record": bool(cls.get("record")),  # BF-D93: only the paper record's code changes
         "previous_migrations": bool(u.get("previous_migrations")),
         "ci": str(u.get("ci")) if u.get("ci") in ("green", "red", "unknown") else "unknown",
         # BF-D84: the remote commit's signature (git verify-commit on the server) and how
@@ -956,6 +976,8 @@ def _ops_sources(cfg: BfastConfig) -> dict[str, Any]:
         "commission": cfg.commission_model(),
         "scorecard": cfg.research.scorecard_csv,
         "ledger": cfg.research.ledger_jsonl,  # BF-D89
+        "record_view": cfg.research.record_view_dir,  # BF-D94: the record's display copy
+        "relay_dir": cfg.research.relay_dir,  # BF-D94: the nightly report (validated relay)
         "info_dir": cfg.info_archive.app_dir,
         "info_enabled": cfg.info_archive.archive_enabled,
         "eodhd_budget": sr.calls_per_day if sr is not None else 100000,
@@ -1154,7 +1176,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0915 - one parse
     p.add_argument("--key", type=Path, default=Path("/run/secrets/vapid_private_key"))
     p = sub.add_parser("server-jobs", help="the host worker's queue (BF-D42; root on the host)")
     p.add_argument("op", choices=["claim", "finish", "status", "list", "backup", "reveal",
-                                  "info-archive", "prev-twin", "autoupdate"])  # fmt: skip
+                                  "info-archive", "prev-twin", "autoupdate", "record"])  # fmt: skip
     p.add_argument("--fp", default="", help="reveal: the recovery key's fingerprint (M3)")
     p.add_argument("--id", type=int)
     p.add_argument("--status", choices=["DONE", "FAILED", "REFUSED"])

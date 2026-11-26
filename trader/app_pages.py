@@ -1885,9 +1885,23 @@ SRV_MENU = (  # BF-D73: (job, icon, short label, one-line description, destructi
     ("srv:hc_ping", "activity", "Test healthchecks ping", "healthchecks.io", False),
     ("srv:info_archive", "download", "Collect announcements", "Private archive, if on", False),
     ("srv:prev_twin", "beaker", "Previous-version twin", "After a strategy update", False),
+    (
+        "srv:record_daily",
+        "archive",
+        "Book the paper day now",
+        "Paper record, if written here",
+        False,
+    ),
     ("srv:claude_remote", "terminal", "Claude remote: start", "tmux session 'remote'", False),
     ("srv:claude_stop", "terminal", "Claude remote: stop", "Ends the session", False),
 )
+
+
+def _update_kind(u: Mapping[str, Any], strat: bool) -> str:
+    """BF-D93: an update that only changes the paper record's code says so."""
+    if strat:
+        return "Strategy update"
+    return "Paper-record update" if u.get("record") else "App-only update"
 
 
 def menu_row(href: str, ic: str, label: str, desc: str = "", value: str = "",
@@ -2060,7 +2074,7 @@ def strategy_card(x: Extras) -> str:
     card = ""
     if int(u.get("ahead") or 0) > 0:
         strat = bool(u.get("strategy", True))
-        card = (f'<p class="note"><b>{"Strategy update" if strat else "App-only update"} available</b>'
+        card = (f'<p class="note"><b>{_update_kind(u, strat)} available</b>'
                 f" · {plural(int(u['ahead']), 'commit')}" + (f" · {e(u['notes'].get('version', ''))}"
                 if u.get("notes") else "") + "</p>" + _ci_line(u))  # fmt: skip
         if u.get("auto") == "auto":  # BF-D90
@@ -2111,7 +2125,7 @@ def strategy(v: Any, x: Extras) -> str:
     if int(u.get("ahead") or 0) > 0:
         strat = bool(u.get("strategy", True))
         n = u.get("notes") or {}
-        body = (f'<p class="summary">{"Strategy update" if strat else "App-only update"} available</p>'
+        body = (f'<p class="summary">{_update_kind(u, strat)} available</p>'
                 f"<p class='small muted'>{plural(int(u['ahead']), 'commit')} · {e(u.get('subject', ''))}</p>"
                 + _ci_line(u))  # fmt: skip
         for k, lab in (("version", "Version"), ("what", "What changes"), ("why", "Why"),

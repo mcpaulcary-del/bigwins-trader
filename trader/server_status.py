@@ -89,6 +89,65 @@ def clean_status(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - o
     au = raw.get("autoupdate")
     if isinstance(au, Mapping) and au:  # BF-D90
         out["autoupdate"] = clean_autoupdate(au)
+    rec = raw.get("record")
+    if isinstance(rec, Mapping) and rec:  # BF-D93: the paper record on this server
+        out["record"] = clean_record(rec)
+    return out
+
+
+def _hex64(x: Any) -> str:
+    v = str(x or "")
+    return v if len(v) == 64 and all(c in "0123456789abcdef" for c in v) else ""
+
+
+def clean_record(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - one rule per key
+    """BF-D93: the worker's paper-record status (``deploy/record.sh`` rec_host_status):
+    known keys and plain values only. Ledger hashes are public record facts, not secrets:
+    they are kept as hex (checked), never passed through as free text."""
+    out: dict[str, Any] = {
+        "mode": raw.get("mode") if raw.get("mode") in ("off", "view", "shadow", "writer") else "off"
+    }
+    st = raw.get("status")
+    if isinstance(st, Mapping) and st:
+        s: dict[str, Any] = {}
+        if st.get("writer") in ("cloud", "server"):
+            s["writer"] = st["writer"]
+        if st.get("role") in ("writer", "shadow", "standby"):
+            s["role"] = st["role"]
+        for k in ("epoch", "seq"):
+            if isinstance(st.get(k), int) and not isinstance(st.get(k), bool):
+                s[k] = int(st[k])
+        if _hex64(st.get("head")):
+            s["head"] = _hex64(st.get("head"))
+        if "chain_ok" in st:
+            s["chain_ok"] = bool(st.get("chain_ok"))
+        for k in ("last_kind", "last_asof", "error", "fence_error"):
+            if st.get(k):
+                s[k] = clean_line(str(st[k]))[:120]
+        out["status"] = s
+    if raw.get("disk_level") in ("ok", "low", "tight", "critical"):
+        out["disk_level"] = raw["disk_level"]
+    free = _num(raw.get("disk_free_gb"))
+    if free is not None:
+        out["disk_free_gb"] = round(free, 1)
+    if _hex64(raw.get("shipped_head")):
+        out["shipped_head"] = _hex64(raw.get("shipped_head"))
+    view = raw.get("view")
+    if isinstance(view, Mapping) and view:
+        out["view"] = {k: clean_line(str(view[k]))[:200]
+                       for k in ("source", "note", "refreshed", "asof") if view.get(k)}  # fmt: skip
+    out["ping_set"] = bool(raw.get("ping_set"))
+    n = raw.get("requests_waiting")
+    out["requests_waiting"] = (
+        n if isinstance(n, int) and not isinstance(n, bool) and 0 <= n < 1000 else 0
+    )
+    tm = raw.get("timers")
+    if isinstance(tm, Mapping):
+        out["timers"] = {
+            k: bool(v)
+            for k, v in tm.items()
+            if isinstance(k, str) and k.startswith("rec-") and len(k) <= 20
+        }
     return out
 
 

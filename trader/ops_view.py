@@ -737,6 +737,12 @@ def _twin(j: Journal, now: datetime) -> Fresh | None:
     return _f(TWIN, "ok", _ago(at, now))
 
 
+def _record_jobs(j: Journal, sess: Sequence[date], now: datetime) -> list[Fresh]:
+    from trader import record_view
+
+    return record_view.freshness(j, sess, now)
+
+
 def freshness(j: Journal, book: str, sessions: Sequence[date], now: datetime,
               info_enabled: bool = False) -> list[Fresh]:  # fmt: skip
     """Each scheduled job against its expected cadence: the trader's daily run, the
@@ -753,6 +759,8 @@ def freshness(j: Journal, book: str, sessions: Sequence[date], now: datetime,
         (("backup", "Backups", "nightly / weekly"), lambda: _backups(j, now)),
         (INFO, lambda: [_info(j, sess, now, info_enabled)]),
         (TWIN, lambda: [x for x in (_twin(j, now),) if x is not None]),
+        # BF-D93: the paper record's jobs on this server (none while it is not here)
+        (("record", "Paper record jobs", "see Health"), lambda: _record_jobs(j, sess, now)),
     ]
     for spec, fn in checks:
         try:

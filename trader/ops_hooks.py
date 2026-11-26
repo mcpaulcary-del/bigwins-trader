@@ -337,6 +337,27 @@ def record_prev_twin(j: Journal, root: Path, book: str, raw: Mapping[str, Any],
     return rec
 
 
+# ---------------------------------------------------------------- the paper record (BF-D93, BF-D94)
+def record_record(j: Journal, raw: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    """The host worker's paper-record event (``trader-bf server-jobs record``): a job's
+    result, the parallel run's comparison, a nightly report's arrival or a refused relay
+    file. Cleaned and stored by ``record_view.record_event``."""
+    from trader import record_view
+
+    return record_view.record_event(j, raw, now)
+
+
+def tell_record(j: Journal, notify: Callable[..., object], record_dir: Path | None) -> int:
+    """Each paper-record event's Inbox message once; the daily one carries the plain
+    numbers read from the record's display copy (so it exists without the cloud)."""
+    from trader import record_view
+
+    def numbers() -> str:
+        return record_view.summary_line(record_view.load(record_dir))
+
+    return record_view.tell(j, notify, numbers)
+
+
 # ---------------------------------------------------------------- automatic app updates (BF-D90)
 AU_EVENTS = "autoupdate-events"
 AU_TOLD = "autoupdate-told"

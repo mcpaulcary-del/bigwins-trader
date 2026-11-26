@@ -57,6 +57,7 @@ def test_BF_D42_old_requests_are_not_run_and_only_whitelisted_names_exist() -> N
     assert claim_server_job(j, T0 + timedelta(hours=13)) is None
     assert server_job_rows(j)[0]["status"] == "REFUSED"
     assert set(SERVER_ACTIONS) == {
+        "record_daily",  # BF-D93: book the paper day now (the paper record's daily job)
         "restart",
         "update",
         "rollback",

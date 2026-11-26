@@ -563,6 +563,13 @@ border-radius:5px;background:var(--surface-2);border:2px solid var(--line-strong
 .notelink{display:flex;gap:8px;align-items:center;text-decoration:none}.notelink .ic{width:18px;height:18px;flex:none;color:var(--down)}
 .rline,.frow{display:flex;align-items:center;gap:12px}.rline .grow,.frow .grow{flex:1;min-width:0}
 .rline b,.frow b{display:block;font-weight:600}.rline .sub,.frow .sub{display:block}
+/* BF-D94: the paper record, the nightly report and Big movers */
+.frow .rcol{text-align:right;white-space:nowrap}.frow .rcol b,.frow .rcol .sub{display:block}
+.frow .why{display:block;margin:2px 0}.frow .why a{margin-left:4px}
+.fold{border-top:1px solid var(--line);padding:10px 0}.fold>summary{cursor:pointer}
+.fold>summary b,.fold>summary .sub{display:inline}
+.prose{overflow-wrap:anywhere}.prose h2{margin-top:16px}.srcs{padding-left:22px}.srcs li{padding:4px 0}
+a.nrow.card{display:flex;align-items:center;gap:12px;padding:12px 0;text-decoration:none;color:inherit}
 .rr{text-align:right;white-space:nowrap}.rr .rv{display:block;font:600 15px/20px var(--font)}
 .rsec{margin-top:8px}.rsec>summary{cursor:pointer;font:500 14px/20px var(--font);color:var(--ink-2);padding:8px 0}
 .ann .pills{margin-top:4px}.ann div{font:400 15px/21px var(--font)}
