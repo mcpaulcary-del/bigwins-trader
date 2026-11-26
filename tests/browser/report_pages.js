@@ -81,6 +81,8 @@ const TEXT = '.cmpl,.cmpv b,.cmpn,.gaph span,.gapx span,.luck,.luck b,.bigsub,.k
   await page.goto(base + '/inbox');
   await page.click('li.msg[data-kind="report"] > details > summary');
   out.reportOpens = await page.$eval('li.msg[data-kind="report"] .rep .bignum', el => el.getBoundingClientRect().height > 20);
+  // bring the fold-out clear of the fixed tab bar first, as a thumb would
+  await page.$eval('li.msg[data-kind="report"] .fold > summary', el => el.scrollIntoView({ block: 'center' }));
   await page.click('li.msg[data-kind="report"] .fold > summary');
   out.holdingsOpen = await page.$eval('li.msg[data-kind="report"] .fold .rtab', el => el.getBoundingClientRect().height > 40);
   await browser.close();
