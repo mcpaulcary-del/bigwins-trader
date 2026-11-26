@@ -49,6 +49,8 @@ VERDICTS: dict[str, tuple[str, str]] = {
 }
 CHIPS: dict[str, tuple[str, str]] = {**VERDICTS, "date": ("Next", "rc-date")}
 CONFIDENCE = {"solid": "Solid", "likely": "Likely, not proven", "cant_tell": "Can't tell yet"}
+CONF_STEPS = {"solid": 3, "likely": 2, "cant_tell": 1}  # the grade as a three-step meter
+NOWRAP = 18  # a key number this short never breaks in the middle
 KINDS = ("study", "review", "app_review")
 MARKETS = {"ASX": "ASX", "US": "US", "app": "App & safety"}
 FILTERS = {"all": "All", "asx": "ASX", "us": "US", "app": "App & safety"}
@@ -809,18 +811,21 @@ def highlights_page(c: Content, t: Trials, today: date) -> str:
             if isinstance(due, date) and due < today
             else ""
         )
+        # what to do is on the card itself (the owner's first question); the reason folds
+        do = f'<p class="hdo"><span>What to do</span>{inline(it["do"], lk)}</p>' if it["do"] else ""
         why = ""
-        if it["why"] or it["do"]:
+        if it["why"]:
             why = (
                 '<details class="why"><summary>Why</summary>'
-                + (f"<p>{inline(it['why'], lk)}</p>" if it["why"] else "")
-                + (f'<p class="h3">What to do</p><p>{inline(it["do"], lk)}</p>' if it["do"] else "")
+                + f"<p>{inline(it['why'], lk)}</p>"
                 + _sources(c, it["sources"])
                 + "</details>"
             )
+        elif it["do"]:
+            why = _sources(c, it["sources"])
         parts.append(
             f'<section class="rhl" id="{e(it["id"])}"><p>{chip(it["chip"])}</p>'
-            f'<p class="hline">{inline(it["line"], lk)}</p>{cap}{why}</section>'
+            f'<p class="hline">{inline(it["line"], lk)}</p>{cap}{do}{why}</section>'
         )
     return "".join(parts) + _foot(c)
 
@@ -929,6 +934,23 @@ def study_page(c: Content, sid: str) -> str | None:
         f'<p class="caption">{e(meta)}</p><p>{chip(s.verdict, s.verdict_note, VERDICTS)}</p>',
         f'<p class="rans">{inline(s.answer, lk)}</p>',
     ]
+    # the reader's order: the answer, what it means for you, how sure, then the detail
+    parts.append(section("What it means for you", f"<p>{inline(s.means, lk)}</p>", "rmeans"))
+    grade = CONFIDENCE[s.confidence]
+    meter = (
+        f'<span class="conf c{CONF_STEPS[s.confidence]}" aria-hidden="true">'
+        "<span></span><span></span><span></span></span>"
+    )
+    if s.sure:
+        parts.append(
+            f'<details class="rsure"><summary>{meter}<span>How sure are we? '
+            f'<b>{e(grade)}</b></span><span class="sp"></span>{chev()}</summary>'
+            f"<p>{inline(s.sure)}</p></details>"
+        )
+    else:
+        parts.append(
+            f'<p class="rsure nofold">{meter}<span>How sure are we? <b>{e(grade)}</b></span></p>'
+        )
     if s.summary:
         parts.append(
             section(
@@ -940,23 +962,15 @@ def study_page(c: Content, sid: str) -> str | None:
         )
     if s.numbers:
         rows = "".join(
-            f'<tr><td>{inline(a)}</td><td class="r">{inline(b)}</td></tr>' for a, b in s.numbers
+            f'<tr><td>{inline(a)}</td><td class="r{" nw" if len(b) <= NOWRAP else ""}">'
+            f"{inline(b)}</td></tr>"
+            for a, b in s.numbers
         )
         cap = s.numbers_head if s.numbers_head.lower() != "what" else ""
         cap = cap[len("What") :].strip(" ()") if cap.startswith("What (") else cap
         head = f'<p class="caption">{inline(cap)}</p>' if cap else ""
         table = f'<table class="rnum"><tbody>{rows}</tbody></table>'
         parts.append(section("Key numbers", head + table))
-    parts.append(section("What it means for you", f"<p>{inline(s.means, lk)}</p>", "rmeans"))
-    if s.sure:
-        parts.append(
-            f'<details class="rsure"><summary>How sure are we? '
-            f"<b>{e(CONFIDENCE[s.confidence])}</b></summary><p>{inline(s.sure)}</p></details>"
-        )
-    else:
-        parts.append(
-            f'<p class="caption">How sure are we? <b>{e(CONFIDENCE[s.confidence])}</b></p>'
-        )
     foot = _tests_line(s)
     rep = (
         f'<a class="rmore" href="/research/report/{s.id}" data-nav>Full report{chev()}</a>'
@@ -1038,7 +1052,7 @@ def _line_row(
     return (
         f'<li class="tline"><p class="tname"><b>{e(ln["name"])}</b> {tag}</p>'
         f"<p>{inline(ln['what'], lk)}</p>"
-        f'<p class="caption">First honest reading: {e(ln["reading"])}</p>'
+        f'<p class="caption tread">First honest reading: {e(ln["reading"])}</p>'
         f'<details class="pres"><summary>Paper result so far ({LUCK})</summary>{res}</details></li>'
     )
 
@@ -1058,19 +1072,37 @@ def lines_page(
     lk = Linker(c.glossary)
     first = tdoc["first_decision"]
     parts.append(f'<p class="note info">{inline(tdoc["intro"], lk)}</p>')
-    for g in tdoc["groups"]:
+    jump = [(f"g{i}", str(g["name"])) for i, g in enumerate(tdoc["groups"])]
+    jump += [("ginfo", "Information lines"), ("grules", "The rules"), ("gdata", "Data")]
+    parts.append(
+        '<nav class="chips rjump" aria-label="On this page">'
+        + "".join(f'<a class="chip" href="#{i}">{e(n)}</a>' for i, n in jump)
+        + "</nav>"
+    )
+
+    def anchored(html: str, i: str) -> str:
+        return html.replace("<section ", f'<section id="{i}" ', 1)
+
+    for i, g in enumerate(tdoc["groups"]):
         rows = "".join(_line_row(ln, False, lines, first, today, lk) for ln in g["lines"])
         parts.append(
-            section(
-                g["name"], f'<p class="caption">{inline(g["note"])}</p><ul class="list">{rows}</ul>'
+            anchored(
+                section(
+                    g["name"],
+                    f'<p class="caption">{inline(g["note"])}</p><ul class="list">{rows}</ul>',
+                ),
+                f"g{i}",
             )
         )
     il = tdoc["info_lines"]
     rows = "".join(_line_row(ln, True, lines, first, today, lk) for ln in il["lines"])
     parts.append(
-        section(
-            "Information lines",
-            f'<p class="caption">{inline(il["note"])}</p><ul class="list">{rows}</ul>',
+        anchored(
+            section(
+                "Information lines",
+                f'<p class="caption">{inline(il["note"])}</p><ul class="list">{rows}</ul>',
+            ),
+            "ginfo",
         )
     )
     ret = tdoc["retiring"]
@@ -1084,11 +1116,14 @@ def lines_page(
         )
     )
     parts.append(
-        section(
-            "The rules",
-            '<ul class="bul">'
-            + "".join(f"<li>{inline(r, lk)}</li>" for r in tdoc["rules"])
-            + "</ul>",
+        anchored(
+            section(
+                "The rules",
+                '<ul class="bul">'
+                + "".join(f"<li>{inline(r, lk)}</li>" for r in tdoc["rules"])
+                + "</ul>",
+            ),
+            "grules",
         )
     )
     by_key = {getattr(f, "key", ""): f for f in fresh}
@@ -1105,10 +1140,13 @@ def lines_page(
             f'<p class="caption">Since {e(a["since"])} · {e(a["reading"])}</p>{last}</li>'
         )
     parts.append(
-        section(
-            "Data we are collecting",
-            f'<p class="caption">{inline(tdoc["archives"]["note"])}</p>'
-            f'<ul class="list">{"".join(items)}</ul>',
+        anchored(
+            section(
+                "Data we are collecting",
+                f'<p class="caption">{inline(tdoc["archives"]["note"])}</p>'
+                f'<ul class="list">{"".join(items)}</ul>',
+            ),
+            "gdata",
         )
     )
     prog = [p for p in tdoc["in_progress"] or [] if p["study"] in c.studies]
