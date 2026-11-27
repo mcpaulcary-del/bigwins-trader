@@ -10,5 +10,5 @@ Same trades, same fills, same half-spread (v1.3 E2) as the official record; only
 | H82_25k | 10 | 66.00 | -0.52% | -0.38% | -0.26% | -1.36% | +0.84% | +0.98% | +1.10% | -1.24% | +0.72% | +0.98% |
 | H82_100k | 30 | 198.00 | -0.70% | -0.59% | -0.50% | -1.36% | +0.67% | +0.77% | +0.86% | -1.24% | +0.54% | +0.74% |
 
-Generated 2026-11-26T09:28:18Z by paper_costalt.py; state.json sha256 f8adec62a9af4853734c8d2d3496e8302bafedc6ea5b56921ef35be0ab9cf811; score_state.json sha256 c6cc0ccc5af7503fca1fb0a34c69a92d8a0fec596d7a35558fbdc5be4d51f03c.
+Generated 2026-11-27T09:27:26Z by paper_costalt.py; state.json sha256 f8adec62a9af4853734c8d2d3496e8302bafedc6ea5b56921ef35be0ab9cf811; score_state.json sha256 c6cc0ccc5af7503fca1fb0a34c69a92d8a0fec596d7a35558fbdc5be4d51f03c.
 History: cost_alt_history.csv, regenerated in full each run (one row per book per recorded day); the version written before AMENDMENT_scoring_v2 is kept as cost_alt_history_v1_frozen.csv.
