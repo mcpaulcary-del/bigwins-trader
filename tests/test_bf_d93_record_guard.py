@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -166,8 +167,15 @@ def test_BF_D93_the_unedited_collector_runs_behind_the_guard(tmp_path: Path) -> 
     (out / "bandC.json").write_text(json.dumps({"codes": [], "asof": "2026-12-01"}))
     (tmp_path / "pages.json").write_text(json.dumps(pages))
     (tmp_path / "h.py").write_text(HARNESS)
+    stub = tmp_path / "bin"  # the collector calls pdftotext: a stand-in, so no tool is needed here
+    stub.mkdir()
+    (stub / "pdftotext").write_text(
+        '#!/bin/sh\nfor a; do last=$a; done\necho "made-up text" > "$last"\n'
+    )
+    (stub / "pdftotext").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"}
     r = subprocess.run([sys.executable, "-W", "ignore", str(tmp_path / "h.py"), str(REPO), str(out),
-                        str(tmp_path / "pages.json")], capture_output=True, text=True, check=False)  # fmt: skip
+                        str(tmp_path / "pages.json")], capture_output=True, text=True, check=False, env=env)  # fmt: skip
     assert r.returncode == 0, r.stdout + r.stderr
     assert "asx 2026-12-14: 60 announcements, 1 notices stored, 3 failed" in r.stdout
     seen = json.loads(r.stdout.strip().splitlines()[-1])
