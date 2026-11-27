@@ -78,6 +78,25 @@ rec_build() {  # the record image; the build itself checks Python 3.13.18 and po
     || { r "The record image did not build: the record jobs keep the previous image."; return 1; }
 }
 
+rec_mem() {  # default-mb: the RAM cap of a record job (a root-only number overrides: 512..3000)
+  local v; v=$(head -c 6 "$ETC/record_memory_mb" 2>/dev/null | tr -cd '0-9')
+  if [ -n "$v" ] && [ "$v" -ge 512 ] && [ "$v" -le 3000 ]; then echo "$v"; else echo "$1"; fi
+}
+
+rec_memory() {  # what each job really used at its last run (bigwins record memory)
+  local f
+  echo "Record jobs: memory at the last run (cap $(rec_mem 1500) MB RAM, then swap)"
+  for f in "$STATE"/record/*.out; do
+    [ -s "$f" ] || continue
+    tail -1 "$f" | JOB="$(basename "$f" .out)" python3 -c 'import json,os,sys
+try: r=json.loads(sys.stdin.read())
+except ValueError: r={}
+g=lambda k: r.get(k,"?")
+if r: print("  %-20s largest process %s MB · container peak %s MB · swap peak %s MB · killed for memory: %s · %s s"
+            % (os.environ["JOB"], g("peak_mb"), g("cgroup_peak_mb"), g("swap_peak_mb"), g("oom_kills"), g("seconds")))'
+  done
+}
+
 rec_ping() {  # job ok|fail|start: healthchecks.io, one check per job (slug), made on first ping
   local u; u=$(cat "$SECRETS/healthchecks_record_url" 2>/dev/null)
   case "$u" in https://*) ;; *) return 0;; esac
@@ -110,7 +129,7 @@ except ValueError: r={"error":e["RES"][-300:]}
 if not isinstance(r,dict): r={}
 ev={"kind":"job","job":e["JOB"],"ok":e["RC"]=="0" and bool(r.get("ok",True)),"mode":e["MODE"],
     "at":time.strftime("%Y-%m-%dT%H:%M:%S%z"),"day":time.strftime("%Y-%m-%d")}
-for k in ("error","seconds","peak_mb","head","failed_steps","entries","line","pass","role"):
+for k in ("error","seconds","peak_mb","cgroup_peak_mb","swap_peak_mb","mem_limit_mb","oom_kills","head","failed_steps","entries","line","pass","role"):
     if k in r: ev[k]=r[k]
 print(json.dumps(ev))'
 }
@@ -128,8 +147,12 @@ rec_run_job() {  # job [--dry-run]: one job in the record container; prints its 
   docker image inspect "$REC_IMAGE:local" >/dev/null 2>&1 || rec_build || return 1
   [ "$job" = archive ] && ro=""  # only the archive job writes the announcements archive
   mkdir -p "$info/asx_notices" "$info/asic_short" && chown "$REC_UID:$REC_UID" "$info" "$info/asx_notices" "$info/asic_short"
+  mem=$(rec_mem "$mem")
+  # RAM is capped hard (the trader and IB Gateway keep theirs); above the cap the job swaps,
+  # up to twice the cap in all; under machine-wide pressure the kernel kills this job first
   local a=(run --rm --name "bwrec-$job" -u "$REC_UID:$REC_UID" --read-only --tmpfs /tmp --cap-drop ALL
-    --security-opt no-new-privileges:true --memory "${mem}m" --cpus 1.0 --pids-limit 256
+    --security-opt no-new-privileges:true --memory "${mem}m" --memory-swap "$((mem * 2))m"
+    --oom-score-adj 500 --cpus 1.0 --pids-limit 256
     -e TZ=UTC -e HOME=/tmp -e BW_RECORD_HOST=server -e PYTHONDONTWRITEBYTECODE=1
     -e BW_RELAY_INBOX=/relay/inbox -e BW_RELAY_FENCE=/relay/inbox/fence.json
     -v "$root:$REC_CLOUD"
@@ -645,6 +668,7 @@ cmd_record() {
     requests) rec_requests;;
     run) rec_chain "${2:-}";;
     job) rec_run_job "${2:-}" "${3:-}";;  # the engineer: one job now
+    memory) rec_memory;;
     build) rec_build && g "Record image built.";;
     timers) rec_ensure_timers && rec_timer_states;;
     *) echo "Usage: bigwins record [status|view on|off|seed|shadow on|off|cutover|handback|requests|run <chain>]";;

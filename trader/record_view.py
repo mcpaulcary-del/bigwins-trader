@@ -752,7 +752,14 @@ def record_event(  # noqa: PLR0912 - one branch per kind of event
                 ev[k] = _clean(raw[k])
         if isinstance(raw.get("head"), str) and re.fullmatch(r"[0-9a-f]{64}", raw["head"]):
             ev["head"] = raw["head"][:12]
-        for k in ("seconds", "peak_mb"):
+        for k in (
+            "seconds",
+            "peak_mb",
+            "cgroup_peak_mb",
+            "swap_peak_mb",
+            "mem_limit_mb",
+            "oom_kills",
+        ):
             v = _fl(raw.get(k))
             if v is not None:
                 ev[k] = round(v, 1)
@@ -1006,6 +1013,18 @@ def health_card(j: Journal | None, host: Mapping[str, Any], now: datetime) -> st
                    if h.get("diffs") else "")
                 + f"</span><span class='pill {'ok' if h.get('pass') else 'bad'}'>"
                 f"{'PASS' if h.get('pass') else 'FAIL'}</span></li>" for h in hist[:7])  # fmt: skip
+    jst = ov.state(j, JOBS_KEY) if j is not None else None
+    jobs = jst[0] if jst and isinstance(jst[0], Mapping) else {}
+    mem = [(k, r) for k, r in jobs.items() if isinstance(r, Mapping) and r.get("cgroup_peak_mb")]
+    if mem and mode in ("shadow", "writer"):
+        k, r = max(mem, key=lambda kr: float(kr[1].get("cgroup_peak_mb") or 0))
+        killed = sum(int(x.get("oom_kills") or 0) for _, x in mem)
+        rows.append(f"<li>Record jobs' memory, largest at its last run: <b class='num'>"
+                    f"{e(r.get('cgroup_peak_mb'))} MB</b> ({e(k)}) of a "
+                    f"{e(r.get('mem_limit_mb', '?'))} MB cap"
+                    + (f" <span class='pill bad'>killed for memory: {killed}</span>" if killed
+                       else " <span class='sub'>the trader and IB Gateway keep the rest</span>")
+                    + "</li>")  # fmt: skip
     if mode in ("shadow", "writer"):
         rows.append("<li>Outside checks (healthchecks.io), one per record job: <b>"
                     + ("set up" if rec.get("ping_set") else "not set up")

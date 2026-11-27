@@ -167,9 +167,9 @@ Real money around March 2027.
    copy at once with `sudo bigwins record view on`), the nightly report in the Inbox and
    Big movers on the News tab. **Not yet done / open**: the record image has never been
    built (pin the base images by digest at the first build); the seed list (plan E0) and
-   the seed upload; the scheduled tasks are unchanged until the cut-over; the owner's yes
-   to running the research collector on the server (CLAUDE.md names
-   `deploy/info_archive.py`); the two rehearsals. Details: BF-D93 "Deviations" and "Open".
+   the seed upload; the scheduled tasks are unchanged until the cut-over; the two rehearsals. (The owner said yes on 27 Nov to
+   the research collector on the server; it runs behind `record/tools/net_guard.py` and
+   CLAUDE.md names it. Record jobs are capped at 1.5 GB of RAM each.) Details: BF-D93 "Deviations" and "Open".
    The owner's steps: `docs/RECORD_ON_SERVER.md`.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year

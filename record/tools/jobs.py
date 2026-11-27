@@ -34,7 +34,11 @@ class Job:
     network: bool  # True: the record egress network (EODHD / ASX / ASIC); else --network none
     ledger: bool  # appends to the ledger (so: fence + shipped-head gate, export afterwards)
     eodhd: bool = False  # gets the EODHD token file
-    memory_mb: int = 1800
+    # RAM cap of the job's container. The server has 3.9 GB: IB Gateway (about 1.5 GB), the
+    # trader, the app and the database must never be squeezed by a record job; above the
+    # cap the job uses swap (to twice the cap), and it is the first to be killed if the
+    # whole machine runs short. /etc/bigwins/record_memory_mb overrides (deploy/record.sh).
+    memory_mb: int = 1500
 
 
 def py(name: str, *args: str, isolated: bool = False, timeout_s: int = 3000,
@@ -67,6 +71,7 @@ JOBS: dict[str, Job] = {j.key: j for j in (
     # T4 step 1 and the evening archive run: the ONLY job that contacts asx.com.au
     Job("archive", "Info archive (ASX list, notices, shorts)", (
         py("info_archive.py", "asx", "asic", "--asic-limit=400", timeout_s=1500),
+        tool("archive_check"),  # the stored day is sane (the older server copy's refusals)
     ), network=True, ledger=False),
     # T4 steps 2 and 2b: no network
     Job("newsc-prepare", "NEWS-C: prepare the batches", (

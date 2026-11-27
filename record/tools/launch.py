@@ -6,7 +6,9 @@
    ledger a script points ``LED`` at decides which fence), and a standby copy marks its
    entries. The entry format and hashing are the research module's own, untouched.
 3. The EODHD token shim (``eodhd_shim``) when a token file is mounted.
-4. The script then runs as ``__main__`` with its own arguments, as on the cloud:
+4. The network guard (``net_guard``): ``urllib`` reaches only the ASX and ASIC hosts of
+   the owner's archive exception, over https, redirects pinned, responses capped.
+5. The script then runs as ``__main__`` with its own arguments, as on the cloud:
    ``python3 script.py`` has the script's folder first on ``sys.path``; ``python3 -I
    script.py`` (``--isolated``) does not.
 """
@@ -23,7 +25,7 @@ from typing import Any
 HERE = Path(__file__).resolve()
 sys.path.insert(0, str(HERE.parents[2]))  # the read-only mount that holds record/tools
 
-from record.tools import eodhd_shim, fence, paths  # noqa: E402
+from record.tools import eodhd_shim, fence, net_guard, paths  # noqa: E402
 
 REFUSED = 75  # EX_TEMPFAIL: the fence said no; nothing ran
 
@@ -81,6 +83,9 @@ def main(argv: list[str]) -> int:
         print(f"REFUSED (writer fence): {d.reason}")
         return REFUSED
     guard_ledger(code, me)
+    # the collector's safety checks (hosts, redirects, size): around it, not in it. Every
+    # record script gets it: none but the collector uses urllib, and none may reach another host
+    net_guard.install()
     tok = eodhd_shim.read_token(
         Path(os.environ.get("BW_EODHD_TOKEN_FILE", "/run/secrets/eodhd_api_token"))
     )

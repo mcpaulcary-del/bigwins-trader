@@ -25,13 +25,12 @@ your project > Settings > **Ping key** > copy the URL `https://hc-ping.com/<ping
 then `bigwins secret healthchecks_record_url` and paste it. Each job makes its own check
 the first time it runs.
 
-**One thing needs your yes before Sat 12 Dec** (tell Claude): the announcements are then
-collected on the server by the research record's own collector
-(`record/code/info_archive.py`, unchanged, same limits: previous-day list, the notices,
-at most 60 price-sensitive PDFs a day, one request every 2 seconds, never in ASX hours),
-not by the older server copy `deploy/info_archive.py` that `CLAUDE.md` names. One
-collector per server; the older one stands down. If you prefer the older one, say so and
-the price-sensitive step will be ported into it first.
+Your decision of 27 Nov ("Yes use the newer collector"): the announcements are collected
+on the server by the research record's own collector, unchanged, with the same limits
+(previous-day list, the notices, at most 60 price-sensitive PDFs a day, one request
+every 2 seconds, never in ASX hours) and with the older collector's safety checks put
+around it (ASX and ASIC addresses only, no redirects elsewhere, a size cap, a check of
+each stored day). One collector per server: the older one stands down.
 
 ## What you see in the app
 
@@ -78,7 +77,8 @@ All of these, decided Fri 18 Dec after the 21:30 comparison (`bigwins record sta
 5. The server reached EODHD with its own token (one intraday look on the shadow:
    `sudo bigwins record job intraday`, about 300 credits).
 6. The NEWS-C round trip through the relay done by 09:45 on at least four days.
-7. Peak memory of the daily job under 1.8 GB (each job's result carries it).
+7. Peak memory of the daily job under its 1.5 GB cap with no swap and no kill
+   (`bigwins record memory`, or Health > Paper record).
 8. A backup and a restore test that include the record both OK.
 9. At least 10 GB free at the end of the week.
 10. A last-digit difference is not waved through: cause first, then a fix on both sides.

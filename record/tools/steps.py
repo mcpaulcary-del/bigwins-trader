@@ -14,6 +14,7 @@ hand or with a subagent, now plain scripts. No network anywhere in this file.
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import gzip
 import json
@@ -71,6 +72,59 @@ def asic_daily(root: Path, dry_run: bool = False, days: int = 45,
             write_atomic(out, data)
         new += 1
     print(f"asic_daily: {new} new files")
+    return 0
+
+
+# ---------------------------------------------------------------- the archive, after each run
+LIST_HEAD = ["code", "date", "time", "price_sensitive", "headline", "ids_id", "kept"]
+MIN_ROWS = 50
+
+
+def archive_check(root: Path, dry_run: bool = False, today: dt.date | None = None) -> int:
+    """The newest stored announcement day is sane: a real, past day; the list has the
+    expected columns and at least 50 rows; every stored PDF starts as a PDF. A PDF with no
+    end marker (cut off while being written) is reported. Checks only: nothing is changed."""
+    base = root / paths.REL_DATA / "asx_notices"
+    days = sorted(p.name for p in base.iterdir() if p.is_dir() and DAY.match(p.name)) \
+        if base.is_dir() else []  # fmt: skip
+    if not days:
+        print("archive_check: nothing stored yet")
+        return 0
+    day = days[-1]
+    today = today or dt.datetime.now(SYD).date()
+    bad: list[str] = []
+    try:
+        if dt.date.fromisoformat(day) > today:
+            bad.append("the stored day is in the future")
+    except ValueError:
+        bad.append("the folder name is not a day")
+    d = base / day
+    try:
+        with (d / "list.csv").open(newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        rows = []
+    if not rows or rows[0] != LIST_HEAD:
+        bad.append("list.csv is missing or has other columns")
+    elif len(rows) - 1 < MIN_ROWS and (d / "DONE").exists():
+        bad.append(f"list.csv has only {len(rows) - 1} rows")
+    cut = []
+    for p in sorted((d / "pdf").glob("*.pdf")) if (d / "pdf").is_dir() else []:
+        with p.open("rb") as fh:
+            head = fh.read(5)
+            fh.seek(max(p.stat().st_size - 2048, 0))
+            tail = fh.read()
+        if not head.startswith(b"%PDF"):
+            bad.append(f"{p.name} is not a PDF")
+        elif b"%%EOF" not in tail:
+            cut.append(p.name)
+    if cut:
+        print(f"archive_check {day}: WARNING {len(cut)} PDF(s) without an end marker "
+              f"(possibly cut off): {', '.join(cut[:5])}")  # fmt: skip
+    if bad:
+        print(f"archive_check {day}: FAIL: " + "; ".join(bad[:6]))
+        return 1
+    print(f"archive_check {day}: ok ({len(rows) - 1} rows)")
     return 0
 
 
@@ -231,5 +285,6 @@ def newsc_drops_record(root: Path, dry_run: bool = False) -> int:
                    needed, day, marker)  # fmt: skip
 
 
-TOOLS: dict[str, Callable[[Path, bool], int]] = {"asic_daily": asic_daily, "gapcheck": gapcheck, "newsc_record": newsc_record,
+TOOLS: dict[str, Callable[[Path, bool], int]] = {
+    "archive_check": archive_check,"asic_daily": asic_daily, "gapcheck": gapcheck, "newsc_record": newsc_record,
          "newsc_drops_record": newsc_drops_record}  # fmt: skip

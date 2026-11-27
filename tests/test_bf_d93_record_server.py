@@ -168,7 +168,7 @@ def test_BF_D93_job_runs_in_a_locked_down_container_at_the_cloud_path(tmp_path: 
     assert r.returncode == 0 and '"ok": true' in r.stdout, r.stdout + r.stderr
     run = next(c for c in s.calls("docker run"))
     for want in ("--rm", "-u 10002:10002", "--read-only", "--cap-drop ALL", "no-new-privileges:true",
-                 "--memory 1800m", "--cpus 1.0", "-e TZ=UTC", "--network bigwins_record_egress",
+                 "--memory 1500m", "--memory-swap 3000m", "--oom-score-adj 500", "--cpus 1.0", "-e TZ=UTC", "--network bigwins_record_egress",
                  f"-v {s.tree}:{paths.CLOUD_ROOT} ",
                  f"-v {REPO}/record/code:{paths.CLOUD_ROOT}/bigwins_forward/code:ro",
                  f"-v {REPO}/record/data_foundation_code:{paths.CLOUD_ROOT}/data_foundation/code:ro",

@@ -138,10 +138,39 @@ def run_job(key: str, tools: Mapping[str, Callable[[Path, bool], int]], dry_run:
     res["seconds"] = round(time.monotonic() - t0, 1)
     peak = max(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)  # fmt: skip
-    res["peak_mb"] = round(peak / 1024, 1)
+    res["peak_mb"] = round(peak / 1024, 1)  # the largest single process (resident)
+    res.update(cgroup_memory())  # the whole container, as the kernel counted it
     res["failed_steps"] = [s["name"] for s in res["steps"] if s["rc"] != 0]
     res["ok"] = ok and "error" not in res
     return res
+
+
+def cgroup_memory(base: Path = Path("/sys/fs/cgroup")) -> dict[str, Any]:
+    """The container's own memory figures (cgroup v2): the peak of everything charged to it
+    (processes and file cache), its limit, the peak swap and how often the kernel killed a
+    process in it for memory. Missing files (another kernel, a test) give nothing."""
+    out: dict[str, Any] = {}
+
+    def num(name: str) -> int | None:
+        try:
+            t = (base / name).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return int(t) if t.isdigit() else None
+
+    for key, name in (("cgroup_peak_mb", "memory.peak"), ("mem_limit_mb", "memory.max"),
+                      ("swap_peak_mb", "memory.swap.peak")):  # fmt: skip
+        v = num(name)
+        if v is not None:
+            out[key] = round(v / 1048576, 1)
+    try:
+        ev = dict(
+            x.split() for x in (base / "memory.events").read_text(encoding="utf-8").splitlines()
+        )
+        out["oom_kills"] = int(ev.get("oom_kill", 0))
+    except (OSError, ValueError):
+        pass
+    return out
 
 
 def _utc() -> str:
