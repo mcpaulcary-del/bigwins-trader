@@ -1,0 +1,8 @@
+2026-11-27: 300 tickers, cost 3000 credits; EODHD credits left today 92457 (used 8043)
+wrote /tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/data/estimates_pit/est_2026-11-27.json.gz (277526 bytes) ok 300 failed 0 with trend estimates 293; credits spent 3000; left 89457; 66s
+band C (ranks 301-600): wrote /tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad/bigwins_forward/data/estimates_pit/est_C_2026-11-27.json.gz ok 300 of 300 failed 0 with trend estimates 228 with shares history 297; credits spent 3000; left 86457; 65s
+---
+2026-11-27: snapshot fetched (4512 codes; 2416 active); vs 2026-11-26: 1 new codes, 1 left the active list, 0 name changes
+isin repair: 13 registry rows had no valid ISIN; 0 filled from stored symbol lists
+  new code AMSDA (Common Stock; Ordinary Fully Paid Deferred Settlement): other_security  
+done in 34s; credits spent 79 (left 86378); tracked 77, refreshed 77, fundamentals 0
