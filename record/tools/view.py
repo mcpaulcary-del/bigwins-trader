@@ -39,6 +39,13 @@ def view_copy(
     src: Path, dst: Path, source: str, note: str, now: float | None = None
 ) -> dict[str, Any]:
     paper = src / paths.REL_RECORD / "paper"
+    mv = src / paths.REL_OUT / "movers"
+    base = src.resolve()
+    # the folders themselves must be real folders INSIDE the source tree: a link planted in a
+    # fetched copy can never make this read (and publish to the app) anything else
+    for d in (paper, mv):
+        if d.exists() and (d.is_symlink() or base not in d.resolve().parents):
+            return {"ok": False, "error": f"{d.name} is a link or lies outside the source tree"}
     if not (paper / "scorecard_latest.csv").is_file():
         return {"ok": False, "error": "no scorecard in the source tree"}
     tmp = dst / ".new"
@@ -52,7 +59,6 @@ def view_copy(
             continue
         shutil.copyfile(p, tmp / "paper" / p.name)
         n += 1
-    mv = src / paths.REL_OUT / "movers"
     for p in sorted(mv.glob("movers_*.md"))[-KEEP_MOVERS:] if mv.is_dir() else []:
         if p.is_file() and not p.is_symlink() and p.stat().st_size <= MAX_BYTES:
             shutil.copyfile(p, tmp / "movers" / p.name)

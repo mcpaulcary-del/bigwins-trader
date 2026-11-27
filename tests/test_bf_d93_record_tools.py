@@ -10,6 +10,7 @@ import datetime as dt
 import gzip
 import io
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -449,6 +450,8 @@ def test_research_requests_wait_for_the_owner_and_cannot_forge_chain_entries(
 def _cloud_and_shadow(tmp_path: Path) -> tuple[Path, Path]:
     cloud, shadow = tmp_path / "cloud", tmp_path / "shadow"
     S.make_tree(cloud, writer="cloud")
+    (cloud / paths.REL_CODE).mkdir(parents=True)
+    (cloud / paths.REL_CODE / "paper_made_up.py").write_text("# the same code on both machines\n")
     shutil.copytree(cloud, shadow)  # the seed
     fence.save(paths.record_dir(shadow), fence.Fence(1, "server", "shadow"))
     sync_bundle.make(cloud, "seed", tmp_path / "x.tar", mark_only=True)
@@ -475,7 +478,8 @@ def _replay_day(tmp_path: Path, cloud: Path, shadow: Path, day: str, nav: float 
     )  # later, other chain
     return record_compare.compare(man, record_compare.shadow_files(shadow, [day]),
                                   record_compare.shadow_entries(shadow, day), day,
-                                  today=dt.date.fromisoformat(day))  # fmt: skip
+                                  today=dt.date.fromisoformat(day),
+                                  server_code_files=hashing.tree(shadow, [paths.REL_CODE]))  # fmt: skip
 
 
 def test_three_made_up_days_replay_identically_then_a_difference_fails(tmp_path: Path) -> None:
@@ -488,7 +492,7 @@ def test_three_made_up_days_replay_identically_then_a_difference_fails(tmp_path:
         assert res["pass"], res
         assert (
             res["line"]
-            == f"Shadow compare {int(d[-2:])} Dec: PASS (A {2 + i}/{2 + i}, B 2/2, C 1/1, D ok)"
+            == f"Shadow compare {int(d[-2:])} Dec: PASS (A {2 + i}/{2 + i}, B 2/2, C 1/1, D ok, code ok)"
         )
         results.append(res)
     assert record_compare.streak(results, days) == 3
@@ -534,7 +538,8 @@ def test_compare_rules_by_class(tmp_path: Path) -> None:
         man = sync_bundle.cloud_manifest(cloud, day, [day])
         return record_compare.compare(man, record_compare.shadow_files(shadow, [day]),
                                       record_compare.shadow_entries(shadow, day), day,
-                                      today=dt.date(2026, 12, 14))  # fmt: skip
+                                      today=dt.date(2026, 12, 14),
+                                      server_code_files=hashing.tree(shadow, [paths.REL_CODE]))  # fmt: skip
 
     ok = run()
     assert ok["pass"] and ok["classes"]["E"]["total"] >= 2 and not ok["classes"]["E"]["ok"]
@@ -562,9 +567,88 @@ def test_compare_rules_by_class(tmp_path: Path) -> None:
         {"kind": "info_news"}
     )
     # an empty comparison is never a pass
-    empty = record_compare.compare({"files": {}}, {}, [], day)
-    assert not empty["pass"] and "nothing to compare" in empty["line"]
+    empty = record_compare.compare({"files": {}}, {}, [], day, server_code_files={})
+    assert not empty["pass"] and "no states or outputs to compare" in empty["line"]
     assert record_compare.load_allow() == ()  # the written allow-list is empty and frozen
+
+
+def test_a_day_counts_only_if_it_was_booked_archived_and_run_on_the_same_code(
+    tmp_path: Path,
+) -> None:
+    """Review: a day on which nothing happened, or with other code on the server, never
+    counts toward the five days."""
+    cloud, shadow = _cloud_and_shadow(tmp_path)
+    day = "2026-12-14"
+    S.archive_day(cloud, day)
+    S.archive_day(shadow, day)
+    S.book_day(cloud, day)
+    S.book_day(shadow, day)
+    code = hashing.tree(shadow, [paths.REL_CODE])
+
+    def run(man: dict[str, Any], sc: dict[str, str] = code) -> dict[str, Any]:
+        return record_compare.compare(man, record_compare.shadow_files(shadow, man.get("archive_days") or []),
+                                      record_compare.shadow_entries(shadow, day), day,
+                                      today=dt.date(2026, 12, 14), server_code_files=sc)  # fmt: skip
+
+    good = sync_bundle.cloud_manifest(cloud, day, [day])
+    assert run(good)["pass"] and list(good["code"]) == [f"{paths.REL_CODE}/paper_made_up.py"]
+    # the server runs other code than the cloud: FAIL, named
+    other = run(good, {**code, f"{paths.REL_CODE}/paper_made_up.py": "0" * 64})
+    assert not other["pass"] and "code DIFFERS" in other["line"] and not other["classes"]["K"]["ok"]
+    assert not run(good, {**code, f"{paths.REL_CODE}/only_here.py": "1" * 64})["pass"]
+    # a manifest without code hashes (an older tool), without an archive day, or of a day
+    # the cloud did not book: never a pass, whatever else matches
+    assert "lists no code" in run({**good, "code": {}})["line"]
+    assert "no archive day was compared" in run({**good, "archive_days": []})["line"]
+    quiet = "2026-12-15"  # both sides idle: states and outputs trivially identical
+    man = sync_bundle.cloud_manifest(cloud, quiet, [day])
+    res = record_compare.compare(man, record_compare.shadow_files(shadow, [day]),
+                                 record_compare.shadow_entries(shadow, quiet), quiet,
+                                 today=dt.date(2026, 12, 15), server_code_files=code)  # fmt: skip
+    assert not res["pass"] and "booked no daily entry" in res["line"]
+    assert all(res["classes"][k]["ok"] for k in "ABCD")
+    # the real checkout's code map names the files as the tree does
+    sc = record_compare.server_code()
+    assert f"{paths.REL_CODE}/paper_daily.py" in sc and f"{paths.REL_DF_CODE}/eodhd/client.py" in sc
+    assert record_compare.server_code(only=paths.REL_CODE).keys() < sc.keys()
+
+
+def test_streak_must_end_at_the_last_session(tmp_path: Path) -> None:
+    from record.tools import bwrec as cli
+
+    sync = tmp_path / paths.REL_OUT / "sync"
+    sync.mkdir(parents=True)
+
+    def results(days: dict[str, bool]) -> None:
+        for p in sync.glob("compare_*.json"):
+            p.unlink()
+        for d, ok in days.items():
+            (sync / f"compare_{d}.json").write_text(json.dumps({"day": d, "pass": ok}))
+
+    week = ["2026-12-14", "2026-12-15", "2026-12-16", "2026-12-17", "2026-12-18"]
+    sat = dt.datetime(2026, 12, 19, 18, 0, tzinfo=steps.SYD)
+    results(dict.fromkeys(week, True))
+    assert cli.compare_streak(tmp_path, sat) == 5
+    assert cli.last_session(sat) == dt.date(2026, 12, 18)
+    # the run ended a day early (Friday was never compared): it counts for nothing
+    results(dict.fromkeys(week[:4], True))
+    assert cli.compare_streak(tmp_path, sat) == 0
+    # a missing day in the middle breaks it
+    results({d: True for d in week if d != "2026-12-16"})
+    assert cli.compare_streak(tmp_path, sat) == 2
+    results({**dict.fromkeys(week, True), "2026-12-17": False})
+    assert cli.compare_streak(tmp_path, sat) == 1
+    # a week later the same five days are stale
+    results(dict.fromkeys(week, True))
+    assert cli.compare_streak(tmp_path, sat + dt.timedelta(days=7)) == 0
+    # a weekday: today's session counts only once it has closed
+    assert cli.last_session(dt.datetime(2026, 12, 18, 12, 0, tzinfo=steps.SYD)) == dt.date(
+        2026, 12, 17
+    )
+    assert cli.last_session(dt.datetime(2026, 12, 18, 21, 0, tzinfo=steps.SYD)) == dt.date(
+        2026, 12, 18
+    )
+    assert cli.compare_streak(tmp_path / "none", sat) == 0
 
 
 def test_server_archive_outside_the_tree_is_compared_under_the_clouds_names(
@@ -653,7 +737,10 @@ def test_job_table_covers_every_cloud_task_and_units_are_valid() -> None:
         not jobs.JOBS["replay"].network and not jobs.JOBS["replay"].eodhd
     )  # the replay downloads nothing
     assert not jobs.JOBS["archive"].eodhd  # the archive job never gets the EODHD token
-    chains = {u.chain for u in jobs.UNITS}
+    units = runpy.run_path(
+        str(REPO / "deploy" / "record_units.py")
+    )  # root writes timers from deploy code
+    chains = {u.chain for u in units["UNITS"]}
     assert chains == {
         "morning",
         "collect",
@@ -665,8 +752,8 @@ def test_job_table_covers_every_cloud_task_and_units_are_valid() -> None:
         "compare",
         "relay",
     }
-    for u in jobs.UNITS:
-        svc, tmr = jobs.unit_files(u, "/srv/asx-trader/deploy/bigwins.sh")
+    for u in units["UNITS"]:
+        svc, tmr = units["unit_files"](u, "/srv/asx-trader/deploy/bigwins.sh")
         assert f"ExecStart=/srv/asx-trader/deploy/bigwins.sh record run {u.chain}\n" in svc
         cals = [ln for ln in tmr.splitlines() if ln.startswith("OnCalendar=")]
         assert len(cals) == len(u.calendars) and all(c.endswith(" Australia/Sydney") for c in cals)
@@ -678,15 +765,22 @@ def test_job_table_covers_every_cloud_task_and_units_are_valid() -> None:
                     check=False,
                 )
                 assert r.returncode == 0, c
-    assert set(jobs.EXPECT) <= {*jobs.JOBS, "export", "compare"}
+    assert not hasattr(jobs, "UNITS")  # nothing under record/ decides what root installs
+    assert set(jobs.EXPECT) <= {*jobs.JOBS, "export", "compare", "pdf-backup"}
+    # memory: the heavy jobs run in the evening; everything in or near ASX hours is small
+    assert {k: j.memory_mb for k, j in jobs.JOBS.items()} == {
+        "daily": 1500, "multi": 1500, "usfwd": 1500, "replay": 1500, "collect": 800, "intraday": 600,
+        "archive": 600, "newsc-prepare": 600, "newsc-record": 600, "newsc-drops-record": 600}  # fmt: skip
 
 
 def test_bwrec_units_and_gate(tmp_path: Path) -> None:
     out = tmp_path / "units"
     out.mkdir()
-    r = bwrec(tmp_path, "units", str(out), "/srv/asx-trader/deploy/bigwins.sh")
-    assert r.returncode == 0 and len(list(out.glob("bigwins-rec-*.timer"))) == len(jobs.UNITS)
+    r = subprocess.run([sys.executable, "-I", str(REPO / "deploy/record_units.py"), "write", str(out),
+                        "/srv/asx-trader/deploy/bigwins.sh"], capture_output=True, text=True, check=False)  # fmt: skip
+    assert r.returncode == 0 and len(list(out.glob("bigwins-rec-*.timer"))) == 9
     assert "rec-compare shadow" in r.stdout and "rec-intraday writer" in r.stdout
+    assert bwrec(tmp_path, "units", str(out), "x").returncode == 2  # no longer a record tool
     root = tmp_path / "t"
     rec = S.make_tree(root, writer="server", epoch=2)
     shipped = tmp_path / "shipped_head"
@@ -695,6 +789,16 @@ def test_bwrec_units_and_gate(tmp_path: Path) -> None:
         root, "gate", "daily", "--shipped", str(shipped), "--free-gb", "40"
     ).stdout.startswith("ok")
     assert "writer fence" in bwrec(root, "gate", "daily", "--free-gb", "40", me="cloud").stdout
+    # a job that never writes the ledger passes the fence (the server keeps collecting after
+    # a hand-back or a takeover); a hold stops the ledger jobs only
+    assert bwrec(root, "gate", "archive", "--free-gb", "40", me="cloud").returncode == 0
+    hold = tmp_path / "HOLD"
+    hold.write_text("restored")
+    held = bwrec(
+        root, "gate", "daily", "--shipped", str(shipped), "--free-gb", "40", "--hold", str(hold)
+    )
+    assert held.returncode == 1 and "on hold" in held.stdout and "reconcile" in held.stdout
+    assert bwrec(root, "gate", "archive", "--free-gb", "40", "--hold", str(hold)).returncode == 0
     S.book_day(root, "2026-12-21")  # an entry that has not reached OneDrive yet
     g = bwrec(root, "gate", "daily", "--shipped", str(shipped), "--free-gb", "40")
     assert g.returncode == 1 and "ledger shipping" in g.stdout
@@ -705,9 +809,10 @@ def test_bwrec_units_and_gate(tmp_path: Path) -> None:
     assert "refused (disk)" in bwrec(root, "gate", "collect", "--free-gb", "2.5").stdout
     relay_dir = tmp_path / "validated"
     _put(relay_dir, "fence.json", json.dumps({"epoch": 9, "writer": "cloud"}))
+    assert "newer writer" in bwrec(root, "gate", "daily", "--relay", str(relay_dir), "--free-gb", "40",
+                                   "--shipped", str(shipped)).stdout  # fmt: skip
     assert (
-        "newer writer"
-        in bwrec(root, "gate", "archive", "--relay", str(relay_dir), "--free-gb", "40").stdout
+        bwrec(root, "gate", "archive", "--relay", str(relay_dir), "--free-gb", "40").returncode == 0
     )
     st = json.loads(bwrec(root, "status").stdout)
     assert st["writer"] == "server" and st["epoch"] == 2 and st["chain_ok"] and st["seq"] == 4
@@ -852,3 +957,66 @@ def test_tree_manifest_hashes_gz_on_content(tmp_path: Path) -> None:
     assert (tmp_path / "a/x.csv.gz").read_bytes() != (tmp_path / "b/x.csv.gz").read_bytes()
     (tmp_path / "a/x.csv.gz").write_bytes(b"broken")
     assert hashing.tree(tmp_path / "a", ["."])["x.csv.gz"].startswith("unreadable-gzip:")
+
+
+def test_prefix_check_refuses_an_older_or_different_local_ledger(tmp_path: Path) -> None:
+    """Review (critical): a server restored from an older backup must never export over,
+    or book on top of, the newer ledger in OneDrive."""
+    new = tmp_path / "new"
+    S.make_tree(new, writer="server", epoch=2)
+    S.book_day(new, "2026-12-21")
+    old = tmp_path / "old"
+    shutil.copytree(new, old)
+    S.book_day(new, "2026-12-22")  # the day after the backup was made
+    remote = paths.ledger(new)
+    ok = bwrec(new, "prefix-check", str(paths.ledger(old)))
+    assert ok.returncode == 0 and "4 of this machine's 5" in ok.stdout  # OneDrive behind: fine
+    assert bwrec(new, "prefix-check", str(remote)).returncode == 0  # equal: fine
+    ahead = bwrec(old, "prefix-check", str(remote))  # the restored server
+    assert ahead.returncode == 1 and "OneDrive is AHEAD: 5 entries there, 4 here" in ahead.stdout
+    S.book_day(old, "2026-12-22", nav=1.0)  # it booked on the old head: a fork
+    fork = bwrec(old, "prefix-check", str(remote))
+    assert fork.returncode == 1 and "DIFFERENT chains" in fork.stdout
+    (tmp_path / "junk").write_text("not a ledger\n")
+    assert bwrec(old, "prefix-check", str(tmp_path / "junk")).returncode == 1
+
+
+def test_requests_in_a_record_job_reach_eodhd_only() -> None:
+    cls, wire = _session()
+    assert eodhd_shim.install_allowlist(cls) and not eodhd_shim.install_allowlist(cls)
+    eodhd_shim.install(cls, "tok3n-Made.Up_123456", "query")
+    cls().send(_Req("https://eodhd.com/api/eod/AAA.AU"))
+    assert len(wire) == 1 and "api_token=tok3n" in wire[0][0]
+    for url in ("https://example.com/x", "http://eodhd.com/api/x", "https://www.asx.com.au/x",
+                "https://eodhd.com.evil.example/x", "file:///etc/passwd"):  # fmt: skip
+        with pytest.raises(eodhd_shim.HostRefusedError):
+            cls().send(_Req(url))
+    assert len(wire) == 1  # nothing else was sent anywhere, with or without a token
+
+
+def test_view_copy_never_follows_a_link_out_of_the_source(tmp_path: Path) -> None:
+    from record.tools import view
+
+    src, dst, secret = tmp_path / "src", tmp_path / "dst", tmp_path / "elsewhere"
+    dst.mkdir()
+    (secret / "paper").mkdir(parents=True)
+    (secret / "paper" / "scorecard_latest.csv").write_text("asof,book\n2026-12-14,SECRET\n")
+    rec = src / paths.REL_RECORD
+    rec.mkdir(parents=True)
+    (rec / "paper").symlink_to(secret / "paper", target_is_directory=True)  # a planted link
+    res = view.view_copy(src, dst, "x", "y")
+    assert not res["ok"] and "link" in res["error"] and not (dst / "paper").exists()
+    (rec / "paper").unlink()
+    (rec / "paper").mkdir()
+    (rec / "paper" / "scorecard_latest.csv").write_text("asof,book\n2026-12-14,T\n")
+    (rec / "paper" / "leak.csv").symlink_to(
+        secret / "paper" / "scorecard_latest.csv"
+    )  # a linked file
+    (src / paths.REL_OUT).mkdir(parents=True)
+    (src / paths.REL_OUT / "movers").symlink_to(secret, target_is_directory=True)
+    assert not view.view_copy(src, dst, "x", "y")["ok"]
+    (src / paths.REL_OUT / "movers").unlink()
+    ok = view.view_copy(src, dst, "x", "y")
+    assert ok["ok"] and sorted(p.name for p in (dst / "paper").iterdir()) == [
+        "scorecard_latest.csv"
+    ]

@@ -100,7 +100,7 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
     from trader import app_research as ar
 
     o.know = safe(lambda: ar.home_card_for(src, v), "")
-    o.know += safe(lambda: record_home_card(src), "")  # BF-D94: the real paper record
+    o.know += safe(lambda: record_home_card(src, today), "")  # BF-D94: the real paper record
     o.research_status = safe(lambda: ar.status_for(src, v), None)
     o.archive = safe(lambda: iv.status(o.info_dir, sess, today, v.now), iv.ArchiveStatus())
     if src.store_root is not None:
@@ -383,10 +383,11 @@ TIMER_WORDS = {"worker": "server worker", "backup": "nightly backup", "weekly": 
 
 
 # ---------------------------------------------------------------- the paper record (BF-D94)
-def record_home_card(src: Any) -> str:
+def record_home_card(src: Any, today: date | None = None) -> str:
     from trader import record_view as rv
 
-    return rv.home_card(rv.load(rv.view_dir(src)), rv.load_report(getattr(src, "relay_dir", None)))
+    return rv.home_card(rv.load(rv.view_dir(src)),
+                        rv.load_report(getattr(src, "relay_dir", None), today=today))  # fmt: skip
 
 
 def record_screen(src: Any, v: Any, x: Extras, path: str, qs: Mapping[str, str]) -> str | None:
@@ -397,14 +398,15 @@ def record_screen(src: Any, v: Any, x: Extras, path: str, qs: Mapping[str, str])
 
     root = rv.view_dir(src)
     relay = getattr(src, "relay_dir", None)
+    today = v.now.astimezone(ASX_TZ).date()  # a report folder dated after today is ignored
     if path == "/record":
         return rv.record_page(v, x, safe(lambda: rv.load(root), None),
-                              safe(lambda: rv.load_report(relay), None), shell)  # fmt: skip
+                              safe(lambda: rv.load_report(relay, today=today), None), shell)  # fmt: skip
     if path == "/record/report":
         want = ov._day(qs.get("d"))
         none: list[date] = []
-        days = safe(lambda: rv.report_days(relay), none)
-        return rv.report_page(v, x, safe(lambda: rv.load_report(relay, want), None), days,
+        days = safe(lambda: rv.report_days(relay, today), none)
+        return rv.report_page(v, x, safe(lambda: rv.load_report(relay, want, today), None), days,
                               ar.research_md, shell)  # fmt: skip
     if path == "/record/scorecard":
         return rv.doc_page(v, x, root, "SCORECARD.md", "Full scorecard", ar.research_md, shell)
@@ -1194,7 +1196,7 @@ def collect_news(src: Any, v: Any) -> News:
 
     names: Mapping[str, str] = {}
     nw.report_movers = safe(lambda: rv.movers_card(
-        rv.load_report(getattr(src, "relay_dir", None)), names, today), "")  # fmt: skip
+        rv.load_report(getattr(src, "relay_dir", None), today=today), names, today), "")  # fmt: skip
     return nw
 
 

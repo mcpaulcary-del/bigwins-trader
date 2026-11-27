@@ -105,7 +105,9 @@ def clean_record(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - o
     known keys and plain values only. Ledger hashes are public record facts, not secrets:
     they are kept as hex (checked), never passed through as free text."""
     out: dict[str, Any] = {
-        "mode": raw.get("mode") if raw.get("mode") in ("off", "view", "shadow", "writer") else "off"
+        "mode": raw.get("mode")
+        if raw.get("mode") in ("off", "view", "shadow", "writer", "archive")
+        else "off"
     }
     st = raw.get("status")
     if isinstance(st, Mapping) and st:
@@ -136,6 +138,8 @@ def clean_record(raw: Mapping[str, Any]) -> dict[str, Any]:  # noqa: PLR0912 - o
     if isinstance(view, Mapping) and view:
         out["view"] = {k: clean_line(str(view[k]))[:200]
                        for k in ("source", "note", "refreshed", "asof") if view.get(k)}  # fmt: skip
+    if raw.get("hold"):  # on hold after a restore / a differing ledger in OneDrive
+        out["hold"] = clean_line(str(raw["hold"]))[:240]
     out["ping_set"] = bool(raw.get("ping_set"))
     n = raw.get("requests_waiting")
     out["requests_waiting"] = (

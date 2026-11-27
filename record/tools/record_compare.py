@@ -15,7 +15,9 @@ jobs appended; no data) and the shadow tree on this server.
 | E | fetch times, intraday files, things only one side produces | reported, never a pass or fail |
 
 A ``.gz`` file is always compared on its decompressed bytes (``hashing.sha_content``).
-PASS needs A, B, C and D fully identical. Nothing is waived here: a known, written
+PASS needs A, B, C and D fully identical, the record CODE identical on both machines (the
+cloud's code hashes travel in its manifest), a ``daily`` entry booked by the cloud for the
+day, and an archive day compared: a day on which nothing happened never counts. Nothing is waived here: a known, written
 exception goes into ``record/COMPARE_ALLOW.json`` (frozen before the parallel week; an
 addition after that is itself reported as a finding).
 """
@@ -187,7 +189,8 @@ def compare_archive(cloud: Mapping[str, str], server: Mapping[str, str], days: S
 
 def compare(cloud_manifest: Mapping[str, Any], server_files: Mapping[str, str],
             server_entries: Sequence[Mapping[str, Any]], day: str, multi: bool = False,
-            allow: Sequence[str] = (), today: dt.date | None = None) -> dict[str, Any]:  # fmt: skip
+            allow: Sequence[str] = (), today: dt.date | None = None,
+            server_code_files: Mapping[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
     cf: Mapping[str, str] = cloud_manifest.get("files") or {}
     info = ClassResult("E")
     a = compare_files("A", cf, server_files, A_DIRS, info, allow)
@@ -196,17 +199,33 @@ def compare(cloud_manifest: Mapping[str, Any], server_files: Mapping[str, str],
     d = compare_archive(
         cf, server_files, cloud_manifest.get("archive_days") or [], info, today=today
     )
-    ok = all(x.ok for x in (a, b, c, d)) and a.total > 0 and b.total > 0
-    why = (
-        ""
-        if ok or (a.total and b.total)
-        else " (nothing to compare: the cloud manifest or the shadow is empty)"
-    )
+    # K: the code itself. Both sides check their code against their own manifest; this is
+    # the only place the CLOUD's code is compared with the server's.
+    k = ClassResult("K")
+    cc: Mapping[str, str] = cloud_manifest.get("code") or {}
+    sc = server_code_files if server_code_files is not None else server_code()
+    for key in sorted(set(cc) | set(sc)):
+        k.add(key, cc.get(key), sc.get(key))
+    missing: list[str] = []
+    if not (a.total and b.total):
+        missing.append("no states or outputs to compare")
+    booked = [e for e in day_entries(cloud_manifest.get("ledger_entries") or [], day)
+              if e.get("kind") == "daily"]  # fmt: skip
+    if not booked:
+        missing.append("the cloud booked no daily entry for this day")
+    if not (cloud_manifest.get("archive_days") and d.total):
+        missing.append("no archive day was compared")
+    if not cc:
+        missing.append("the cloud manifest lists no code")
+    ok = all(x.ok for x in (a, b, c, d, k)) and not missing
+    why = f" ({'; '.join(missing)})" if missing else ""
     when = dt.date.fromisoformat(day)
+    code = "ok" if k.ok and cc else "DIFFERS" if cc else "not compared"
     line = (f"Shadow compare {when:%-d %b}: {'PASS' if ok else 'FAIL'} (A {a.same}/{a.total}, "
-            f"B {b.same}/{b.total}, C {c.same}/{c.total}, D {'ok' if d.ok else f'{len(d.diffs)} differ'}){why}")  # fmt: skip
-    return {"day": day, "pass": ok, "line": line, "allow": list(allow),
-            "classes": {x.name: x.record() for x in (a, b, c, d, info)}}  # fmt: skip
+            f"B {b.same}/{b.total}, C {c.same}/{c.total}, "
+            f"D {'ok' if d.ok else f'{len(d.diffs)} differ'}, code {code}){why}")  # fmt: skip
+    return {"day": day, "pass": ok, "line": line, "allow": list(allow), "missing": missing,
+            "classes": {x.name: x.record() for x in (a, b, c, d, k, info)}}  # fmt: skip
 
 
 def shadow_files(root: Path, archive_days: Sequence[str]) -> dict[str, str]:
@@ -223,6 +242,21 @@ def shadow_files(root: Path, archive_days: Sequence[str]) -> dict[str, str]:
     info = os.environ.get("BW_INFO_DIR", "")
     base = Path(info) if info else root / paths.REL_DATA
     out.update({f"{paths.REL_DATA}/{k}": v for k, v in hashing.tree(base, arch).items()})
+    return out
+
+
+REPO_RECORD = Path(__file__).resolve().parent.parent
+CODE_MAP = ((paths.REL_CODE, "code"), (paths.REL_DF_CODE, "data_foundation_code"))
+
+
+def server_code(only: str = "") -> dict[str, str]:
+    """The record code this checkout runs (``record/code`` ...), under the names it has in
+    the tree (``bigwins_forward/code/...``): what the container mounts over the tree."""
+    out: dict[str, str] = {}
+    for rel, top in CODE_MAP:
+        if only and rel != only:
+            continue
+        out.update({f"{rel}/{k}": v for k, v in hashing.tree(REPO_RECORD / top, ["."]).items()})
     return out
 
 

@@ -66,9 +66,11 @@ The Friday data bundles stop: the server backs the private data up itself.
 
 All of these, decided Fri 18 Dec after the 21:30 comparison (`bigwins record status`):
 
-1. Five trading days in a row with engine states, record outputs, ledger entries and the
-   archive / NEWS-C inputs **identical** (the comparison's classes A, B, C, D). A
-   difference resets the count to zero. The cut-over command refuses under five.
+1. Five trading days in a row, **ending on the last trading day before the cut-over**,
+   with engine states, record outputs, ledger entries, the archive / NEWS-C inputs and the
+   record's code **identical** on both machines. A day counts only if the cloud booked it.
+   A difference or a missing day resets the count to zero. The cut-over command refuses
+   under five.
 2. The month-end replay (30 Nov decision, 1 Dec fills) and the multi-market replay
    identical (the engineer runs both on 12-13 Dec).
 3. Every server job on time and exit 0 (Health); the daily replay done by 21:15; the
@@ -78,7 +80,8 @@ All of these, decided Fri 18 Dec after the 21:30 comparison (`bigwins record sta
    `sudo bigwins record job intraday`, about 300 credits).
 6. The NEWS-C round trip through the relay done by 09:45 on at least four days.
 7. Peak memory of the daily job under its 1.5 GB cap with no swap and no kill
-   (`bigwins record memory`, or Health > Paper record).
+   (`bigwins record memory`, or Health > Paper record). Jobs in ASX hours are held to
+   600 MB and half a CPU.
 8. A backup and a restore test that include the record both OK.
 9. At least 10 GB free at the end of the week.
 10. A last-digit difference is not waved through: cause first, then a fix on both sides.
@@ -91,7 +94,12 @@ moves to **Sat 9 Jan 2027**. No cut-over between 20 Dec and 8 Jan.
 - **Before you typed `yes`**: nothing changed on the server. The cloud cancels its
   handover (one more ledger entry) and carries on.
 - **Planned** (the server works but something is wrong): `sudo bigwins record handback`.
-  One more chained ledger entry, 12 characters, the cloud accepts. No fork.
+  One more chained ledger entry, 12 characters, the cloud accepts. No fork. The server
+  goes on collecting the announcements (nothing else).
+- **After restoring the server from a backup**: the paper record is ON HOLD (the app says
+  so). Run `sudo bigwins record reconcile` and tell Claude what it prints. Nothing is
+  booked or sent until the server's record is shown to be at least as new as the copy in
+  OneDrive.
 - **Server dead**: power it off (BinaryLane app), tell Claude. The cloud takes over from
   the last ledger the server sent to OneDrive (the server sends it after every job and
   does not start the next ledger job until it has). When the server comes back it sees
@@ -121,9 +129,12 @@ hash-frozen files and every registered code hash stay as they are. The runner re
 a job when the mounted code differs from `record/MANIFEST.sha256` or the Python /
 library versions differ from `record/ENVIRONMENT.json`.
 
-Update class `record` (`deploy/classify.py`): a change under `record/` (or of the two
-image build files) needs your approval like any non-app change, rebuilds only the record
-image, never restarts the trader and never changes the strategy version. After copying
+Update class `record` (`deploy/classify.py`): a change of the research code only
+(`record/code/`, `record/data_foundation_code/`, its manifest and environment file, the
+two image build files; with nothing but documents and tests beside it) needs your
+approval like any non-app change, rebuilds only the record image (outside ASX hours),
+never restarts the trader and never changes the strategy version. `record/tools/` and
+`deploy/record*.sh|py` run on the host: a change there is a trading-class update. After copying
 new research code in: `python3 record/tools/bwrec.py code-manifest`.
 
 ### Relay files (OneDrive folder "Big Wins relay")
@@ -176,7 +187,11 @@ Cloud to server, `inbox/` (anything else is refused and reported, nothing is exe
   held share find why (WebSearch) and tell the owner. If `outbox/head.json` is older
   than 30 minutes after a look: "the server did not run".
 - **Nightly (20:50)**: read `outbox/daily/<D>/` and `outbox/record/paper/`; write the
-  report in the owner's layout; upload `report.md` and `report.json`; mirror
+  report in the owner's layout; upload `report.md` and `report.json`. **Rules for both
+  files, always: never a NEWS-C rating or cause label of any share (not even in a
+  reason), and never a ranking of the paper lines (no "best line", no league table, no
+  "ranked n of m").** The app shows only the checked fields of `report.json` (not
+  `report.md`) and refuses the whole report if their text breaks these rules; mirror
   `outbox/record` and `outbox/state` to the `paper-record` branch; apply
   `outbox/bundles/bundle_<D>.tar` and replay the day in the standby tree (through 8 Jan).
 - T3 (estimates / new listings / ASIC), T5 (multi-market) and the US forward tracker

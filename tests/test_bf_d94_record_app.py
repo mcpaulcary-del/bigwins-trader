@@ -293,8 +293,10 @@ def test_BF_D94_report_page_escapes_everything(tmp_path: Path) -> None:
     assert page is not None
     html = _main(page)
     assert "Up day: books +0.4%, market +0.5%." in html and "CCC had no close today" in html
-    assert "<script>" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html
-    assert "<table>" in html and "No advice to buy or sell" in html and "Made-up news site" in html
+    # the cloud's free text (report.md) is NOT shown at all: only the checked JSON fields
+    assert "<script>" not in html and "alert(1)" not in html and "The report" not in html
+    assert "25,100" not in html  # (a figure that is only in the made-up report.md)
+    assert "No advice to buy or sell" in html and "Made-up news site" in html
     none = app_ops.record_screen(src, v, x, "/record/report", {"d": "2020-01-01"})
     assert none is not None and "No nightly report has arrived yet" in none
     assert app_research.research_md("<img src=x onerror=1>") == "<p>&lt;img src=x onerror=1&gt;</p>"
@@ -371,7 +373,7 @@ def test_BF_D93_missed_job_alarm_covers_every_moved_job() -> None:
     assert rv.freshness(j, sess, NOW) == []
     _mode(j, "writer")
     t_ok = datetime(2026, 12, 15, 20, 40, tzinfo=ASX_TZ)
-    for job in ("daily", "intraday", "export", "newsc-record"):
+    for job in ("daily", "intraday", "export", "newsc-record", "pdf-backup"):
         record_record(j, {"kind": "job", "job": job, "ok": True, "mode": "writer"}, t_ok)
     for job in ("archive", "collect"):
         record_record(j, {"kind": "job", "job": job, "ok": True, "mode": "writer"},
@@ -379,7 +381,7 @@ def test_BF_D93_missed_job_alarm_covers_every_moved_job() -> None:
     at = datetime(2026, 12, 15, 22, 0, tzinfo=ASX_TZ)
     fresh = {f.key: f for f in rv.freshness(j, sess, at)}
     assert set(fresh) == {"rec-daily", "rec-intraday", "rec-collect", "rec-archive", "rec-newsc-record",
-                          "rec-export"}  # fmt: skip
+                          "rec-export", "rec-pdf-backup"}  # fmt: skip
     assert all(f.status == "ok" for f in fresh.values()), fresh
     # the next day nothing runs: each job goes late at its own time, one incident each
     sess.append(date(2026, 12, 16))
@@ -413,7 +415,13 @@ def test_BF_D93_missed_job_alarm_covers_every_moved_job() -> None:
         "rec-archive",
         "rec-newsc-record",
         "rec-compare",
+        "rec-pdf-backup",
     }  # the compare covers the replay
+    # handed back (archive-only): only the collecting and its PDF copies are expected here
+    j3 = Journal.sqlite()
+    _mode(j3, "archive")
+    record_record(j3, {"kind": "job", "job": "archive", "ok": True, "mode": "archive"}, t_ok)
+    assert {f.key for f in rv.freshness(j3, sess[:2], at)} == {"rec-archive", "rec-pdf-backup"}
 
 
 def test_BF_D93_alarm_pages_once_per_incident() -> None:
@@ -505,3 +513,129 @@ def test_BF_D93_app_wiring() -> None:
         and str(cfg.research.relay_dir) == "/data/relay"
     )
     assert "research" in sv.NON_TRADING_CONFIG  # display paths: no strategy-version change
+
+
+# ---------------------------------------------------------------- review fixes (27 Nov 2026)
+def test_BF_D94_no_figure_is_never_called_level(tmp_path: Path) -> None:
+    """Review 5a: without an A200 comparison the headline says so; it never says "level"."""
+    root = _paper(tmp_path / "view")
+    hist = root / "paper" / "scorecard_history.csv"
+    # the record has no A200 / 40/60 comparator rows yet: nothing to work the comparison out from
+    hist.write_text(
+        "\n".join(ln for ln in hist.read_text().splitlines() if ",CMP_" not in ln) + "\n"
+    )
+    rec = rv.load(root)
+    assert rec is not None
+    main = next(x for x in rec.lines if x.group == "main")
+    assert main.started and main.vs_a200 is None
+    v, x = _vx()
+    html = _main(rv.record_page(v, x, rec, None, shell))
+    assert "Main line on paper: comparison with A200 not available yet" in html
+    assert "level with A200" not in html and "ahead of A200" not in html
+    # a real zero difference still reads "level"
+    from dataclasses import replace
+
+    rec.lines[rec.lines.index(main)] = replace(main, vs_a200=0.0001)
+    assert "Main line on paper: level with A200" in _main(rv.record_page(v, x, rec, None, shell))
+
+
+def test_BF_D94_before_the_main_line_starts_no_other_line_stands_in(tmp_path: Path) -> None:
+    """Review 5c: Home and the Inbox never show a research line's result as the headline."""
+    root = _paper(tmp_path / "view")
+    for name in ("scorecard_latest.csv", "scorecard_history.csv"):
+        f = root / "paper" / name
+        f.write_text("\n".join(ln for ln in f.read_text().splitlines()
+                               if ",EMG2_18_SIM_BT_C6," not in ln) + "\n")  # fmt: skip
+    rec = rv.load(root)
+    assert (
+        rec is not None and not rec.by_group("main") and any(x.book == "H82_25k" for x in rec.lines)
+    )
+    assert rv.summary_line(rec) == "The main paper line has not started yet."
+    card = rv.home_card(rec, None)
+    assert "has not started yet" in card and "25,100" not in card and "Large-Cap" not in card
+
+
+def test_BF_D94_free_text_with_a_rating_label_or_ranking_is_refused(tmp_path: Path) -> None:
+    """Review 5b: the app shows only the checked JSON fields, and refuses the report if their
+    text carries a NEWS-C rating / label or ranks the lines. Ordinary news words pass."""
+    relay = _report(tmp_path / "relay")
+    good = json.loads((relay / "reports" / D2 / "report.json").read_text())
+    mover = good["movers"][0]
+    for why in ("NEWS-C rating +2 on the results", "Rated -1 by the rater", "newsc: positive",
+                "rating: 2", "cause label T (takeover)", "label: U", "drop-cause: funding"):  # fmt: skip
+        with pytest.raises(rv.ReportError, match="never shown"):
+            rv.parse_report({**good, "movers": [{**mover, "why": why}]})
+    for field, text in (("verdict", "BLIND3 is the best line this month"), ("title", "Leaderboard, Tue 15 Dec"),
+                        ("verdict", "MOON ranked 1 of 11"), ("verdict", "EMG2 takes first place")):  # fmt: skip
+        with pytest.raises(rv.ReportError):
+            rv.parse_report({**good, field: text})
+    with pytest.raises(rv.ReportError):
+        rv.parse_report({**good, "needs_attention": ["NEWS-C flagged AAA"]})
+    with pytest.raises(rv.ReportError):
+        rv.parse_report(
+            {
+                **good,
+                "sources": [
+                    {"n": 1, "title": "NEWS-C batch F_01", "url": "https://x.example.com/"}
+                ],
+            }
+        )
+    for ok in ("Moody's cut its credit rating to Baa3", "Broker upgrade; rated a buy by two brokers",
+               "Raised guidance; best quarter since 2021", "Score rank improved as momentum built",
+               "Top-line growth of 12%; record first-half sales"):  # fmt: skip
+        assert rv.parse_report({**good, "movers": [{**mover, "why": ok}]}).movers[0].why == ok
+    # a refused report is simply not shown anywhere
+    (relay / "reports" / D2 / "report.json").write_text(
+        json.dumps({**good, "verdict": "NEWS-C says buy"})
+    )
+    assert rv.load_report(relay) is None
+    src = SimpleNamespace(info_dir=None, prices=None, index=lambda: [], relay_dir=relay)
+    v, x = _vx()
+    assert "Big movers" not in _main(app_ops.news_page(v, x, app_ops.collect_news(src, v), {}))
+
+
+def test_BF_D94_a_report_dated_after_today_is_ignored(tmp_path: Path) -> None:
+    """Review 5d: a folder dated in the future can never be "the newest report"."""
+    relay = _report(tmp_path / "relay")
+    _report(relay, "2026-12-31", day="2026-12-31", verdict="planted")
+    today = NOW.date()  # 15 Dec
+    assert rv.report_days(relay, today) == [date(2026, 12, 15)]
+    newest = rv.load_report(relay, today=today)
+    assert newest is not None and newest.day == date(2026, 12, 15)
+    assert rv.load_report(relay, date(2026, 12, 31), today) is None  # not by its address either
+    src = SimpleNamespace(record_view=None, scorecard=None, demo=False, relay_dir=relay, info_dir=None,
+                          prices=None, index=lambda: [])  # fmt: skip
+    v, x = _vx()
+    page = app_ops.record_screen(src, v, x, "/record/report", {"d": "2026-12-31"})
+    assert (
+        page is not None and "planted" not in page and "No nightly report has arrived yet" in page
+    )
+    assert "planted" not in (app_ops.record_screen(src, v, x, "/record", {}) or "")
+    assert "planted" not in app_ops.record_home_card(src, today)
+    news = _main(app_ops.news_page(v, x, app_ops.collect_news(src, v), {}))
+    assert "Big movers" in news and "Close of Tue 15 Dec" in news
+
+
+def test_BF_D93_hold_and_archive_mode_in_the_app() -> None:
+    j = Journal.sqlite()
+    ev = record_record(
+        j, {"kind": "hold", "reason": "the ledger in OneDrive is AHEAD: 5 there, 4 here"}, NOW
+    )
+    assert ev["kind"] == "hold" and ev["ok"] is False
+    said = _said(j, None)
+    assert (
+        len(said) == 1
+        and said[0][0] == "page"
+        and said[0][2].startswith("PAGE The paper record is ON HOLD")
+    )
+    assert "sudo bigwins record reconcile" in said[0][2]
+    host = clean_status(
+        {"record": {"mode": "writer", "hold": "restored from a backup <b>", "status": {}}}
+    )
+    assert host["record"]["hold"].startswith("restored from a backup")
+    assert any("ON HOLD" in what for _, what, _ in rv.health_attention(host))
+    card = rv.health_card(j, host, NOW)
+    assert "ON HOLD" in card and "&lt;b&gt;" in card
+    arch = clean_status({"record": {"mode": "archive"}})
+    assert arch["record"]["mode"] == "archive"
+    assert "handed back" in rv.health_card(j, arch, NOW)

@@ -27,24 +27,25 @@ RELAY=/var/lib/bigwins/relay                 # outbox, inbox/raw, inbox/validate
 REC_IMAGE=bigwins-record                     # :local, built from deploy/record.Dockerfile
 REC_UID=10002                                # the record's own user (not the trader's 10001)
 REC_NET=bigwins_record_egress
-REC_MODE_FILE=$ETC/record_mode               # off | view | shadow | writer (root-only, not in git)
+REC_MODE_FILE=$ETC/record_mode               # off | view | shadow | writer | archive (root-only, not in git)
 REC_CLOUD=/tmp/claude-0/-home-user/9b07f0f1-d4d4-53b2-b61e-ed91f2d4b167/scratchpad  # the path the code names
 REC_RECORD=onedrive/research2/68_forward_record
 REC_BRANCH=paper-record
 REC_TOOLS=$REPO/record/tools/bwrec.py
 REC_UNIT_DIR=/etc/systemd/system
+REC_HOLD=$RELAY/state/HOLD                   # present = no ledger job and no export until reconciled
 
 rec_mode() {  # off unless the owner switched it on (a pushed commit cannot change it)
   local m; m=$(head -c 12 "$REC_MODE_FILE" 2>/dev/null | tr -d '[:space:]')
-  case "$m" in view|shadow|writer) echo "$m";; *) echo off;; esac
+  case "$m" in view|shadow|writer|archive) echo "$m";; *) echo off;; esac
 }
 
 rec_set_mode() { mkdir -p "$ETC" && printf '%s\n' "$1" > "$REC_MODE_FILE" && chmod 644 "$REC_MODE_FILE"; }
 
-rec_root() { if [ "$(rec_mode)" = writer ]; then echo "$REC_TREE"; else echo "$REC_SHADOW"; fi; }
+rec_root() { case "$(rec_mode)" in writer|archive) echo "$REC_TREE";; *) echo "$REC_SHADOW";; esac; }
 
 rec_info() {  # where the announcements archive is written: the shadow's own folder until cut-over
-  if [ "$(rec_mode)" = writer ]; then info_dir; else echo "$REC_SHADOW/info"; fi
+  case "$(rec_mode)" in writer|archive) info_dir;; *) echo "$REC_SHADOW/info";; esac
 }
 
 rec_relay_remote() {  # the OneDrive folder both sides use (a second remote may be set by the owner)
@@ -56,36 +57,52 @@ rec_as() {  # run a command as the record's user (never root), no extra groups
   if [ "$(id -u)" = 0 ]; then setpriv --reuid="$REC_UID" --regid="$REC_UID" --clear-groups "$@"; else "$@"; fi
 }
 
-rec_tool() {  # the record tools on the host, reading only (root)
-  BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_INFO_DIR="$(rec_info)" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
+# Every record tool on the host runs as the record's user (uid 10002), never as root: the
+# worker only reads what they print. (record/tools is trading-class code all the same.)
+rec_tool() {
+  rec_as env BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_INFO_DIR="$(rec_info)" BW_RECORD_HOST=server \
+    BW_TODAY="${BW_TODAY:-}" python3 -I "$REC_TOOLS" "$@"
 }
 
-rec_tool_u() {  # the record tools writing into the tree: as the record's user
-  rec_as env BW_ROOT="${REC_ROOT_OVERRIDE:-$(rec_root)}" BW_INFO_DIR="$(rec_info)" BW_RECORD_HOST=server python3 -I "$REC_TOOLS" "$@"
-}
+rec_tool_u() { rec_tool "$@"; }
+
+rec_tool_plain() { rec_as python3 -I "$REC_TOOLS" "$@"; }  # no tree: disk, plans, checks
 
 rec_dirs() {  # the folders, once (root only)
   mkdir -p "$RELAY/outbox" "$RELAY/inbox/raw" "$RELAY/inbox/validated" "$RELAY/inbox/rejected" \
     "$RELAY/done" "$RELAY/state" "$REC_VIEW" "$STATE/record"
-  chown -R "$REC_UID:$REC_UID" "$RELAY/inbox" "$RELAY/done" 2>/dev/null
+  chown -R "$REC_UID:$REC_UID" "$RELAY/inbox" "$RELAY/done" "$RELAY/outbox" "$REC_VIEW" 2>/dev/null
   chmod 755 "$RELAY" "$RELAY/inbox" "$RELAY/inbox/validated" "$REC_VIEW" 2>/dev/null
   id -u bwrecord >/dev/null 2>&1 || useradd --system --uid "$REC_UID" --no-create-home --shell /usr/sbin/nologin bwrecord 2>/dev/null
   return 0
 }
 
 rec_build() {  # the record image; the build itself checks Python 3.13.18 and poppler 24.02.0
-  (cd "$REPO" && docker build -q -t "$REC_IMAGE:local" -f deploy/record.Dockerfile . >/dev/null) \
+  # never in ASX hours (apt + pip on a 2-CPU server beside the trader): noted, built by the
+  # first record job after the close
+  mkdir -p "$STATE/record"
+  if market_open; then
+    date > "$STATE/record/build_pending"
+    y "The record image is rebuilt after the ASX close (16:15), not now."; return 1
+  fi
+  (cd "$REPO" && nice -n 15 docker build -q -t "$REC_IMAGE:local" -f deploy/record.Dockerfile . >/dev/null) \
     || { r "The record image did not build: the record jobs keep the previous image."; return 1; }
+  rm -f "$STATE/record/build_pending"
 }
 
-rec_mem() {  # default-mb: the RAM cap of a record job (a root-only number overrides: 512..3000)
-  local v; v=$(head -c 6 "$ETC/record_memory_mb" 2>/dev/null | tr -cd '0-9')
-  if [ -n "$v" ] && [ "$v" -ge 512 ] && [ "$v" -le 3000 ]; then echo "$v"; else echo "$1"; fi
+IN_HOURS_MB=600  # any record job that starts while the ASX is open gets at most this much RAM
+
+rec_mem() {  # default-mb: the RAM cap of this job. A root-only number may change the cap of the
+  # heavy evening jobs only (768..2000); while the ASX is open every job is held to 600 MB
+  local v m=$1; v=$(head -c 6 "$ETC/record_memory_mb" 2>/dev/null | tr -cd '0-9')
+  if [ "$m" -ge 1000 ] && [ -n "$v" ] && [ "$v" -ge 768 ] && [ "$v" -le 2000 ]; then m=$v; fi
+  if market_open && [ "$m" -gt "$IN_HOURS_MB" ]; then m=$IN_HOURS_MB; fi
+  echo "$m"
 }
 
 rec_memory() {  # what each job really used at its last run (bigwins record memory)
   local f
-  echo "Record jobs: memory at the last run (cap $(rec_mem 1500) MB RAM, then swap)"
+  echo "Record jobs: memory at the last run (evening jobs: cap $(rec_mem 1500) MB RAM, then swap; in ASX hours: $IN_HOURS_MB MB)"
   for f in "$STATE"/record/*.out; do
     [ -s "$f" ] || continue
     tail -1 "$f" | JOB="$(basename "$f" .out)" python3 -c 'import json,os,sys
@@ -140,19 +157,23 @@ rec_run_job() {  # job [--dry-run]: one job in the record container; prints its 
   # a job that writes the ledger looks at the relay first: a newer fence there (a takeover,
   # or this server restored from an old backup) must stop it before it appends anything
   case "$job" in daily|multi|usfwd) [ "$(rec_mode)" = writer ] && rec_pull >/dev/null 2>&1;; esac
-  gate=$(rec_tool gate "$job" --shipped "$RELAY/state/shipped_head" --relay "$RELAY/inbox/validated") || {
+  gate=$(rec_tool gate "$job" --shipped "$RELAY/state/shipped_head" --relay "$RELAY/inbox/validated" --hold "$REC_HOLD") || {
     res=$(rec_job_event "$job" 1 "{\"ok\":false,\"error\":\"$(printf '%s' "$gate" | tr -d '"\\' | head -c 240)\"}")
     rec_event "$res"; rec_ping "$job" fail; echo "$gate"; return 1; }
   read -r net led eod mem < <(rec_tool job "$job") || { echo "unknown job $job"; return 1; }
-  docker image inspect "$REC_IMAGE:local" >/dev/null 2>&1 || rec_build || return 1
+  if [ -f "$STATE/record/build_pending" ] || ! docker image inspect "$REC_IMAGE:local" >/dev/null 2>&1; then
+    rec_build || docker image inspect "$REC_IMAGE:local" >/dev/null 2>&1 || { echo "no record image yet (it is built outside ASX hours)"; return 1; }
+  fi
   [ "$job" = archive ] && ro=""  # only the archive job writes the announcements archive
   mkdir -p "$info/asx_notices" "$info/asic_short" && chown "$REC_UID:$REC_UID" "$info" "$info/asx_notices" "$info/asic_short"
   mem=$(rec_mem "$mem")
   # RAM is capped hard (the trader and IB Gateway keep theirs); above the cap the job swaps,
   # up to twice the cap in all; under machine-wide pressure the kernel kills this job first
+  local cpus=1.0; market_open && cpus=0.5
+  # ... and it gets a quarter of a normal container's CPU share when the machine is busy
   local a=(run --rm --name "bwrec-$job" -u "$REC_UID:$REC_UID" --read-only --tmpfs /tmp --cap-drop ALL
     --security-opt no-new-privileges:true --memory "${mem}m" --memory-swap "$((mem * 2))m"
-    --oom-score-adj 500 --cpus 1.0 --pids-limit 256
+    --oom-score-adj 500 --cpus "$cpus" --cpu-shares 256 --pids-limit 256
     -e TZ=UTC -e HOME=/tmp -e BW_RECORD_HOST=server -e PYTHONDONTWRITEBYTECODE=1
     -e BW_RELAY_INBOX=/relay/inbox -e BW_RELAY_FENCE=/relay/inbox/fence.json
     -v "$root:$REC_CLOUD"
@@ -161,6 +182,11 @@ rec_run_job() {  # job [--dry-run]: one job in the record container; prints its 
     -v "$info/asx_notices:$REC_CLOUD/bigwins_forward/data/asx_notices$ro"
     -v "$info/asic_short:$REC_CLOUD/bigwins_forward/data/asic_short$ro"
     -v "$REPO/record:/opt/bwrecord/record:ro" -v "$RELAY/inbox/validated:/relay/inbox:ro")
+  # the live trader reads CORPORATE_ACTIONS.csv from this folder: read-only inside every record
+  # container, so no record job (and no record-class update) can change what the trader reads;
+  # it changes only through an owner-confirmed request (bigwins record requests)
+  [ -f "$root/$REC_RECORD/CORPORATE_ACTIONS.csv" ] \
+    && a+=(-v "$root/$REC_RECORD/CORPORATE_ACTIONS.csv:$REC_CLOUD/$REC_RECORD/CORPORATE_ACTIONS.csv:ro")
   if [ "$net" = 1 ]; then
     docker network inspect "$REC_NET" >/dev/null 2>&1 || docker network create "$REC_NET" >/dev/null
     a+=(--network "$REC_NET")
@@ -223,24 +249,64 @@ rec_reports() {  # a new nightly report in the relay: one Inbox message for it
   return 0
 }
 
+rec_hold() {  # reason: stop every ledger job and every export until the owner / engineer reconciles
+  mkdir -p "$RELAY/state"
+  [ -f "$REC_HOLD" ] || rec_event "{\"kind\":\"hold\",\"ok\":false,\"at\":\"$(date +%Y-%m-%dT%H:%M:%S%z)\",\"reason\":\"$(printf '%s' "$1" | tr -d '"\\' | head -c 240)\"}"
+  printf '%s\n' "$1" > "$REC_HOLD"
+}
+
+rec_remote_check() {  # the ledger in OneDrive must be the START of this server's ledger
+  # (the same entries, in order). If it is longer or different, this server holds an OLDER or
+  # another record (a restore from a backup, a takeover): nothing is exported over it.
+  local tmp rc out
+  tmp=$(mktemp -d /var/tmp/bwrelay.XXXXXX) && chmod 755 "$tmp" || return 1
+  if ! rclone copyto "$(rec_relay_remote)/outbox/record/LEDGER.jsonl" "$tmp/LEDGER.jsonl" >/dev/null 2>&1 \
+     || [ ! -s "$tmp/LEDGER.jsonl" ]; then
+    rm -rf "$tmp"
+    # nothing there: fine only if OneDrive answers and this server never sent a ledger (the first export)
+    if rclone mkdir "$(rec_relay_remote)/outbox" >/dev/null 2>&1 && [ ! -s "$RELAY/state/shipped_head" ]; then return 0; fi
+    echo "the ledger in OneDrive could not be read"; return 2
+  fi
+  out=$(rec_tool prefix-check "$tmp/LEDGER.jsonl"); rc=$?
+  rm -rf "$tmp"
+  [ "$rc" = 0 ] && return 0
+  rec_hold "the ledger in OneDrive is not the start of this server's ledger ($out): nothing is exported or booked until reconciled (bigwins record reconcile)"
+  echo "$out"; return 1
+}
+
 rec_export() {  # [day]: stage the readable record, send it to OneDrive, note the shipped head
-  local day=${1:-$(date +%F)} st res root ob="$RELAY/outbox" rem; root=$(rec_root)
+  local day=${1:-$(date +%F)} st res root ob="$RELAY/outbox" rem mode; root=$(rec_root); mode=$(rec_mode)
   [ -f "$root/$REC_RECORD/LEDGER.jsonl" ] || return 0
+  [ "$mode" = archive ] && return 0  # handed back: the cloud writes the record; nothing to send
   rec_dirs
   rem="$(rec_relay_remote)/outbox"
   # the parallel run's files go under outbox/shadow: never where the record's own files are
-  [ "$(rec_mode)" = shadow ] && { ob="$ob/shadow"; rem="$rem/shadow"; }
+  [ "$mode" = shadow ] && { ob="$ob/shadow"; rem="$rem/shadow"; }
+  if [ "$mode" = writer ]; then
+    if [ -f "$REC_HOLD" ]; then
+      rec_event '{"kind":"job","job":"export","ok":false,"error":"on hold: the record must be reconciled first (bigwins record reconcile)"}'; rec_ping export fail; return 1
+    fi
+    onedrive_ok || { rec_event '{"kind":"job","job":"export","ok":false,"error":"OneDrive is not connected; the next record job waits"}'; rec_ping export fail; return 1; }
+    rec_remote_check >/dev/null || {
+      rec_event '{"kind":"job","job":"export","ok":false,"error":"the ledger in OneDrive could not be checked against this server (or differs): nothing was sent"}'; rec_ping export fail; return 1; }
+  fi
   st=$(mktemp) || return 1
-  DISK="$(rec_tool disk "$root" 2>/dev/null)" MODE="$(rec_mode)" COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" \
+  chmod 644 "$st"
+  DISK="$(rec_tool_plain disk "$root" 2>/dev/null)" MODE="$mode" COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" \
     python3 -c 'import json,os,time
 d=(os.environ.get("DISK") or "? 0").split()
 print(json.dumps({"mode":os.environ["MODE"],"disk_level":d[0],"disk_free_gb":float(d[1]),"code_commit":os.environ["COMMIT"],
  "made":time.strftime("%Y-%m-%dT%H:%M:%S%z")}))' > "$st"
+  mkdir -p "$ob" && chown -R "$REC_UID:$REC_UID" "$ob"
   res=$(rec_tool export "$ob" --day "$day" --status "$st"); rm -f "$st"
   case "$res" in "{"*) ;; *) rec_event '{"kind":"job","job":"export","ok":false,"error":"the export could not be staged"}'; rec_ping export fail; return 1;; esac
-  if onedrive_ok && rclone copy "$ob" "$rem" >/dev/null 2>&1; then
-    printf '%s' "$res" | python3 -c 'import json,sys; print(json.load(sys.stdin)["head"])' > "$RELAY/state/shipped_head.new" \
-      && mv -f "$RELAY/state/shipped_head.new" "$RELAY/state/shipped_head"
+  # everything first, head.json LAST: a head in OneDrive means all up to it is there
+  if onedrive_ok && rclone copy "$ob" "$rem" --exclude head.json --exclude 'shadow/**' >/dev/null 2>&1 \
+     && rclone copyto "$ob/head.json" "$rem/head.json" >/dev/null 2>&1; then
+    if [ "$mode" = writer ]; then
+      printf '%s' "$res" | python3 -c 'import json,sys; print(json.load(sys.stdin)["head"])' > "$RELAY/state/shipped_head.new" \
+        && mv -f "$RELAY/state/shipped_head.new" "$RELAY/state/shipped_head"
+    fi
     rec_event "$(rec_job_event export 0 "$res")"; rec_ping export ok
     rec_view_refresh
     return 0
@@ -251,9 +317,31 @@ print(json.dumps({"mode":os.environ["MODE"],"disk_level":d[0],"disk_free_gb":flo
   return 1
 }
 
+rec_reconcile() {  # after a restore or a hold: compare this server's ledger with OneDrive's
+  [ "$(id -u)" = 0 ] || { r "Run as root (sudo bigwins record reconcile)."; return 1; }
+  [ "$(rec_mode)" = writer ] || { echo "This server is not the writer: nothing to reconcile."; return 0; }
+  onedrive_ok || { r "OneDrive is not connected."; return 1; }
+  local out rc
+  [ -f "$REC_HOLD" ] && y "On hold because: $(head -c 300 "$REC_HOLD")"
+  rm -f "$REC_HOLD.try"; [ -f "$REC_HOLD" ] && mv "$REC_HOLD" "$REC_HOLD.try"
+  out=$(rec_remote_check); rc=$?
+  if [ "$rc" = 0 ]; then
+    rm -f "$REC_HOLD" "$REC_HOLD.try"
+    g "The ledger in OneDrive is the start of this server's ledger: nothing was lost. Hold released."
+    rec_export "$(date +%F)" && g "Record sent; the jobs carry on."
+    return 0
+  fi
+  [ -f "$REC_HOLD" ] || mv "$REC_HOLD.try" "$REC_HOLD" 2>/dev/null; rm -f "$REC_HOLD.try"
+  r "NOT reconciled: $out"
+  r "This server's record is older than, or different from, the one in OneDrive. Do NOT run"
+  r "record jobs. Tell Claude: the newer record and its states are in OneDrive (Big Wins relay /"
+  r "outbox/record and outbox/state) and are put back by the engineer, never merged by hand."
+  return 1
+}
+
 rec_view_copy() {  # src-tree source note: the display copy the app reads (never the ledger or data)
-  mkdir -p "$REC_VIEW" && chmod 755 "$REC_VIEW"
-  python3 -I "$REC_TOOLS" view-copy "$1" "$REC_VIEW" "$2" "$3" >/dev/null
+  mkdir -p "$REC_VIEW" && chmod 755 "$REC_VIEW" && chown "$REC_UID:$REC_UID" "$REC_VIEW"
+  rec_tool_plain view-copy "$1" "$REC_VIEW" "$2" "$3" >/dev/null
 }
 
 rec_mirror_fetch() {  # the cloud's nightly paper-record push, with the existing READ-ONLY key
@@ -270,7 +358,7 @@ rec_mirror_fetch() {  # the cloud's nightly paper-record push, with the existing
 rec_view_refresh() {  # writer: this server's record; before that: the cloud's nightly copy
   case "$(rec_mode)" in
     writer) rec_view_copy "$REC_TREE" "this server" "the record is written on this server";;
-    view|shadow)
+    view|shadow|archive)
       rec_mirror_fetch || { echo "view: the paper-record branch could not be fetched"; return 1; }
       rec_view_copy "$REC_MIRROR" "the research environment (nightly copy $(git -C "$REC_MIRROR" log -1 --format=%h 2>/dev/null))" \
         "read-only copy; the record is still written in the research environment";;
@@ -291,6 +379,8 @@ rec_chain() {  # chain: what one timer does, under the one record lock
   case "$chain:$mode" in
     relay:*) rec_pull; rec_view_refresh; return 0;;
     *:view) echo "view only: the record's jobs still run in the research environment"; return 0;;
+    morning:archive) rec_run_job archive >/dev/null || rc=1;;  # handed back: collecting goes on
+    *:archive) echo "handed back: only the announcements are collected here"; return 0;;
     morning:*)
       rec_run_job archive >/dev/null || rc=1
       if rec_today_session && [ "$(date +%H%M)" -lt 1000 ]; then rec_run_job newsc-prepare >/dev/null || rc=1; fi
@@ -312,22 +402,25 @@ rec_chain() {  # chain: what one timer does, under the one record lock
 }
 
 rec_newsc() {  # [--dry-run]: record what the raters sent, only when a day is waiting in the relay
-  local dry=${1:-} rc=0 did=0
+  local dry=${1:-} rc=0
   if [ "$(date +%H%M)" -lt 1000 ] && rec_tool newsc-pending "$RELAY/inbox/validated" record $dry >/dev/null; then
-    rec_run_job newsc-record $dry >/dev/null || rc=1; did=1
+    rec_run_job newsc-record $dry >/dev/null || rc=1
+    # the ratings entry goes to OneDrive before the next ledger job (the drops) may start
+    [ -z "$dry" ] && { rec_export "$(date +%F)" || rc=1; }
   fi
   if rec_tool newsc-pending "$RELAY/inbox/validated" drops $dry >/dev/null; then
-    rec_run_job newsc-drops-record $dry >/dev/null || rc=1; did=1
+    rec_run_job newsc-drops-record $dry >/dev/null || rc=1
+    [ -z "$dry" ] && { rec_export "$(date +%F)" || rc=1; }
   fi
-  [ "$did" = 1 ] && [ -z "$dry" ] && { rec_export "$(date +%F)" || rc=1; }
   return $rc
 }
 
-rec_bundle_out() {  # day: the day's raw inputs for the standby replay (owner's own OneDrive only)
-  local day=$1 f="$RELAY/outbox/bundles/bundle_$1.tar"
+rec_bundle_out() {  # day [suffix]: the day's raw inputs for the standby replay (owner's own OneDrive only)
+  local day=$1 f="$RELAY/outbox/bundles/bundle_$1${2:-}.tar"
   mkdir -p "$RELAY/outbox/bundles" && chown "$REC_UID:$REC_UID" "$RELAY/outbox/bundles"
+  [ -e "$f" ] && return 0  # a bundle is written once and never replaced
   rec_tool_u bundle-make "$day" "$f" >/dev/null 2>&1 || return 1
-  rec_tool_u manifest "$day" --archive-day "$(rec_prev_day "$day")" --out "$RELAY/outbox/bundles/manifest_$day.json" >/dev/null 2>&1
+  rec_tool_u manifest "$day" --archive-day "$(rec_prev_day "$day")" --out "$RELAY/outbox/bundles/manifest_$day${2:-}.json" >/dev/null 2>&1
   find "$RELAY/outbox/bundles" -name 'bundle_*.tar' -mtime +10 -delete 2>/dev/null
   return 0
 }
@@ -368,7 +461,8 @@ print(json.dumps({"kind":"compare","ok":bool(r.get("pass")),"pass":bool(r.get("p
 }
 
 # ---------------------------------------------------------------- timers (version-aware, plan E4)
-rec_units_sum() { python3 -I "$REC_TOOLS" units-sum "$DEPLOY/bigwins.sh" 2>/dev/null; }
+REC_UNITS=$DEPLOY/record_units.py  # root writes unit files from deploy code only, never from record/
+rec_units_sum() { python3 -I "$REC_UNITS" sum "$DEPLOY/bigwins.sh" 2>/dev/null; }
 
 rec_units_names() { ls "$REC_UNIT_DIR" 2>/dev/null | sed -n 's/^\(bigwins-rec-[a-z]*\)\.timer$/\1/p'; }
 
@@ -377,7 +471,7 @@ rec_ensure_timers() {  # write the record timers when missing OR when this versi
   local want have n; want=$(rec_units_sum); have=$(cat "$REC_UNIT_DIR/.bigwins-rec-units" 2>/dev/null)
   [ -n "$want" ] && [ "$want" = "$have" ] && return 0
   for n in $(rec_units_names); do systemctl disable --now "$n.timer" >/dev/null 2>&1; rm -f "$REC_UNIT_DIR/$n.timer" "$REC_UNIT_DIR/$n.service"; done
-  python3 -I "$REC_TOOLS" units "$REC_UNIT_DIR" "$DEPLOY/bigwins.sh" >/dev/null || return 1
+  python3 -I "$REC_UNITS" write "$REC_UNIT_DIR" "$DEPLOY/bigwins.sh" >/dev/null || return 1
   systemctl daemon-reload
   for n in $(rec_units_names); do systemctl enable --now "$n.timer" >/dev/null 2>&1; done
   printf '%s' "$want" > "$REC_UNIT_DIR/.bigwins-rec-units"
@@ -393,8 +487,9 @@ rec_timer_states() {  # "rec-daily:1 ..." for Health
 
 rec_host_status() {  # JSON for the app's Health screen (no secrets, no data)
   local mode root; mode=$(rec_mode); root=$(rec_root)
-  MODE="$mode" ST="$( [ "$mode" = shadow ] || [ "$mode" = writer ] && rec_tool status 2>/dev/null)" \
-  DISK="$(python3 -I "$REC_TOOLS" disk "$( [ -d "$root" ] && echo "$root" || echo / )" 2>/dev/null)" \
+  MODE="$mode" ST="$(case "$mode" in shadow|writer|archive) rec_tool status 2>/dev/null;; esac)" \
+  DISK="$(rec_tool_plain disk "$( [ -d "$root" ] && echo "$root" || echo / )" 2>/dev/null)" \
+  HOLD="$(head -c 240 "$REC_HOLD" 2>/dev/null)" \
   SHIPPED="$(head -c 64 "$RELAY/state/shipped_head" 2>/dev/null)" \
   VIEW="$(head -c 400 "$REC_VIEW/source.json" 2>/dev/null)" \
   PING_SET="$(case "$(cat "$SECRETS/healthchecks_record_url" 2>/dev/null)" in https://*) echo 1;; *) echo 0;; esac)" \
@@ -405,7 +500,7 @@ def j(k):
     try: return json.loads(e.get(k) or "{}")
     except ValueError: return {}
 d=(e.get("DISK") or "? 0").split(); w=(e.get("WAITING") or "0 0").split()
-print(json.dumps({"mode":e["MODE"],"status":j("ST"),"disk_level":d[0],"disk_free_gb":float(d[1]) if len(d)>1 else None,
+print(json.dumps({"mode":e["MODE"],"hold":e.get("HOLD",""),"status":j("ST"),"disk_level":d[0],"disk_free_gb":float(d[1]) if len(d)>1 else None,
  "shipped_head":e.get("SHIPPED",""),"view":j("VIEW"),"ping_set":e.get("PING_SET")=="1",
  "requests_waiting":max(int(w[0])-int(w[1]),0),"timers":{k:v=="1" for k,_,v in (x.partition(":") for x in e.get("TIMERS","").split())}}))'
 }
@@ -423,7 +518,8 @@ rec_status() {
 d=json.loads(sys.stdin.read() or "{}")
 print(f"  writer = {d.get(\"writer\",\"?\")} ({d.get(\"role\",\"?\")}), epoch {d.get(\"epoch\",\"?\")}, {d.get(\"seq\",0)} entries, head {str(d.get(\"head\",\"\"))[:12]}, chain {\"ok\" if d.get(\"chain_ok\") else \"BROKEN\"}")';;
   esac
-  echo "  disk: $(python3 -I "$REC_TOOLS" disk "$( [ -d "$(rec_root)" ] && rec_root || echo / )" 2>/dev/null | awk '{print $2" GB free ("$1")"}')"
+  [ -f "$REC_HOLD" ] && r "  ON HOLD: $(head -c 300 "$REC_HOLD")"
+  echo "  disk: $(rec_tool_plain disk "$( [ -d "$(rec_root)" ] && rec_root || echo / )" 2>/dev/null | awk '{print $2" GB free ("$1")"}')"
   echo "  relay: $(onedrive_ok && echo "OneDrive connected" || echo "OneDrive NOT connected (bigwins onedrive)") · shipped head $(head -c 12 "$RELAY/state/shipped_head" 2>/dev/null || echo none)"
   echo "  timers: $(rec_timer_states)"
   ls "$STATE"/record/compared_* >/dev/null 2>&1 && echo "  last compare: $(python3 -c 'import json,sys,glob
@@ -448,7 +544,7 @@ rec_seed() {  # the record tree and its private data from OneDrive, every file c
   [ "$(id -u)" = 0 ] || { r "Run as root (sudo bigwins record seed)."; return 1; }
   onedrive_ok || { r "Connect OneDrive first: bigwins onedrive (guide C8)."; return 1; }
   [ "$(rec_mode)" = writer ] && { r "The record is already written on this server: no seed."; return 1; }
-  local free; free=$(python3 -I "$REC_TOOLS" disk / | awk '{print int($2)}')
+  local free; free=$(rec_tool_plain disk / | awk '{print int($2)}')
   [ "${free:-0}" -ge 10 ] || { r "Only ${free} GB free: the parallel week needs at least 10 GB (20 GB to go live)."; return 1; }
   [ "${free:-0}" -ge 20 ] || y "Only ${free} GB free: enough for the parallel week, not for a year of the archive (plan 2.3)."
   rec_dirs
@@ -563,8 +659,9 @@ rec_handback() {  # plan 5.1: a planned rollback; one more chained entry, no for
   mkdir -p "$STATE/record"; exec 6>"$STATE/record/chain.lock"; flock -w 1800 6 || { r "A record job is running; try again shortly."; return 1; }
   local head
   head=$(rec_tool_u handover) || { r "$head"; r "Nothing changed."; return 1; }
-  rec_bundle_out "$(date +%F)"
-  rec_export "$(date +%F)" || r "The export to OneDrive FAILED: run 'bigwins record run relay' and tell Claude before anything else."
+  rec_bundle_out "$(date +%F)" _handback  # its own name: the evening's bundle is never replaced
+  rec_export "$(date +%F)" || r "The export to OneDrive FAILED: run 'sudo bigwins record reconcile' and tell Claude before anything else."
+  rec_set_mode archive  # this server now only collects the announcements (two collectors are safer than one)
   echo
   echo "    Handover head, first 12 characters:   $head"
   echo
@@ -609,31 +706,45 @@ rec_info_light() {  # stage-dir: the info archive without its PDFs (lists, texts
   local info; info=$(rec_info)
   [ -d "$info" ] || info=$(info_dir)
   [ -d "$info" ] || return 1
+  # as root, into the backup's root-only staging folder (the one tool call that needs it)
   python3 -I "$REC_TOOLS" stage-light "$info" "$1" >/dev/null 2>&1 && echo "$1"
 }
 
 rec_backup_pdfs() {  # one encrypted file per finished archive day; 60 days kept off-site (D4)
   onedrive_ok && command -v age >/dev/null && [ -s "$BKEY" ] || return 0
-  local info rcp list line day tmp; info=$(rec_info); [ -d "$info/asx_notices" ] || return 0
-  rcp=$(age-keygen -y "$BKEY" 2>/dev/null) || return 1
-  list=$(mktemp); rclone lsf "$OD_PATH/pdf" 2>/dev/null > "$list"
-  python3 -I "$REC_TOOLS" pdf-plan "$info" "$list" | while read -r line day; do
+  local info rcp list line day tmp sent=0 bad=0 plan; info=$(rec_info); [ -d "$info/asx_notices" ] || return 0
+  rcp=$(age-keygen -y "$BKEY" 2>/dev/null) || { rec_pdf_result 0 1; return 1; }
+  list=$(mktemp); chmod 644 "$list"; rclone lsf "$OD_PATH/pdf" 2>/dev/null > "$list"
+  plan=$(BW_TODAY="${BW_TODAY:-}" rec_tool_plain pdf-plan "$info" "$list"); rm -f "$list"
+  while read -r line day; do
     case "$line" in
       upload)
         tmp=$(mktemp /var/tmp/asxpdf.XXXXXX)
-        if tar -C "$info/asx_notices/$day" -cf - pdf --exclude='*.txt' 2>/dev/null | age -r "$rcp" -o "$tmp" \
-           && rclone copyto "$tmp" "$OD_PATH/pdf/asxpdf-$day.tar.age" >/dev/null 2>&1; then echo "pdf backup: $day sent"; fi
+        # (options before the folder name: GNU tar ignores an --exclude that comes after it)
+        if tar -C "$info/asx_notices/$day" --exclude='*.txt' -cf - pdf 2>/dev/null | age -r "$rcp" -o "$tmp" \
+           && [ -s "$tmp" ] && rclone copyto "$tmp" "$OD_PATH/pdf/asxpdf-$day.tar.age" >/dev/null 2>&1; then
+          echo "pdf backup: $day sent"; sent=$((sent+1))
+        else
+          echo "pdf backup: $day FAILED"; bad=$((bad+1))
+        fi
         rm -f "$tmp";;
       delete) rclone deletefile "$OD_PATH/pdf/$day" >/dev/null 2>&1 && echo "pdf backup: $day removed off-site (older than 60 days; kept on the server)";;
     esac
-  done
-  rm -f "$list"
+  done <<<"$plan"
+  rec_pdf_result "$sent" "$bad"
+  [ "$bad" = 0 ]
+}
+
+rec_pdf_result() {  # sent failed: to Health and the missed-job alarm, every night
+  local ok=true; [ "$2" = 0 ] || ok=false
+  rec_event "{\"kind\":\"job\",\"job\":\"pdf-backup\",\"ok\":$ok,\"mode\":\"$(rec_mode)\",\"at\":\"$(date +%Y-%m-%dT%H:%M:%S%z)\",\"day\":\"$(date +%F)\"$([ "$2" = 0 ] || echo ",\"error\":\"$2 day(s) of archive PDFs could not be encrypted or sent to OneDrive\"")}"
+  if [ "$2" = 0 ]; then rec_ping pdf-backup ok; else rec_ping pdf-backup fail; fi
 }
 
 rec_backup_set() {  # stores|base: the big, slowly-changing data as its own encrypted set (3 kept)
   onedrive_ok && command -v age >/dev/null && [ -s "$BKEY" ] || return 0
   [ "$(rec_mode)" = writer ] || return 0
-  local set=$1 dirs sum rcp tmp name
+  local set=$1 dirs sum rcp tmp name d
   case "$set" in
     stores) dirs="bigwins_forward/data/eodhd fwd_multi/data";;
     base) dirs="data_foundation/out bigwins_lab company_study actuals deep84";;
@@ -666,11 +777,12 @@ cmd_record() {
     cutover) rec_cutover;;
     handback) rec_handback;;
     requests) rec_requests;;
+    reconcile) rec_reconcile;;
     run) rec_chain "${2:-}";;
     job) rec_run_job "${2:-}" "${3:-}";;  # the engineer: one job now
     memory) rec_memory;;
     build) rec_build && g "Record image built.";;
     timers) rec_ensure_timers && rec_timer_states;;
-    *) echo "Usage: bigwins record [status|view on|off|seed|shadow on|off|cutover|handback|requests|run <chain>]";;
+    *) echo "Usage: bigwins record [status|view on|off|seed|shadow on|off|cutover|handback|requests|reconcile|memory|run <chain>]";;
   esac
 }

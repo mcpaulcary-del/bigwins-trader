@@ -70,6 +70,10 @@ services:
       POSTGRES_DB: ledger_bf_paper
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets: [db_password]
+    # BF-D93 (review): memory kept for the database under pressure, and the kernel ends other
+    # things (the capped record jobs first: oom-score-adj 500) before it
+    mem_reservation: 256m
+    oom_score_adj: -500
     depends_on:
       secrets-check: {condition: service_completed_successfully}
     volumes: [pgdata:/var/lib/postgresql/data]
@@ -86,6 +90,10 @@ services:
       args: {BUILD_SHA: "${BUILD_SHA:-unknown}"}  # review F22
     image: asx-trader-bfast-trader:local
     restart: unless-stopped
+    # BF-D93 (review): the trader keeps its memory when the server is short (a reservation,
+    # not a cap) and is the last thing the kernel would end; record jobs are capped and first
+    mem_reservation: 768m
+    oom_score_adj: -500
     depends_on:
       secrets-check: {condition: service_completed_successfully}
       db: {condition: service_healthy}

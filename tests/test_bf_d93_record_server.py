@@ -29,7 +29,7 @@ map() {{ case "$1" in bigwins-onedrive:*) echo "{remote}/${{1#bigwins-onedrive:}
 case "$1" in
   listremotes) echo "bigwins-onedrive:";;
   copy) s=$(map "$2"); d=$(map "$3"); mkdir -p "$d"; [ -d "$s" ] && cp -R "$s/." "$d/"; exit 0;;
-  copyto) d=$(map "$3"); mkdir -p "$(dirname "$d")"; cp "$2" "$d";;
+  copyto) s=$(map "$2"); d=$(map "$3"); mkdir -p "$(dirname "$d")"; cp "$s" "$d" || exit 1;;
   lsf) ls "$(map "$2")" 2>/dev/null;;
   deletefile) rm -f "$(map "$2")";;
   mkdir) mkdir -p "$(map "$2")";;
@@ -65,9 +65,8 @@ class Server:
         (b / "age").write_text(STUB.format(log=self.log, rc=tmp / "age_rc",
                                            extra='while [ $# -gt 0 ]; do [ "$1" = -o ] && cat > "$2"; shift; done\n'))  # fmt: skip
         (b / "age-keygen").write_text("#!/bin/sh\necho age1madeuprecipient\n")
-        (b / "setpriv").write_text(
-            '#!/bin/sh\nwhile [ "${1#--}" != "$1" ]; do shift; done\nexec "$@"\n'
-        )
+        (b / "setpriv").write_text(f'#!/bin/sh\necho "setpriv $*" >> "{self.log}"\n'
+                                   'while [ "${1#--}" != "$1" ]; do shift; done\nexec "$@"\n')  # fmt: skip
         (b / "id").write_text(
             '#!/bin/sh\nif [ "$1" = -u ] && [ $# = 1 ]; then echo 0; else exit 1; fi\n'
         )
@@ -82,17 +81,21 @@ class Server:
     def mode(self, m: str) -> None:
         (self.tmp / "etc" / "record_mode").write_text(m + "\n")
 
-    def run(self, script: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
+    def run(
+        self, script: str, stdin: str = "", today: str = ""
+    ) -> subprocess.CompletedProcess[str]:
         t = self.tmp
         pre = (f'source "{SH}" __lib__ >/dev/null; REPO="{REPO}"; REC_TOOLS="{REPO}/record/tools/bwrec.py"; '
-               f'DEPLOY="{t}/deploy"; SECRETS="{t}/secrets"; '
+               f'DEPLOY="{t}/deploy"; SECRETS="{t}/secrets"; REC_UNITS="{REPO}/deploy/record_units.py"; '
+               f'REC_HOLD="{t}/relay/state/HOLD"; '
                f'STATE="{t}/state"; ETC="{t}/etc"; REC_MODE_FILE="{t}/etc/record_mode"; '
                f'REC_TREE="{self.tree}"; REC_SHADOW="{self.shadow}"; REC_MIRROR="{self.mirror}"; '
                f'REC_VIEW="{t}/view"; RELAY="{t}/relay"; REC_UNIT_DIR="{t}/units"; '
                f'BACKUP_DIR="{t}/backups"; BKEY="{t}/backup.key"; REC_LOCK_WAIT=5; '
                f'info_dir() {{ echo "{t}/info"; }}; market_open() {{ return 1; }}; '
                'rec_mirror_fetch() { return 0; }; do_backup() { echo backup; }; ')  # fmt: skip
-        env = {**os.environ, "PATH": f"{t / 'bin'}:{os.environ['PATH']}", "TZ": "Australia/Sydney"}
+        env = {**os.environ, "PATH": f"{t / 'bin'}:{os.environ['PATH']}", "TZ": "Australia/Sydney",
+               "BW_TODAY": today}  # fmt: skip
         return subprocess.run(["bash", "-c", pre + script], capture_output=True, text=True, env=env,
                               input=stdin, check=False)  # fmt: skip
 
@@ -108,31 +111,47 @@ class Server:
 
 # ---------------------------------------------------------------- the "record" update class
 def test_BF_D93_record_update_class() -> None:
-    """E6: record code is its own class: owner approval, no trader restart, no version bump."""
+    """E6: the research code is its own class: owner approval, no trader restart, no version
+    bump. Review: only code that runs INSIDE the record container is in it; the tools the
+    worker runs on the host, and anything mixed with other changes, are not."""
     w = runpy.run_path(str(REPO / "deploy" / "classify.py"))
-    rec = ["record/code/paper_daily.py", "record/tools/fence.py", "record/MANIFEST.sha256",
+    rec = ["record/code/paper_daily.py", "record/data_foundation_code/eodhd/client.py",
+           "record/MANIFEST.sha256", "record/ENVIRONMENT.json",
            "deploy/record.Dockerfile", "deploy/record_requirements.txt"]  # fmt: skip
     for f in rec:
         assert (
             w["classify"]([f]) == "record" and not sv.is_trading_path(f) and sv.is_record_path(f)
         ), f
-    assert w["classify"]([*rec, "docs/HANDOVER.md"]) == "record"
-    assert (
-        w["classify"]([*rec, "deploy/record.sh"]) == "strategy"
-    )  # the worker itself: infrastructure
+    assert w["classify"]([*rec, "docs/HANDOVER.md", "tests/test_x.py"]) == "record"
+    # host-side code is a trading / infrastructure change, with every guard of one
+    for f in ("record/tools/fence.py", "record/tools/bwrec.py", "record/tools/jobs.py", "record/__init__.py",
+              "record/COMPARE_ALLOW.json", "deploy/record.sh", "deploy/record_units.py"):  # fmt: skip
+        assert (
+            w["classify"]([f]) == "strategy" and sv.is_trading_path(f) and not sv.is_record_path(f)
+        ), f
+        assert w["classify"]([*rec, f]) == "strategy"
+        assert sv.classify_update([*rec, f], None, None)["strategy"] is True
     assert w["classify"]([*rec, "trader/lines/emg2.py"]) == "strategy"
+    # a commit that also changes an app file is an APP update (the app must be rebuilt):
+    # never "record", which would leave the app on the old code with nothing pending
+    for mixed in (["record/code/movers.py", "trader/record_view.py"], [*rec, "trader/webui.py"],
+                  ["record/code/movers.py", "README.md"]):  # fmt: skip
+        assert w["classify"](mixed) == "app", mixed
+        cu = sv.classify_update(mixed, None, None)
+        assert cu["strategy"] is False and not cu.get("record"), mixed
     assert w["classify"](["docs/x.md", "trader/record_view.py"]) == "app"
-    assert (w["RECORD_DIRS"], w["RECORD_FILES"]) == (sv.RECORD_DIRS, sv.RECORD_FILES)
-    cls = sv.classify_update(rec, None, None)
-    assert (
-        cls["strategy"] is False
-        and cls["record"] is True
-        and "paper record code: 5 file(s)" in cls["reasons"][0]
-    )
+    assert (w["RECORD_DIRS"], w["RECORD_FILES"], w["TRADING_DIRS"]) == (
+        sv.RECORD_DIRS, sv.RECORD_FILES, sv.TRADING_DIRS)  # fmt: skip
+    cls = sv.classify_update(iter([*rec, "docs/x.md"]), None, None)
+    assert cls["strategy"] is False and cls["record"] is True
+    assert "paper record code: 6 file(s)" in cls["reasons"][0]
     # never applied automatically: not on the automatic allow-list
     au = runpy.run_path(str(REPO / "deploy" / "autoupdate.py"))
-    for f in rec:
+    for f in [*rec, "record/tools/fence.py"]:
         assert au["kind"]([f])[0] == "approval", f
+    assert (
+        au["kind"](["record/code/movers.py", "trader/record_view.py"])[0] == "approval"
+    )  # mixed: never auto
     # no strategy-version change: nothing under record/ is an input of either hash
     assert not any(str(x).startswith("record") for x in sv.STRATEGY_FILES)
     assert sv.code_hash(REPO) == sv.code_hash(REPO)  # reads trader/ and config only
@@ -214,12 +233,16 @@ def test_BF_D93_job_is_refused_before_docker_when_the_gate_says_no(tmp_path: Pat
     (tmp_path / "relay" / "state" / "shipped_head").write_text("0" * 63 + "1")
     r = s.run("rec_run_job daily")
     assert r.returncode == 1 and "ledger shipping" in r.stdout and not s.calls("docker run")
-    # the relay shows a newer writer (a takeover): everything stops, even the archive
+    # the relay shows a newer writer (a takeover): no ledger job runs; the announcements are
+    # still collected (two collectors are safer than one, and a missed ASX day is gone for good)
     (tmp_path / "relay" / "inbox" / "validated").mkdir(parents=True, exist_ok=True)
     (tmp_path / "relay" / "inbox" / "validated" / "fence.json").write_text(
         '{"epoch": 9, "writer": "cloud"}'
     )
-    assert "newer writer" in s.run("rec_run_job archive").stdout and not s.calls("docker run")
+    (tmp_path / "relay" / "state" / "shipped_head").write_text(L.head(rec / "LEDGER.jsonl"))
+    assert "newer writer" in s.run("rec_run_job daily").stdout and not s.calls("docker run")
+    assert s.run("rec_run_job archive").returncode == 0
+    assert any("run-job archive" in c for c in s.calls("docker run"))
 
 
 def test_BF_D93_chains_follow_the_mode(tmp_path: Path) -> None:
@@ -271,7 +294,7 @@ def test_BF_D93_export_failure_is_reported_and_holds_the_next_ledger_job(tmp_pat
     r = s.run("rec_export 2026-12-21")
     assert r.returncode == 1
     assert not (tmp_path / "relay" / "state" / "shipped_head").exists()
-    assert "could not be sent to OneDrive" in s.events()[-1]["error"]
+    assert "OneDrive" in s.events()[-1]["error"] and s.events()[-1]["ok"] is False
     (tmp_path / "rclone_rc").write_text("0")
     assert s.run("rec_export 2026-12-21").returncode == 0
     status = json.loads(
@@ -340,6 +363,9 @@ def test_BF_D93_timers_are_installed_and_rewritten_when_the_set_changes(tmp_path
 
 
 # ---------------------------------------------------------------- cut-over, hand-back, requests
+CUT = "2026-12-19T18:00"  # Saturday evening after the parallel week
+
+
 def _ready_for_cutover(s: Server, days: int = 5) -> str:
     """A shadow that reproduced the cloud for ``days`` days, and the cloud's handover."""
     cloud = s.tmp / "cloud"
@@ -357,6 +383,8 @@ def _ready_for_cutover(s: Server, days: int = 5) -> str:
         paths.record_dir(cloud), "cloud", "2026-12-19", {"record_code_commit": "c" * 40}
     )
     shutil.copytree(cloud, s.mirror)  # the final paper-record commit the server fetches
+    shutil.copytree(REPO / "record" / "code", s.mirror / paths.REL_CODE,
+                    ignore=shutil.ignore_patterns("__pycache__"))  # fmt: skip
     s.mode("shadow")
     return str(h["entry_sha256"])
 
@@ -364,14 +392,14 @@ def _ready_for_cutover(s: Server, days: int = 5) -> str:
 def test_BF_D93_cutover_needs_five_days_the_handover_and_the_owners_yes(tmp_path: Path) -> None:
     s = Server(tmp_path)
     head = _ready_for_cutover(s)
-    no = s.run("rec_cutover", stdin="no\n")
+    no = s.run("rec_cutover", stdin="no\n", today=CUT)
     assert head[:12] in no.stdout and "Nothing changed" in no.stdout
     assert (
         s.shadow.is_dir()
         and not s.tree.exists()
         and "shadow" in (tmp_path / "etc/record_mode").read_text()
     )
-    r = s.run("rec_cutover", stdin="yes\n")
+    r = s.run("rec_cutover", stdin="yes\n", today=CUT)
     assert r.returncode == 0, r.stdout + r.stderr
     assert f"Handover head, first 12 characters:   {head[:12]}" in r.stdout
     assert "This server is the only writer" in r.stdout
@@ -392,13 +420,13 @@ def test_BF_D93_cutover_needs_five_days_the_handover_and_the_owners_yes(tmp_path
         "rec_tool gate daily --shipped $RELAY/state/shipped_head --free-gb 40"
     ).stdout.startswith("ok")
     # a second cut-over is impossible
-    assert "not on" in s.run("rec_cutover", stdin="yes\n").stdout
+    assert "not on" in s.run("rec_cutover", stdin="yes\n", today=CUT).stdout
 
 
 def test_BF_D93_cutover_refusals_change_nothing(tmp_path: Path) -> None:
     s = Server(tmp_path)
     _ready_for_cutover(s, days=4)
-    r = s.run("rec_cutover", stdin="yes\n")
+    r = s.run("rec_cutover", stdin="yes\n", today=CUT)
     assert (
         "Only 4 trading day(s) in a row" in r.stdout and s.shadow.is_dir() and not s.tree.exists()
     )
@@ -407,7 +435,7 @@ def test_BF_D93_cutover_refusals_change_nothing(tmp_path: Path) -> None:
     _ready_for_cutover(s2)
     # the shadow's state differs from the cloud's final one
     (s2.shadow / paths.REL_STATE / "state.json").write_text('{"nav": 1}')
-    r = s2.run("rec_cutover", stdin="yes\n")
+    r = s2.run("rec_cutover", stdin="yes\n", today=CUT)
     assert "differ from the cloud's final ones" in r.stdout and "DIFFERENT" in r.stdout
     assert not s2.tree.exists() and len(L.read(paths.ledger(s2.shadow))) == 4
     (tmp_path / "c").mkdir()
@@ -415,8 +443,15 @@ def test_BF_D93_cutover_refusals_change_nothing(tmp_path: Path) -> None:
     _ready_for_cutover(s3)
     # what was fetched is not a handover to this server (the cloud cancelled it)
     fence.cancel(paths.record_dir(s3.mirror), "cloud", "2026-12-19")
-    r = s3.run("rec_cutover", stdin="yes\n")
+    r = s3.run("rec_cutover", stdin="yes\n", today=CUT)
     assert "not a handover to this server" in r.stdout and not s3.tree.exists()
+    (tmp_path / "d").mkdir()
+    s4 = Server(tmp_path / "d")
+    _ready_for_cutover(s4)
+    # review 5: the cloud ran its last day on other record code than this server has
+    (s4.mirror / paths.REL_CODE / "paper_daily.py").write_text("# another version\n")
+    r = s4.run("rec_cutover", stdin="yes\n", today=CUT)
+    assert "code differs: bigwins_forward/code/paper_daily.py" in r.stdout and not s4.tree.exists()
 
 
 def test_BF_D93_handback_and_research_requests(tmp_path: Path) -> None:
@@ -476,13 +511,27 @@ def test_BF_D93_backup_sources_and_pdf_days(tmp_path: Path) -> None:
         and not list(Path(light).rglob("*.pdf"))
         and (Path(light) / "asx_notices/2026-12-18/pdf.sha256").is_file()
     )
-    env_today = 'date() { if [ "$1" = +%F ]; then echo 2026-12-21; else command date "$@"; fi; }; '
-    out = s.run(env_today + "rec_backup_pdfs").stdout
+    out = s.run("rec_backup_pdfs", today="2026-12-21").stdout
     sent = tmp_path / "remote" / "Big Wins server backups" / "pdf" / "asxpdf-2026-12-18.tar.age"
-    if "2026-12-18 sent" in out:  # only within 60 days of the real clock
-        assert sent.is_file() and any(
-            c.startswith("age -r age1madeuprecipient") for c in s.calls("age")
-        )
+    assert "2026-12-18 sent" in out and sent.is_file(), out
+    assert any(c.startswith("age -r age1madeuprecipient") for c in s.calls("age"))
+    ev = s.events()[-1]
+    assert ev["job"] == "pdf-backup" and ev["ok"] is True
+    # the day is uploaded once; an old day is removed off-site (kept on the server)
+    assert "sent" not in s.run("rec_backup_pdfs", today="2026-12-22").stdout
+    assert (
+        "removed off-site" in s.run("rec_backup_pdfs", today="2027-03-01").stdout
+        and not sent.exists()
+    )
+    # a failure is not swallowed: it goes to Health and the alarm
+    (tmp_path / "age_rc").write_text("1")
+    bad = s.run("rec_backup_pdfs", today="2026-12-21")
+    assert "2026-12-18 FAILED" in bad.stdout and bad.returncode == 1
+    assert (
+        s.events()[-1]["ok"] is False
+        and "could not be encrypted or sent" in s.events()[-1]["error"]
+    )
+    (tmp_path / "age_rc").write_text("0")
     sh = SH.read_text()
     assert (
         'rec_info_light "$stage/info_light"' in sh
@@ -575,3 +624,252 @@ def test_BF_D93_install_files_are_consistent() -> None:
     assert "record)" in SH.read_text() and "record_daily)" in SH.read_text()
     # the worker never passes a secret's value: the token is a read-only file mount
     assert 'cat "$SECRETS/eodhd_api_token"' not in REC and "-e EODHD" not in REC
+
+
+# ---------------------------------------------------------------- review fixes (27 Nov 2026)
+def test_BF_D93_host_tools_never_run_as_root(tmp_path: Path) -> None:
+    """Review 1: every record tool call on the host goes through the record's user; root
+    writes the timers from deploy code and calls one tool itself (the backup's PDF-free copy)."""
+    src = REC.replace("\\\n", " ")  # join continued lines
+    lines = [ln for ln in src.splitlines()
+             if 'python3 -I "$REC_TOOLS"' in ln and not ln.lstrip().startswith("#")]  # fmt: skip
+    direct = [ln for ln in lines if "rec_as" not in ln]
+    assert len(lines) == 4 and len(direct) == 1 and "stage-light" in direct[0], direct
+    assert 'python3 -I "$REC_UNITS" write' in REC and "units-sum" not in REC
+    s = Server(tmp_path)
+    s.mode("writer")
+    S.make_tree(s.tree, writer="server", epoch=2)
+    s.run("rec_export; rec_run_job intraday; rec_host_status; rec_status")
+    tools = [c for c in s.calls("setpriv") if "bwrec.py" in c]
+    assert len(tools) >= 6 and all("--reuid=10002 --regid=10002 --clear-groups" in c for c in tools)
+    for cmd in ("gate intraday", "job intraday", "export", "status", "disk"):
+        assert any(f"bwrec.py {cmd}" in c for c in tools), cmd
+
+
+def test_BF_D93_trader_input_is_read_only_in_every_record_container(tmp_path: Path) -> None:
+    """Review 2: the trader reads CORPORATE_ACTIONS.csv from the record folder; no record job
+    (and so no record-class update) can change it. It changes only by an owner-confirmed request."""
+    s = Server(tmp_path)
+    s.mode("writer")
+    rec = S.make_tree(s.tree, writer="server", epoch=2)
+    (rec / "CORPORATE_ACTIONS.csv").write_text("code,ex_date,kind\n")
+    s.run("rec_export")
+    for job in ("daily", "intraday", "archive", "newsc-prepare"):
+        s.log.unlink(missing_ok=True)
+        s.run(f"rec_run_job {job}")
+        run = next(c for c in s.calls("docker run"))
+        want = f"-v {rec}/CORPORATE_ACTIONS.csv:{paths.CLOUD_ROOT}/{paths.REL_RECORD}/CORPORATE_ACTIONS.csv:ro"
+        assert want in run, job
+        s.run("rec_export")
+    assert "CORPORATE_ACTIONS.csv" in (REPO / "config/bfast.yaml").read_text()  # the trader's input
+
+
+def test_BF_D93_in_hours_jobs_are_small_and_builds_wait_for_the_close(tmp_path: Path) -> None:
+    """Review 4: a 3.9 GB server with IB Gateway at 1.5 GB: nothing heavy while the ASX is open."""
+    s = Server(tmp_path)
+    s.mode("writer")
+    S.make_tree(s.tree, writer="server", epoch=2)
+    s.run("rec_export")
+    open_ = "market_open() { return 0; }; "
+    s.log.unlink()
+    s.run(open_ + "rec_run_job intraday")
+    run = next(c for c in s.calls("docker run"))
+    assert (
+        "--memory 600m --memory-swap 1200m" in run
+        and "--cpus 0.5" in run
+        and "--cpu-shares 256" in run
+    )
+    # even a heavy job started by hand in hours, and whatever the owner's override says
+    (tmp_path / "etc" / "record_memory_mb").write_text("2000")
+    assert s.run(open_ + "rec_mem 1500").stdout.strip() == "600"
+    assert s.run("rec_mem 1500").stdout.strip() == "2000"  # evening: the override, at most 2000
+    assert s.run("rec_mem 600").stdout.strip() == "600"  # small jobs are never raised
+    (tmp_path / "etc" / "record_memory_mb").write_text("3000")
+    assert s.run("rec_mem 1500").stdout.strip() == "1500"
+    s.log.unlink()
+    s.run("rec_run_job daily")  # evening
+    run = next(c for c in s.calls("docker run"))
+    assert "--memory 1500m" in run and "--cpus 1.0" in run and "--oom-score-adj 500" in run
+    # a record update approved in hours ("do it anyway"): the image build waits for the close
+    (tmp_path / "state" / "update_kind").write_text("record\n")
+    s.log.unlink()
+    r = s.run(open_ + "after_update")
+    assert "rebuilt after the ASX close" in r.stdout and not any(
+        "build" in c for c in s.calls("docker")
+    )
+    assert (tmp_path / "state" / "record" / "build_pending").is_file()
+    s.run(open_ + "rec_run_job intraday")  # in hours: the old image keeps running
+    assert not any(" build " in c for c in s.calls("docker"))
+    s.run("rec_run_job archive")  # the first job after the close builds it
+    assert any("build" in c and "record.Dockerfile" in c for c in s.calls("docker"))
+    assert not (tmp_path / "state" / "record" / "build_pending").exists()
+    compose = (REPO / "deploy/docker-compose.yml").read_text()
+    assert compose.count("mem_reservation:") == 2 and compose.count("oom_score_adj: -500") == 2
+
+
+def test_BF_D93_a_restored_older_record_never_overwrites_the_newer_one(tmp_path: Path) -> None:
+    """Review (critical): restore brings back an older ledger and fence at the same epoch.
+    It must not be exported over the newer ledger in OneDrive, must not set the shipped
+    head, and no ledger job may book on top of it."""
+    s = Server(tmp_path)
+    s.mode("writer")
+    rec = S.make_tree(s.tree, writer="server", epoch=2)
+    S.book_day(s.tree, "2026-12-21")
+    assert (
+        s.run("rec_export 2026-12-21").returncode == 0
+    )  # the first export: nothing in OneDrive yet
+    backup = tmp_path / "backup"
+    shutil.copytree(s.tree, backup)  # last night's backup
+    S.book_day(s.tree, "2026-12-22")
+    assert s.run("rec_export 2026-12-22").returncode == 0
+    remote = tmp_path / "remote" / "Big Wins relay" / "outbox" / "record" / "LEDGER.jsonl"
+    newer = remote.read_bytes()
+    assert len(L.parse(newer.decode())) == 5
+    # --- the server is restored from the backup; cmd_restore puts the record on hold
+    shutil.rmtree(s.tree)
+    shutil.copytree(backup, s.tree)
+    sh = SH.read_text()
+    assert (
+        'rm -f "$RELAY/state/shipped_head"' in sh
+        and '> "$REC_HOLD"' in sh
+        and "record reconcile" in sh
+    )
+    (tmp_path / "relay" / "state" / "shipped_head").unlink()
+    (tmp_path / "relay" / "state" / "HOLD").write_text("restored from a backup\n")
+    r = s.run("rec_run_job daily")
+    assert r.returncode == 1 and "on hold" in r.stdout and not s.calls("docker run")
+    assert s.run("rec_export 2026-12-23").returncode == 1
+    assert (
+        remote.read_bytes() == newer
+        and not (tmp_path / "relay" / "state" / "shipped_head").exists()
+    )
+    assert s.run("rec_run_job archive").returncode == 0  # collecting the announcements goes on
+    # --- even WITHOUT the hold file (a copy made by hand): the export itself notices
+    (tmp_path / "relay" / "state" / "HOLD").unlink()
+    r = s.run("rec_export 2026-12-23")
+    assert r.returncode == 1 and remote.read_bytes() == newer
+    assert (tmp_path / "relay" / "state" / "HOLD").is_file()  # and puts the record on hold
+    assert not (tmp_path / "relay" / "state" / "shipped_head").exists()
+    hold = [e for e in s.events() if e["kind"] == "hold"]
+    assert len(hold) == 1 and "AHEAD" in hold[0]["reason"]
+    st = json.loads(s.run("rec_host_status").stdout)
+    assert "not the start of this server's ledger" in st["hold"]
+    assert len(L.read(rec / "LEDGER.jsonl")) == 4  # nothing was booked on the old head
+    # --- reconcile refuses while the server is behind ...
+    r = s.run("rec_reconcile")
+    assert (
+        r.returncode == 1
+        and "NOT reconciled" in r.stdout
+        and (tmp_path / "relay/state/HOLD").is_file()
+    )
+    # ... and releases once the server holds the newer record again (put back by the engineer)
+    remote_state = tmp_path / "remote" / "Big Wins relay" / "outbox" / "state"
+    (rec / "LEDGER.jsonl").write_bytes(newer)
+    shutil.copytree(remote_state, s.tree / paths.REL_STATE, dirs_exist_ok=True)
+    r = s.run("rec_reconcile")
+    assert r.returncode == 0 and "Hold released" in r.stdout, r.stdout + r.stderr
+    assert not (tmp_path / "relay" / "state" / "HOLD").exists()
+    assert (tmp_path / "relay/state/shipped_head").read_text().strip() == L.head(
+        rec / "LEDGER.jsonl"
+    )
+    assert (
+        s.run(
+            "rec_tool gate daily --shipped $RELAY/state/shipped_head --hold $REC_HOLD --free-gb 40"
+        ).returncode
+        == 0
+    )
+
+
+def test_BF_D93_export_sends_the_head_last(tmp_path: Path) -> None:
+    s = Server(tmp_path)
+    s.mode("writer")
+    S.make_tree(s.tree, writer="server", epoch=2)
+    assert s.run("rec_export").returncode == 0
+    sends = [
+        c for c in s.calls("rclone copy") if "/relay/outbox" in c and "Big Wins relay/outbox" in c
+    ]
+    assert (
+        len(sends) == 2
+        and "--exclude head.json" in sends[0]
+        and sends[1].startswith("rclone copyto")
+    )
+    assert sends[1].split()[2].endswith("/outbox/head.json")
+    # the parallel run's export never touches the record's own folder or the shipped head
+    (tmp_path / "b").mkdir()
+    s2 = Server(tmp_path / "b")
+    s2.mode("shadow")
+    S.make_tree(s2.shadow, writer="server", role="shadow")
+    assert s2.run("rec_export").returncode == 0
+    relay = tmp_path / "b" / "remote" / "Big Wins relay" / "outbox"
+    assert (relay / "shadow" / "record" / "LEDGER.jsonl").is_file() and not (
+        relay / "record"
+    ).exists()
+    assert not (tmp_path / "b" / "relay" / "state" / "shipped_head").exists()
+
+
+def test_BF_D93_after_a_handback_the_server_still_collects_the_announcements(
+    tmp_path: Path,
+) -> None:
+    """Review 3: handing the record back must not stop the archive (a missed ASX day is lost)."""
+    s = Server(tmp_path)
+    s.mode("writer")
+    rec = S.make_tree(s.tree, writer="server", epoch=2)
+    s.run("rec_export")
+    out_dir = tmp_path / "relay" / "outbox" / "bundles"
+    out_dir.mkdir(parents=True)
+    today = subprocess.run(["date", "+%F"], capture_output=True, text=True, check=True,
+                           env={"TZ": "Australia/Sydney"}).stdout.strip()  # fmt: skip
+    (out_dir / f"bundle_{today}.tar").write_bytes(b"the evening's bundle")
+    r = s.run("rec_handback", stdin="y\n")
+    assert "first 12 characters" in r.stdout, r.stdout + r.stderr
+    assert (tmp_path / "etc" / "record_mode").read_text().strip() == "archive"
+    # the evening's bundle is not replaced: the hand-back writes its own
+    assert (out_dir / f"bundle_{today}.tar").read_bytes() == b"the evening's bundle"
+    assert (out_dir / f"bundle_{today}_handback.tar").is_file()
+    assert L.read(rec / "LEDGER.jsonl")[-1]["kind"] == "handover"
+    s.log.unlink()
+    r = s.run("rec_chain morning")  # the next morning
+    assert r.returncode == 0, r.stdout + r.stderr
+    runs = s.calls("docker run")
+    assert len(runs) == 1 and "run-job archive" in runs[0] and f"-v {s.tree}:" in runs[0]
+    assert (
+        "asx_notices " in runs[0] and f"{tmp_path}/info/asx_notices" in runs[0]
+    )  # the live archive
+    assert not any("Big Wins relay/outbox" in c for c in s.calls("rclone copy"))  # nothing exported
+    for chain in ("daily", "intraday", "newsc", "collect", "multi"):
+        assert "handed back" in s.run(f"rec_chain {chain}").stdout
+    assert (
+        len(s.calls("docker run")) == 1 and L.read(rec / "LEDGER.jsonl")[-1]["kind"] == "handover"
+    )
+    assert "writer fence" in s.run("rec_run_job daily").stdout  # a ledger job is still refused
+    assert json.loads(s.run("rec_host_status").stdout)["mode"] == "archive"
+    # the older host collector still stands down: one collector per server
+    assert "paper record's own job" in s.run("info_enabled() { return 0; }; do_info_archive").stdout
+
+
+def test_BF_D93_newsc_sends_the_ratings_before_the_drops_job_starts(tmp_path: Path) -> None:
+    """Review 6: two ledger jobs in one chain: the first one's entry is shipped in between."""
+    s = Server(tmp_path)
+    s.mode("writer")
+    S.make_tree(s.tree, writer="server", epoch=2)
+    s.run("rec_export")
+    day = "2026-12-14"
+    inbox = tmp_path / "relay" / "inbox" / "validated" / "newsc" / day
+    inbox.mkdir(parents=True)
+    (inbox / "meta.json").write_text('{"model": "m", "model_source": "s"}')
+    s.log.unlink()
+    r = s.run(
+        'date() { if [ "$1" = +%H%M ]; then echo 0850; else command date "$@"; fi; }; rec_newsc ""'
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    seq = [
+        ("job", c.split("run-job ")[1].split()[0]) for c in s.calls() if c.startswith("docker run")
+    ]
+    order = [x for x in s.calls() if x.startswith("docker run") or "outbox/head.json" in x]
+    kinds = ["job" if x.startswith("docker run") else "export" for x in order]
+    assert [j for _, j in seq] == ["newsc-record", "newsc-drops-record"] and kinds == [
+        "job",
+        "export",
+        "job",
+        "export",
+    ]

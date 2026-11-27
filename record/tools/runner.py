@@ -79,8 +79,10 @@ def check_env(have: Mapping[str, str], path: Path = ENVIRONMENT) -> list[str]:
             for k, v in want.items() if have.get(k) != v]  # fmt: skip
 
 
-def run_py(step: jobs.Step, extra: Sequence[str] = ()) -> int:
+def run_py(step: jobs.Step, extra: Sequence[str] = (), ledger: bool = True) -> int:
     cmd = [sys.executable, "-I", str(HERE / "launch.py")]
+    if not ledger:
+        cmd.append("--no-ledger")
     if step.isolated:
         cmd.append("--isolated")
     cmd += [step.name, *step.args, *extra]
@@ -106,10 +108,12 @@ def run_job(key: str, tools: Mapping[str, Callable[[Path, bool], int]], dry_run:
             return res
     me = os.environ.get("BW_RECORD_HOST", "")
     d = fence.decide_dir(paths.record_dir(root), me)
-    if not d.ok:
+    if job.ledger and not d.ok:
         res["error"] = "refused (writer fence): " + d.reason
         return res
-    res["role"] = d.reason
+    # a job that never writes the ledger (the archive, the collectors, the intraday look)
+    # runs whoever the writer is: any append it tried would still be refused in launch.py
+    res["role"] = d.reason if d.ok else "no ledger access: " + d.reason
     ledger = paths.ledger(root)
     before = L.read(ledger)
     t0 = time.monotonic()
@@ -117,7 +121,7 @@ def run_job(key: str, tools: Mapping[str, Callable[[Path, bool], int]], dry_run:
     for step in job.steps:
         t = time.monotonic()
         if step.kind == "py":
-            rc = run_py(step)
+            rc = run_py(step, ledger=job.ledger)
         elif step.name in tools:
             rc = tools[step.name](root, dry_run)
         else:

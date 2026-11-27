@@ -76,7 +76,13 @@ def cmd_gate(a: argparse.Namespace, root: Path) -> int:
         return 1
     rec = paths.record_dir(root)
     d = fence.decide_dir(rec, _me(), relay.relay_fence(Path(a.relay)) if a.relay else None)
-    if not d.ok:
+    if job.ledger and a.hold and Path(a.hold).exists():
+        print("refused (on hold): the record must be reconciled with OneDrive first "
+              "(sudo bigwins record reconcile)")  # fmt: skip
+        return 1
+    # a job that never writes the ledger (archive, collectors, intraday) runs whoever the
+    # writer is: the server keeps collecting after a hand-back or a takeover
+    if job.ledger and not d.ok:
         print(f"refused (writer fence): {d.reason}")
         return 1
     ok, why = ops.disk_gate(a.job, a.free_gb if a.free_gb is not None else ops.free_gb(root),
@@ -96,6 +102,28 @@ def cmd_gate(a: argparse.Namespace, root: Path) -> int:
             return 1
     print(f"ok: {d.reason}; disk {why}")
     return 0
+
+
+def cmd_prefix_check(root: Path, remote_ledger: Path) -> int:
+    """Is the ledger in OneDrive the START of this machine's ledger (same entries, in
+    order)? If it is longer or different, this machine's record is older or another one
+    (a restore, a takeover): exit 1, and the worker exports and books nothing."""
+    try:
+        mine = L.read(paths.ledger(root))
+        L.verify(mine)
+        theirs = L.read(remote_ledger)
+        L.verify(theirs)
+    except (L.ChainError, OSError) as e:
+        print(f"a ledger does not verify: {e}")
+        return 1
+    if L.is_prefix(theirs, mine):
+        print(f"ok: OneDrive has {len(theirs)} of this machine's {len(mine)} entries")
+        return 0
+    if L.is_prefix(mine, theirs):
+        print(f"OneDrive is AHEAD: {len(theirs)} entries there, {len(mine)} here")
+    else:
+        print(f"DIFFERENT chains: {len(theirs)} entries there, {len(mine)} here")
+    return 1
 
 
 def cmd_requests(a: argparse.Namespace, root: Path) -> int:
@@ -174,9 +202,31 @@ def cmd_handover(a: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def compare_streak(root: Path) -> int:
-    """Trading days in a row, up to the newest compared day, whose compare was a PASS
-    (weekdays between the first and the last result; a day without a result breaks it)."""
+def _now() -> dt.datetime:
+    """Sydney time now; ``BW_TODAY=YYYY-MM-DD[THH:MM]`` replaces it (tests, rehearsals)."""
+    t = os.environ.get("BW_TODAY", "")
+    if t:
+        try:
+            return dt.datetime.fromisoformat(t if "T" in t else t + "T23:30").replace(
+                tzinfo=steps.SYD
+            )
+        except ValueError:
+            pass
+    return dt.datetime.now(steps.SYD)
+
+
+def last_session(now: dt.datetime) -> dt.date:
+    """The newest ASX session whose close is behind us (today's counts from 16:12)."""
+    today = now.date()
+    sess = steps.sessions(today - dt.timedelta(days=14), today)
+    done = [d for d in sess if d < today or (now.hour, now.minute) >= (16, 12)]
+    return done[-1] if done else today - dt.timedelta(days=1)
+
+
+def compare_streak(root: Path, now: dt.datetime | None = None) -> int:
+    """Trading days in a row with a PASS, ENDING AT THE LAST SESSION BEFORE NOW. A session
+    without a result, or a failed one, breaks the run; a run that ended earlier counts
+    for nothing (the cut-over needs the days right up to it)."""
     res = []
     for p in sorted((root / paths.REL_OUT / "sync").glob("compare_*.json")):
         try:
@@ -186,11 +236,11 @@ def compare_streak(root: Path) -> int:
     days = sorted(str(r.get("day")) for r in res if r.get("day"))
     if not days:
         return 0
-    a, b = dt.date.fromisoformat(days[0]), dt.date.fromisoformat(days[-1])
-    have = set(days)
-    # a weekday without a result counts as a session unless the exchange calendar says no
-    sess = [str(d) for d in steps.sessions(a, b)] if len(days) > 1 else days
-    return record_compare.streak(res, [d for d in sess if d in have or d > days[0]])
+    last = last_session(now or _now())
+    first = dt.date.fromisoformat(days[0])
+    if first > last:
+        return 0
+    return record_compare.streak(res, [str(d) for d in steps.sessions(first, last)])
 
 
 SAME_AS = (paths.REL_STATE, paths.REL_MULTI_STATE, paths.REL_RECORD + "/paper")
@@ -207,6 +257,17 @@ def cmd_same_as(root: Path, other: Path) -> int:
     if not theirs:
         print("the other tree has no states or outputs")
         return 1
+    # the code the cloud ran its last day with must be the code this server runs
+    code_theirs = hashing.tree(other, [paths.REL_CODE])
+    code_mine = record_compare.server_code(only=paths.REL_CODE)
+    code_bad = [k for k in sorted(set(code_mine) | set(code_theirs))
+                if code_mine.get(k) != code_theirs.get(k)]  # fmt: skip
+    for k in code_bad[:20]:
+        print(f"code differs: {k}")
+    if not code_theirs:
+        print("the other tree has no record code to compare")
+        return 1
+    bad += code_bad
     print(f"{'same' if not bad else 'DIFFERENT'}: {len(theirs)} files compared, {len(bad)} differ")
     return 1 if bad else 0
 
@@ -250,6 +311,9 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
     p.add_argument("--shipped", default="")
     p.add_argument("--relay", default="")
     p.add_argument("--free-gb", type=float, default=None)
+    p.add_argument("--hold", default="")
+    p = sub.add_parser("prefix-check")
+    p.add_argument("remote_ledger")
     p = sub.add_parser("export")
     p.add_argument("outbox")
     p.add_argument("--day", default="")
@@ -292,17 +356,12 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
     p.add_argument("day")
     p.add_argument("manifest")
     p.add_argument("--multi", action="store_true")
-    p = sub.add_parser("units")
-    p.add_argument("out")
-    p.add_argument("script")
     p = sub.add_parser("job")
     p.add_argument("job")
     p = sub.add_parser("newsc-pending")
     p.add_argument("inbox")
     p.add_argument("which", choices=("record", "drops"))
     p.add_argument("--dry-run", action="store_true")
-    p = sub.add_parser("units-sum")
-    p.add_argument("script")
     sub.add_parser("streak")
     p = sub.add_parser("same-as")
     p.add_argument("other")
@@ -341,6 +400,8 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
         return 0
     if a.cmd == "gate":
         return cmd_gate(a, root)
+    if a.cmd == "prefix-check":
+        return cmd_prefix_check(root, Path(a.remote_ledger))
     if a.cmd == "export":
         st = json.loads(Path(a.status).read_text(encoding="utf-8")) if a.status else None
         _out(relay.export(root, Path(a.outbox), st, a.day))
@@ -374,13 +435,6 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
         return 0
     if a.cmd == "compare":
         return cmd_compare(a, root)
-    if a.cmd == "units":
-        for u in jobs.UNITS:
-            svc, tmr = jobs.unit_files(u, a.script)
-            (Path(a.out) / f"bigwins-{u.name}.service").write_text(svc, encoding="utf-8")
-            (Path(a.out) / f"bigwins-{u.name}.timer").write_text(tmr, encoding="utf-8")
-            print(f"{u.name} {','.join(u.modes)}")
-        return 0
     if a.cmd == "newsc-pending":  # the day whose replies wait in the relay, or nothing
         marker = {("record", False): "RELAY_RECORDED", ("record", True): "RELAY_DRYRUN",
                   ("drops", False): "RELAY_DROPS_RECORDED", ("drops", True): "RELAY_DROPS_DRYRUN"}  # fmt: skip
@@ -389,10 +443,6 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
         )
         print(day or "")
         return 0 if day else 1
-    if a.cmd == "units-sum":
-        blob = "".join("".join(jobs.unit_files(u, a.script)) + u.name for u in jobs.UNITS)
-        print(L.sha_bytes(blob.encode())[:16])
-        return 0
     if a.cmd == "streak":
         print(compare_streak(root))
         return 0
@@ -419,8 +469,7 @@ def main(argv: list[str]) -> int:  # noqa: PLR0911, PLR0912, PLR0915 - one branc
         return 0
     if a.cmd == "pdf-plan":
         names = Path(a.remote_listing).read_text(encoding="utf-8").split()
-        up, rm = ops.pdf_plan(ops.finished_days(Path(a.info_dir)), names,
-                              dt.datetime.now(steps.SYD).date())  # fmt: skip
+        up, rm = ops.pdf_plan(ops.finished_days(Path(a.info_dir)), names, _now().date())
         for d in up:
             print(f"upload {d}")
         for n in rm:

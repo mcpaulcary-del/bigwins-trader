@@ -1,7 +1,9 @@
 """Run ONE research script inside the record container, unedited, behind the guards
 (BF-D93). Started by ``runner.py`` as ``python -I launch.py [--isolated] <script> [args]``.
 
-1. The writer fence: refuse (exit 75) unless ``WRITER.json`` lets this machine append.
+1. The writer fence: refuse (exit 75) unless ``WRITER.json`` lets this machine append
+   (``--no-ledger``, for jobs that never write the ledger such as the archive: the script
+   runs whoever the writer is, and guard 2 still refuses any append it might try).
 2. ``fwd_ledger.append`` is wrapped: the fence is checked again at every append (the
    ledger a script points ``LED`` at decides which fence), and a standby copy marks its
    entries. The entry format and hashing are the research module's own, untouched.
@@ -65,6 +67,9 @@ def guard_ledger(code_dir: Path, me: str) -> Any:
 
 
 def main(argv: list[str]) -> int:
+    ledger = not (bool(argv) and argv[0] == "--no-ledger")
+    if not ledger:
+        argv = argv[1:]
     isolated = bool(argv) and argv[0] == "--isolated"
     if isolated:
         argv = argv[1:]
@@ -79,7 +84,7 @@ def main(argv: list[str]) -> int:
         return 2
     me = os.environ.get("BW_RECORD_HOST", "")
     d = fence.decide_dir(paths.record_dir(root), me, relay_fence())
-    if not d.ok:
+    if ledger and not d.ok:
         print(f"REFUSED (writer fence): {d.reason}")
         return REFUSED
     guard_ledger(code, me)
@@ -89,10 +94,15 @@ def main(argv: list[str]) -> int:
     tok = eodhd_shim.read_token(
         Path(os.environ.get("BW_EODHD_TOKEN_FILE", "/run/secrets/eodhd_api_token"))
     )
-    if tok:
+    try:
         import requests
-
-        eodhd_shim.install(requests.Session, tok, os.environ.get("BW_EODHD_MODE", "header"))
+    except ImportError:  # no requests here (a test environment): nothing to guard
+        requests = None
+    if requests is not None:
+        # every record script: requests may reach EODHD over https and nothing else
+        eodhd_shim.install_allowlist(requests.Session)
+        if tok:
+            eodhd_shim.install(requests.Session, tok, os.environ.get("BW_EODHD_MODE", "header"))
     del tok
     os.chdir(code)
     sys.argv = [str(script), *argv[1:]]

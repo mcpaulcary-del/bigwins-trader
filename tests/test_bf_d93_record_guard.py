@@ -257,7 +257,10 @@ def test_BF_D93_launcher_installs_the_guard_for_every_script(tmp_path: Path) -> 
 def test_BF_D93_record_jobs_cannot_starve_the_trader(tmp_path: Path) -> None:
     """A 3.9 GB server: every record job has a hard RAM cap well under what is free, swap
     above it, is the first to be killed under pressure, and reports what it used."""
-    assert all(j.memory_mb == 1500 for j in jobs.JOBS.values())
+    assert max(j.memory_mb for j in jobs.JOBS.values()) == 1500
+    assert all(
+        jobs.JOBS[k].memory_mb <= 800 for k in ("intraday", "archive", "collect", "newsc-record")
+    )
     cg = tmp_path / "cg"
     cg.mkdir()
     (cg / "memory.peak").write_text("1258291200\n")
@@ -276,7 +279,13 @@ def test_BF_D93_record_jobs_cannot_starve_the_trader(tmp_path: Path) -> None:
     (tmp_path / "srv").mkdir()
     s = Server(tmp_path / "srv")
     assert s.run("rec_mem 1500").stdout.strip() == "1500"
-    for text, want in (("1200", "1200"), ("99999", "1500"), ("100", "1500"), ("abc", "1500")):
+    for text, want in (
+        ("1200", "1200"),
+        ("99999", "1500"),
+        ("100", "1500"),
+        ("abc", "1500"),
+        ("2000", "2000"),
+    ):
         (tmp_path / "srv" / "etc" / "record_memory_mb").write_text(text)
         assert s.run("rec_mem 1500").stdout.strip() == want
     (tmp_path / "srv" / "state" / "record").mkdir(parents=True, exist_ok=True)

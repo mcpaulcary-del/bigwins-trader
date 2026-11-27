@@ -51,6 +51,8 @@ def cloud_manifest(root: Path, day: str, archive_days: Sequence[str],
         "schema": 1, "day": day, "archive_days": list(archive_days),
         "made_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "files": RC.shadow_files(root, archive_days),
+        # the code this machine ran the day with (compared with the other machine's daily)
+        "code": hashing.tree(root, [paths.REL_CODE, paths.REL_DF_CODE]),
         "ledger_head": head, "ledger_seq": len(es),
         "ledger_entries": RC.day_entries(es, day),
     }  # fmt: skip

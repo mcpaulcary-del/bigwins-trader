@@ -203,7 +203,7 @@ after_update() {  # secrets the new code needs, then rebuild and restart
   ALL_SECRETS=$(all_secrets)
   local kind; kind=$(head -c 12 "$STATE/update_kind" 2>/dev/null | tr -d '[:space:]'); rm -f "$STATE/update_kind"
   if [ "$kind" = record ]; then  # BF-D93: the trader and the app are not rebuilt or restarted
-    case "$(rec_mode)" in shadow|writer) rec_build && g "Paper-record code updated; the record image was rebuilt. The trader was not touched.";;
+    case "$(rec_mode)" in shadow|writer|archive) rec_build && g "Paper-record code updated; the record image was rebuilt. The trader was not touched.";;
       *) g "Paper-record code updated (the record is not on this server yet). The trader was not touched.";; esac
     rec_ensure_timers
     return 0
@@ -221,7 +221,7 @@ after_update() {  # secrets the new code needs, then rebuild and restart
         | dc exec -T trader trader-bf server-jobs backup >/dev/null 2>&1
       return 1
     fi
-    case "$(rec_mode)" in shadow|writer) rec_build;; esac  # BF-D93: the record image follows the code
+    case "$(rec_mode)" in shadow|writer|archive) rec_build;; esac  # BF-D93: the record image follows the code
     dc up -d && g "Updated and restarted."
     # F3: the output volume belongs to the trader's user (once; a no-op afterwards)
     dc exec -T -u 0 trader chown -R 10001:10001 /app/out >/dev/null 2>&1
@@ -545,7 +545,7 @@ r=json.loads(sys.stdin.read() or "{}"); r["kind"]="backup"; r["onedrive"]=sys.ar
   record_backup "$res"
   [ "$rc" = 0 ] && hc_backup_ping
   rm -rf "$stage"
-  rec_backup_pdfs >/dev/null 2>&1  # BF-D93 (D4): the archive's PDFs, one encrypted file a day
+  rec_backup_pdfs >/dev/null 2>&1  # BF-D93 (D4): the archive's PDFs, one encrypted file a day (its own result goes to Health)
   echo "$res"
   return $rc
 }
@@ -683,6 +683,14 @@ print("; ".join(bad)); sys.exit(1 if bad or not want else 0)' $(compose_json | p
     [ -d "$rp" ] && mkdir -p "$REC_TREE/$rd" && cp -a "$rp/." "$REC_TREE/$rd/"
   done
   [ -d "$REC_TREE" ] && chown -R "$REC_UID:$REC_UID" "$REC_TREE" && [ "$(rec_mode)" = writer ] && chown -R "$REC_UID:$REC_UID" "$(info_dir)"
+  # BF-D93 (review): a restored record may be OLDER than the one in OneDrive. Nothing is booked
+  # or exported from it until it has been compared (sudo bigwins record reconcile): the hold
+  # stops every ledger job and every export, and the shipped head is never taken from a restore.
+  if [ -f "$REC_TREE/$REC_RECORD/LEDGER.jsonl" ]; then
+    mkdir -p "$RELAY/state" && rm -f "$RELAY/state/shipped_head"
+    printf '%s\n' "restored from a backup on $(date +%F): compare with OneDrive first (sudo bigwins record reconcile)" > "$REC_HOLD"
+    y "The paper record is ON HOLD until you run: sudo bigwins record reconcile"
+  fi
   dc up -d && dc exec -T trader sh -c 'tar -C /app/out -xf -' < "$tmp/trader_out.tar" 2>/dev/null
   g "Restored. Then: bigwins 9 (phone app on Tailscale; the server's Tailscale name may be new),"
   g "bigwins 11 (allow my phone), sudo bigwins install-worker, and in the app: Turn on alerts again."
@@ -816,7 +824,7 @@ do_info_archive() {  # BF-D78: the private info archive, as the trader's uid (ne
   mkdir -p "$STATE"
   exec 8>"$STATE/info_archive.lock"
   flock -n 8 || { echo "the archive is already running"; return 0; }  # timer and manual run
-  case "$(rec_mode)" in shadow|writer)  # BF-D93: ONE collector a server: the record's archive job
+  case "$(rec_mode)" in shadow|writer|archive)  # BF-D93: ONE collector a server: the record's archive job
     echo "the announcements are collected by the paper record's own job (bigwins record run morning)"; return 0;;
   esac
   if ! info_enabled; then

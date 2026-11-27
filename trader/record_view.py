@@ -266,13 +266,9 @@ def summary_line(rec: Record | None) -> str:
         return "The record's numbers are not on this server yet."
     main = next((x for x in rec.lines if x.group == "main"), None)
     if main is None or not main.started:
-        h = next((x for x in rec.lines if x.book == "H82_25k" and x.started), None)
-        if h is None or h.nav is None:
-            return "The main paper line has not started yet."
-        return (f"The main paper line has not started yet. Large-Cap Core (A$25k): "
-                f"{ov.money(h.nav)}, {ov.pct(h.ret)} since its start"
-                + (f", {_pts(h.vs_a200)} against A200" if h.vs_a200 is not None else "")
-                + f" ({ov.LUCK}).")  # fmt: skip
+        # no other line stands in for it here: a research line's result under the main
+        # line's heading would read as the headline (they are information only)
+        return "The main paper line has not started yet."
     return (f"Main line on paper: {ov.money(main.nav)}"
             + (f", {ov.pct(main.change)} on the day" if main.change is not None else "")
             + (f", {_pts(main.vs_a200)} against A200 since its start, after costs"
@@ -327,6 +323,27 @@ def _s(x: object, n: int, what: str, required: bool = False) -> str:
     return x.strip()
 
 
+# The owner's rules for what the app may show: no NEWS-C rating or cause label of any
+# share, and no ranking of the paper lines. The report's format has no field for either;
+# this refuses them inside the free text too (the whole report is then not shown).
+BANNED = re.compile(
+    r"news[\s-]?c\b|\brat(?:ed|ing)\s*(?:of|is|was|[:=])?\s*[+\-\u2212]?[0-2]\b"
+    r"|\b(?:drop|cause)[\s-]?(?:cause|label)\b|\blabel(?:led)?\s*[:=]?\s*[TFU]\b"
+    r"|leaderboard|\bleague table\b|\b(?:best|worst)[\s-](?:paper[\s-])?(?:line|book)s?\b"
+    r"|\b(?:top|bottom)[\s-]perform(?:er|ing)\s+(?:paper\s+)?(?:line|book)s?\b"
+    r"|\b(?:1st|2nd|3rd|first|second|third|last)\s+place\b|\branked\s+(?:#\s*)?\d",
+    re.I,
+)
+
+
+def _free(x: object, n: int, what: str, required: bool = False) -> str:
+    """A short free text that also passes the rules above."""
+    s = _s(x, n, what, required)
+    if BANNED.search(s):
+        raise ReportError(f"{what}: a NEWS-C rating / label or a ranking of lines is never shown")
+    return s
+
+
 def _frac(x: object, what: str) -> float | None:
     if x is None:
         return None
@@ -365,7 +382,7 @@ def parse_report(  # noqa: PLR0912 - one check per field
             or isinstance(s.get("n"), bool)
         ):
             raise ReportError("bad source entry")
-        srcs.append((int(s["n"]), _s(s.get("title"), 160, "source title") or "source",
+        srcs.append((int(s["n"]), _free(s.get("title"), 160, "source title") or "source",
                      safe_url(s.get("url"))))  # fmt: skip
     if len(srcs) > 40:
         raise ReportError("too many sources")
@@ -398,7 +415,7 @@ def parse_report(  # noqa: PLR0912 - one check per field
             code, _s(m.get("name"), 80, "name"), _frac(m.get("move"), "move"),
             bool(m.get("no_close")), _frac(m.get("six_month"), "six_month"),
             _frac(m.get("from_high"), "from_high"), rank, tuple(held),
-            _s(m.get("why"), 240, "why") or "no news found",
+            _free(m.get("why"), 240, "why") or "no news found",
             tuple(x for x in refs if x in ns)))  # fmt: skip
     if len(movers) > 15:
         raise ReportError("too many movers")
@@ -407,28 +424,34 @@ def parse_report(  # noqa: PLR0912 - one check per field
         raise ReportError("bad needs_attention")
     if len(markdown) > 200_000:
         raise ReportError("report.md is too long")
-    return Report(day, _s(raw.get("title"), 120, "title") or f"Big Wins, {day:%a %-d %b}",
-                  _s(raw.get("verdict"), 300, "verdict"),
-                  tuple(_s(x, 300, "needs_attention", True) for x in needs),
+    return Report(day, _free(raw.get("title"), 120, "title") or f"Big Wins, {day:%a %-d %b}",
+                  _free(raw.get("verdict"), 300, "verdict"),
+                  tuple(_free(x, 300, "needs_attention", True) for x in needs),
                   tuple(movers), tuple(sorted(srcs)), markdown,
                   _s(raw.get("written_utc"), 25, "written_utc"))  # fmt: skip
 
 
-def report_days(relay: Path | None) -> list[date]:
+def report_days(relay: Path | None, today: date | None = None) -> list[date]:
+    """Days with a report, oldest first. A folder dated after ``today`` is ignored (a file
+    put there by mistake, or on purpose, can never become "the newest report")."""
     base = relay / "reports" if relay is not None else None
     out = []
     for p in sorted(base.iterdir()) if base is not None and base.is_dir() else []:
         if DAY_RE.match(p.name) and (p / "report.json").is_file():
             try:
-                out.append(date.fromisoformat(p.name))
+                d = date.fromisoformat(p.name)
             except ValueError:
                 continue
+            if today is None or d <= today:
+                out.append(d)
     return out
 
 
-def load_report(relay: Path | None, day: date | None = None) -> Report | None:
-    """The report of ``day`` (default: the newest), or None when absent or not acceptable."""
-    days = report_days(relay)
+def load_report(relay: Path | None, day: date | None = None,
+                today: date | None = None) -> Report | None:  # fmt: skip
+    """The report of ``day`` (default: the newest not after ``today``), or None when absent
+    or not acceptable."""
+    days = report_days(relay, today)
     if relay is None or not days:
         return None
     d = day if day in days else (None if day is not None else days[-1])
@@ -499,9 +522,13 @@ def _head(rec: Record) -> str:
         figs = ""
     else:
         ahead = main.vs_a200
-        verdict = ("Main line on paper: level with A200" if ahead is None or abs(ahead) < 0.0005
-                   else f"Main line on paper: {'ahead of' if ahead > 0 else 'behind'} A200 by "
-                        f"{abs(ahead) * 100:.1f} points")  # fmt: skip
+        if ahead is None:  # never "level": no figure is not a result
+            verdict = "Main line on paper: comparison with A200 not available yet"
+        elif abs(ahead) < 0.0005:
+            verdict = "Main line on paper: level with A200"
+        else:
+            verdict = (f"Main line on paper: {'ahead of' if ahead > 0 else 'behind'} A200 by "
+                       f"{abs(ahead) * 100:.1f} points")  # fmt: skip
         sub = (f"After the record's costs (brokerage and spread), since {_dm(main.start)}. "
                "Paper only: no real money.")  # fmt: skip
         figs = ('<div class="tiles">'
@@ -682,8 +709,7 @@ def report_page(v: Any, x: Any, rep: Report | None, days: Sequence[date], md: Ca
             "</span></p></section>"
             + section("Needs you", needs)
             + movers_card(rep, getattr(x, "names", {}) or {}, min(today, rep.day))
-            + (section("The report", f'<div class="prose">{md(rep.markdown)}</div>')
-               if rep.markdown.strip() else "")
+            # report.md (the cloud's free text) is NOT shown: only the checked fields above are
             + (section("Sources", "<ol class='srcs'>" + "".join(
                 f'<li value="{n}"><a href="{e(u)}" target="_blank" rel="noopener noreferrer nofollow">'
                 f"{e(t)}</a></li>" for n, t, u in rep.sources) + "</ol>") if rep.sources else "")
@@ -715,6 +741,7 @@ EXPECT: dict[str, tuple[str, str, str, str]] = {
     "newsc-record": ("NEWS-C ratings recorded", "every ASX day before 10:00", "session", "10:00"),
     "export": ("Record sent to OneDrive (relay)", "after every record job", "session", "21:45"),
     "compare": ("Shadow compare (parallel run)", "every ASX day by 23:15", "session", "23:15"),
+    "pdf-backup": ("Archive PDFs sent off-site", "every night with the backup", "after", "23:59"),
 }
 # the parallel week: the server only replays the cloud's day (after the cloud's own job),
 # collects the archive, dry-runs NEWS-C and compares; the comparison covers the replay
@@ -727,7 +754,7 @@ def _clean(x: object, n: int = 240) -> str:
     return _CLEAN.sub(" ", str(x))[:n]
 
 
-def record_event(  # noqa: PLR0912 - one branch per kind of event
+def record_event(  # noqa: PLR0912, PLR0915 - one branch per kind of event
     j: Journal, raw: Mapping[str, Any], now: datetime
 ) -> dict[str, Any]:
     """One event from the host worker, cleaned (known keys, plain values): a job's result,
@@ -735,7 +762,7 @@ def record_event(  # noqa: PLR0912 - one branch per kind of event
     from trader.app_store import set_state
 
     kind = str(raw.get("kind", ""))
-    if kind not in ("job", "compare", "report", "relay"):
+    if kind not in ("job", "compare", "report", "relay", "hold"):
         return {}
     ev: dict[str, Any] = {"kind": kind, "ok": bool(raw.get("ok")), "at": now.isoformat()}
     d = ov._day(raw.get("day"))
@@ -794,6 +821,9 @@ def record_event(  # noqa: PLR0912 - one branch per kind of event
         set_state(j, COMPARE_KEY, [ev, *hist][:40], now)
     elif kind == "relay" and isinstance(raw.get("rejected"), list):
         ev["rejected"] = [_clean(x, 120) for x in raw["rejected"][:5]]
+    elif kind == "hold":
+        ev["ok"] = False
+        ev["reason"] = _clean(raw.get("reason", ""), 240)
     st = ov.state(j, EVENTS_KEY)
     old = (
         [dict(x) for x in st[0] if isinstance(x, Mapping)] if st and isinstance(st[0], list) else []
@@ -803,7 +833,9 @@ def record_event(  # noqa: PLR0912 - one branch per kind of event
     return ev
 
 
-def event_text(ev: Mapping[str, Any], numbers: str = "") -> tuple[str, str, str] | None:
+def event_text(  # noqa: PLR0911 - one return per kind of message
+    ev: Mapping[str, Any], numbers: str = ""
+) -> tuple[str, str, str] | None:
     """(text, kind, link) of the message an event deserves, or None (most job results are
     shown on Health only; the missed-job alarm pages a late or failed job once)."""
     k = ev.get("kind")
@@ -827,6 +859,10 @@ def event_text(ev: Mapping[str, Any], numbers: str = "") -> tuple[str, str, str]
         diffs = "; ".join(ev.get("diffs") or [])
         return (f"PAGE {line}." + (f" Differs: {diffs}." if diffs else "") + " The move waits "
                 "until this is explained (tell Claude).", "page", "/health")  # fmt: skip
+    if k == "hold":
+        return ("PAGE The paper record is ON HOLD: " + str(ev.get("reason") or "it must be "
+                "compared with the copy in OneDrive") + ". Nothing is booked or sent until then. "
+                "Tell Claude; on the server: sudo bigwins record reconcile.", "page", "/health")  # fmt: skip
     if k == "relay" and not ev.get("ok"):
         return ("PAGE A file in the OneDrive relay folder was refused (not an expected name, "
                 "size or format): " + "; ".join(ev.get("rejected") or []) + ". Nothing was used. "
@@ -878,13 +914,15 @@ def freshness(j: Journal, sessions: Sequence[date], now: datetime) -> list[ov.Fr
     """Each moved job against its expected time. Nothing is expected while the record is
     not on this server (mode off / view), or of a job its mode does not run."""
     mode = host_mode(j)
-    if mode not in ("shadow", "writer"):
+    if mode not in ("shadow", "writer", "archive"):
         return []
     st = ov.state(j, JOBS_KEY)
     jobs = st[0] if st and isinstance(st[0], Mapping) else {}
     out = []
     for key, (name, cadence, kind, hhmm) in EXPECT.items():
         if (mode == "shadow" and key in WRITER_ONLY) or (mode == "writer" and key in SHADOW_ONLY):
+            continue
+        if mode == "archive" and key not in ("archive", "pdf-backup"):
             continue
         spec = (f"rec-{key}", name, cadence)
         rec = jobs.get(key) if isinstance(jobs.get(key), Mapping) else None
@@ -932,6 +970,8 @@ MODE_WORDS = {
     "view": "shown here from a read-only copy; written in the research environment",
     "shadow": "parallel run: this server replays each day; the research environment writes",
     "writer": "written on this server",
+    "archive": "handed back: written in the research environment; this server only collects "
+    "the announcements",
 }
 
 
@@ -942,9 +982,12 @@ def _map(x: object) -> Mapping[str, Any]:
 def health_attention(host: Mapping[str, Any]) -> list[tuple[str, str, str]]:
     rec = _map(host.get("record"))
     out: list[tuple[str, str, str]] = []
-    if not rec or rec.get("mode") not in ("shadow", "writer"):
+    if not rec or rec.get("mode") not in ("shadow", "writer", "archive"):
         return out
     st = _map(rec.get("status"))
+    if rec.get("hold"):
+        out.append(("bad", "Paper record ON HOLD: nothing is booked or sent",
+                    "on the server: sudo bigwins record reconcile (tell Claude)"))  # fmt: skip
     if st and st.get("chain_ok") is False:
         out.append(("bad", "Paper record: the ledger does not verify", "tell Claude now"))
     if rec.get("mode") == "writer" and st and st.get("writer") != "server":
@@ -969,6 +1012,8 @@ def health_card(j: Journal | None, host: Mapping[str, Any], now: datetime) -> st
     mode = str(rec.get("mode", "off")) if rec else "off"
     st = _map(rec.get("status"))
     rows = [f"<li>Paper record: <b>{e(MODE_WORDS.get(mode, mode))}</b></li>"]
+    if rec.get("hold"):
+        rows.append(f"<li class='warn'><b>ON HOLD</b>: {e(rec.get('hold'))}</li>")
     if st:
         who = {"server": "this server", "cloud": "the research environment"}.get(
             str(st.get("writer")), str(st.get("writer", "?")))  # fmt: skip

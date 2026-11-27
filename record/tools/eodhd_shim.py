@@ -88,6 +88,30 @@ def _scrub(obj: Any, token: str) -> None:
             pass
 
 
+class HostRefusedError(RuntimeError):
+    """A record script tried to reach a host that is not EODHD: refused, nothing sent."""
+
+
+def install_allowlist(session_cls: Any) -> bool:
+    """``requests`` in a record job reaches EODHD over https and nothing else (the
+    collector's ASX / ASIC requests go through urllib, behind ``net_guard``). Installed
+    before the token shim, so the token wrapper sits outside this check."""
+    if getattr(session_cls, "_bw_allow", False):
+        return False
+    orig = session_cls.send
+
+    def send(self: Any, request: Any, **kw: Any) -> Any:
+        url = str(getattr(request, "url", ""))
+        if not eodhd_url(url):
+            host = urllib.parse.urlsplit(url).hostname if "://" in url else "?"
+            raise HostRefusedError(f"not an allowed host for a record job: {host}")
+        return orig(self, request, **kw)
+
+    session_cls.send = send
+    session_cls._bw_allow = True
+    return True
+
+
 def install(session_cls: Any, token: str, mode: str = "header") -> bool:
     """Wrap ``session_cls.send`` (``requests.Session``). False: nothing installed (no
     token: the placeholder goes out as on the cloud and EODHD answers 401)."""
