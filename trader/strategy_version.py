@@ -38,7 +38,15 @@ STRATEGY_KEYS = ("line", "live_emg2_20", "band_trend", "risk", "execution")
 # trading / strategy change, except these UI-only files; docs/, tests/ and the rest
 # (deploy scripts, README) are app-only. deploy/classify.py holds the same lists for the
 # root worker (a test keeps them equal).
-TRADING_DIRS = ("trader/", "config/", "migrations/", "deploy/", "scripts/", ".claude/")
+TRADING_DIRS = (
+    "trader/",
+    "config/",
+    "migrations/",
+    "deploy/",
+    "scripts/",
+    ".claude/",
+    "record/",
+)  # BF-D93 (review): record/tools runs on the host; only the paths below are "record"
 # BF-D60 (N5): infrastructure that changes what runs is not app-only either
 TRADING_FILES = ("pyproject.toml", "uv.lock", "alembic.ini", "CLAUDE.md")  # + .claude/: L6
 UI_ONLY = (
@@ -49,8 +57,15 @@ UI_ONLY = (
     "trader/ops_view.py", "trader/info_view.py", "trader/ops_hooks.py",
     # BF-D89: the research pages and the share pages' odds card (display only)
     "trader/app_research.py", "trader/odds.py",
+    # BF-D93 / BF-D94: the paper record's pages, Health rows and alerts (read-only display)
+    "trader/record_view.py",
 )  # fmt: skip
 APP_ONLY_DIRS = ("docs/", "tests/")
+# BF-D93: the paper record's code and its container's build files: their own update class
+# (owner approval, no trader rebuild or restart, no strategy-version change)
+RECORD_DIRS = ("record/code/", "record/data_foundation_code/")
+RECORD_FILES = ("deploy/record.Dockerfile", "deploy/record_requirements.txt",
+                "record/MANIFEST.sha256", "record/ENVIRONMENT.json")  # fmt: skip
 # keys of config/bfast.yaml that are not trading settings (the fingerprint ignores them)
 NON_TRADING_CONFIG = ("dashboard", "notify", "app", "heartbeat", "telegram", "journal", "tax",
                       "strategy", "running_costs", "info_archive", "research")  # fmt: skip
@@ -75,7 +90,15 @@ def is_trading_path(path: str) -> bool:
     f = path.strip()
     if not f or f in UI_ONLY or f.startswith(APP_ONLY_DIRS):
         return False
+    if f in RECORD_FILES or f.startswith(RECORD_DIRS):
+        return False  # the research code and its container's inputs: class "record"
     return f.startswith(TRADING_DIRS) or f in TRADING_FILES
+
+
+def is_record_path(path: str) -> bool:
+    """BF-D93: a changed file of the paper record's own code (update class "record")."""
+    f = path.strip()
+    return f.startswith(RECORD_DIRS) or f in RECORD_FILES
 
 
 STRATEGY_FILES = (
@@ -189,10 +212,14 @@ def classify_update(
     ``old_config`` / ``new_config``: config/bfast.yaml before and after (text), only to
     name the settings that change."""
     reasons: list[str] = []
+    rec: list[str] = []
+    files = list(files)
     for raw in files:
         f = raw.strip()
         if is_trading_path(f):
             reasons.append(f"trading code or data: {f}")
+        elif is_record_path(f):
+            rec.append(f)
     if old_config is not None and new_config is not None:
         try:
             a = strategy_config(load_yaml(old_config) or {})
@@ -203,7 +230,13 @@ def classify_update(
             for k in sorted(set(a) | set(b)):
                 if a.get(k) != b.get(k):
                     reasons.append(f"strategy setting: {k}")
-    return {"strategy": bool(reasons), "reasons": reasons[:20]}
+    other = [f for f in (x.strip() for x in files)
+             if f and not is_record_path(f) and not f.startswith(APP_ONLY_DIRS)]  # fmt: skip
+    if reasons or not rec or other:  # "record" only when nothing else but docs / tests changes
+        return {"strategy": bool(reasons), "reasons": reasons[:20]}
+    # BF-D93: only the paper record's code changes: not a strategy update, never automatic
+    return {"strategy": False, "record": True,
+            "reasons": [f"paper record code: {len(rec)} file(s), e.g. {rec[0]}"]}  # fmt: skip
 
 
 def next_decision_at(sessions: Sequence[date], now: datetime) -> datetime | None:

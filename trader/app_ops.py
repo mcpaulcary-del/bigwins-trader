@@ -55,6 +55,7 @@ class Ops:
     shared: ov.Score | None = None  # the one scoreboard the digest uses too (BF-D81 M4)
     know: str = ""  # BF-D89: Home's "What we know" card
     research_status: Any = None  # BF-D89: app_research.Status for Health
+    journal: Any = None  # BF-D93: for Health's paper-record card (None without a journal)
 
 
 _TAX: dict[str, tuple[float, tuple[Decimal | None, str]]] = {}
@@ -99,6 +100,7 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
     from trader import app_research as ar
 
     o.know = safe(lambda: ar.home_card_for(src, v), "")
+    o.know += safe(lambda: record_home_card(src, today), "")  # BF-D94: the real paper record
     o.research_status = safe(lambda: ar.status_for(src, v), None)
     o.archive = safe(lambda: iv.status(o.info_dir, sess, today, v.now), iv.ArchiveStatus())
     if src.store_root is not None:
@@ -108,6 +110,7 @@ def collect(src: Any, v: Any, journal_ok: bool) -> Ops:
         o.store_days = sorted(d for d in (_bulk_day(p.name) for p in files) if d is not None)
     if not journal_ok:
         return o
+    o.journal = j
     o.fresh = safe(lambda: ov.freshness(j, src.book, sess, v.now, o.info_enabled), [])
     sc = safe(lambda: shared_score(src, v), None)
     if sc is not None:
@@ -379,6 +382,40 @@ TIMER_WORDS = {"worker": "server worker", "backup": "nightly backup", "weekly": 
                "autoupdate": "automatic app updates"}  # fmt: skip
 
 
+# ---------------------------------------------------------------- the paper record (BF-D94)
+def record_home_card(src: Any, today: date | None = None) -> str:
+    from trader import record_view as rv
+
+    return rv.home_card(rv.load(rv.view_dir(src)),
+                        rv.load_report(getattr(src, "relay_dir", None), today=today))  # fmt: skip
+
+
+def record_screen(src: Any, v: Any, x: Extras, path: str, qs: Mapping[str, str]) -> str | None:
+    """/record (the lines and holdings), /record/report (the nightly report from the
+    relay), /record/scorecard and /record/costs (the record's own text). Read-only."""
+    from trader import app_research as ar
+    from trader import record_view as rv
+
+    root = rv.view_dir(src)
+    relay = getattr(src, "relay_dir", None)
+    today = v.now.astimezone(ASX_TZ).date()  # a report folder dated after today is ignored
+    if path == "/record":
+        return rv.record_page(v, x, safe(lambda: rv.load(root), None),
+                              safe(lambda: rv.load_report(relay, today=today), None), shell)  # fmt: skip
+    if path == "/record/report":
+        want = ov._day(qs.get("d"))
+        none: list[date] = []
+        days = safe(lambda: rv.report_days(relay, today), none)
+        return rv.report_page(v, x, safe(lambda: rv.load_report(relay, want, today), None), days,
+                              ar.research_md, shell)  # fmt: skip
+    if path == "/record/scorecard":
+        return rv.doc_page(v, x, root, "SCORECARD.md", "Full scorecard", ar.research_md, shell)
+    if path == "/record/costs":
+        return rv.doc_page(v, x, root, "COST_ALT.md", "Cheaper-broker comparison",
+                           ar.research_md, shell)  # fmt: skip
+    return None
+
+
 def health_attention(  # noqa: PLR0912 - one branch per card of the screen
     v: Any, x: Extras, o: Ops
 ) -> list[tuple[str, str, str]]:
@@ -422,6 +459,10 @@ def health_attention(  # noqa: PLR0912 - one branch per card of the screen
     if st is not None and st.state != "ok":
         amber.append(("wait", "Research pages: " + RESEARCH_PILL.get(st.state, ("", st.state))[1],
                       st.text))  # fmt: skip
+    from trader import record_view as rv  # BF-D93: writer, ledger, disk, entries waiting
+
+    for item in rv.health_attention(x.host[0] if x.host else {}):
+        (red if item[0] == "bad" else amber).append(item)
     return red + amber
 
 
@@ -545,6 +586,9 @@ def health(v: Any, x: Extras, o: Ops, version: str) -> str:
            "(before real money; guide F8)</span></li>")
         + "</ul><p class='caption'>If the server goes silent, healthchecks.io tells your phone; "
           "the app cannot, because it runs on the same server.</p>")))  # fmt: skip
+    from trader import record_view as rv  # BF-D93: the paper record on this server
+
+    parts.append(safe(lambda: rv.health_card(o.journal, host, v.now), ""))
     parts.append(renewals_section(x, v.now.astimezone(ASX_TZ).date()))  # BF-D86
     parts.append(research_health(o))  # BF-D89
     # versions
@@ -1055,6 +1099,7 @@ class News:
     index_move: float | None = None
     index_label: str = "A200"
     movers: list[Mover] = field(default_factory=list)
+    report_movers: str = ""  # BF-D94: the nightly report's "Big movers" card (with the why)
 
     @property
     def latest(self) -> list[iv.Notice]:
@@ -1147,6 +1192,11 @@ def collect_news(src: Any, v: Any) -> News:
     safe(lambda: _notice_movers(nw, today), None)
     order = {"halt": 0, "quiet": 1, "takeover": 2, "move": 3, "back": 4}
     nw.movers.sort(key=lambda m: (order.get(m.kind, 9), -abs(m.move or 0.0), m.code))
+    from trader import record_view as rv  # BF-D94: from the relay's nightly report, read-only
+
+    names: Mapping[str, str] = {}
+    nw.report_movers = safe(lambda: rv.movers_card(
+        rv.load_report(getattr(src, "relay_dir", None), today=today), names, today), "")  # fmt: skip
     return nw
 
 
@@ -1265,6 +1315,6 @@ def news_feed(nw: News, names: Mapping[str, str], only_ps: bool) -> str:
 
 def news_page(v: Any, x: Extras, nw: News, qs: Mapping[str, str]) -> str:
     """The News tab: is there news, big moves and halts, then the announcements."""
-    body = (news_summary(nw) + news_movers(nw, x.names)
+    body = (news_summary(nw) + news_movers(nw, x.names) + nw.report_movers
             + news_feed(nw, x.names, qs.get("f") == "ps"))  # fmt: skip
     return shell(v, x, "News", f'<div class="news">{body}</div>', "news")

@@ -141,6 +141,8 @@ info_archive:                   # BF-D78: private announcements archive (owner d
 research:                       # BF-D75: the record's scorecard for the app's research section (read-only)
   scorecard_csv: /data/forward/record/paper/scorecard_latest.csv
   ledger_jsonl: /data/forward/record/LEDGER.jsonl   # BF-D89: the live trial count (tail only, read-only)
+  record_view_dir: /data/recordview   # BF-D94: the paper record's display copy (kept by the host worker)
+  relay_dir: /data/relay              # BF-D94: the cloud's nightly report from the OneDrive relay (validated)
 heartbeat:                      # BF-D41: dead-man ping to the healthchecks_url secret ("none" = off)
   every_seconds: 300
 dashboard:                      # BF-D37: read-only phone page (`trader-bf dashboard`), Tailscale only

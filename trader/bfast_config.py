@@ -381,6 +381,11 @@ class ResearchCfg(_M):
     scorecard_csv: Path | None = Path("/data/forward/record/paper/scorecard_latest.csv")
     # BF-D89: the record's hash-chained ledger; the app reads only its tail (live trial count)
     ledger_jsonl: Path | None = Path("/data/forward/record/LEDGER.jsonl")
+    # BF-D94: the paper record's display copy (scorecards, holdings, movers) that the host
+    # worker keeps, and the validated OneDrive relay inbox with the cloud's nightly report.
+    # Both mounted read-only into the app; display only, no trading setting.
+    record_view_dir: Path | None = Path("/data/recordview")
+    relay_dir: Path | None = Path("/data/relay")
 
 
 class HeartbeatCfg(_M):

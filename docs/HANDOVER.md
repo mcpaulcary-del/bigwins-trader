@@ -1,4 +1,4 @@
-# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89, automatic app updates BF-D90, report display BF-D91, News tab BF-D92)
+# HANDOVER — read this first (state on 25 Nov 2026, disaster-recovery build BF-D82..D87, odds card BF-D88, research pages BF-D89, automatic app updates BF-D90, report display BF-D91, News tab BF-D92; **27 Nov 2026: the paper record's move to the server is BUILT on branch `server-move`, not merged, not deployed: BF-D93, BF-D94**)
 
 Any Claude (on the server, in a research chat, or a new session) starts here, then reads
 `CLAUDE.md`, `NEXT.md`, `docs/DECISIONS.md` and `docs/GO_LIVE_GUIDE.md`.
@@ -43,7 +43,7 @@ about the end of February 2027). The owner approves every order.
 | Thing | Where |
 |---|---|
 | Trading code | GitHub `mcpaulcary-del/bigwins-trader`, branch `bigwins-fast`; server `/srv/asx-trader` |
-| Paper forward record (hash-chained LEDGER) | research environment; nightly backup to the orphan branch `paper-record`; moves to the server after 30 Nov 2026 (run in parallel for a week, then switch) |
+| Paper forward record (hash-chained LEDGER) | research environment (the only writer until the cut-over); nightly backup to the orphan branch `paper-record`. Its code is also in this repository under `record/` (byte-identical copy). Move to the server: seed Sat 12 Dec, parallel week 14-18 Dec, cut-over Sat 19 Dec 2026 (fallback Sat 9 Jan 2027); then `/srv/bwrecord` on the server (BF-D93, `docs/RECORD_ON_SERVER.md`) |
 | Research reports (up to 101), FD v3.0, owner decisions log | owner's OneDrive "Share Trading/Big Wins forward record" and research environment |
 | Historical data (EODHD, personal non-commercial licence — never share) | OneDrive bundles; not on the server except the forward store |
 | Server | BinaryLane, Singapore region, Sydney time zone, Ubuntu 24.04, 2 vCPU / 4 GB, 2 GB swap; Tailscale-only access (public SSH closed; Tailscale key expiry disabled) |
@@ -147,14 +147,38 @@ Real money around March 2027.
    job is off it says "Announcements are not collected yet". `deploy/info_archive.py` still
    stores PDFs for director-interest and capital-raising notices only: the 25 Nov widening
    (price-sensitive PDFs) needs a deploy change with the owner's approval.
+   **27 Nov 2026 (BF-D93, BF-D94; owner decision "Yes lets move as much as we can to server
+   and automated please" = yes to D1-D6 of the move plan; branch `server-move`, to be
+   reviewed and merged into `bigwins-fast`, then approved by the owner in the app)**: the
+   paper record and its daily jobs move to the server. The research code is copied
+   unedited into `record/` and runs in its own container (`deploy/record.Dockerfile`: the
+   cloud's Python 3.13.18 and libraries, uid 10002) with the record tree mounted at the
+   cloud's path; a writer fence (`WRITER.json`, one writer, epochs, chained handover
+   entries, 12 characters the owner compares) and the EODHD token are put around the code
+   by `record/tools/launch.py`, not into it. Host timers (`bigwins-rec-*`, Sydney time) run
+   the archive, NEWS-C prepare and record, the collectors, the intraday looks, the daily
+   close, the multi-market and US forward months, the parallel run's comparison and the
+   relay pull; every job has a gate, a healthchecks.io ping, its result in Health and its
+   place in the missed-job alarm. The AI steps stay cloud tasks and pass files through the
+   OneDrive folder "Big Wins relay" (NEWS-C replies in, batches out; the nightly report
+   in; research ledger requests in, which wait for the owner's `bigwins record requests`).
+   New update class "record" (owner approval, no trader restart, no strategy-version
+   change). The app shows the REAL paper record (Home > Paper record; from a read-only
+   copy at once with `sudo bigwins record view on`), the nightly report in the Inbox and
+   Big movers on the News tab. **Not yet done / open**: the record image has never been
+   built (pin the base images by digest at the first build); the seed list (plan E0) and
+   the seed upload; the scheduled tasks are unchanged until the cut-over; the two rehearsals. (The owner said yes on 27 Nov to
+   the research collector on the server; it runs behind `record/tools/net_guard.py` and
+   CLAUDE.md names it. Record jobs are capped at 1.5 GB of RAM each, 600 MB in ASX hours. Review fixes: BF-D93a, including the hold after a restore: `sudo bigwins record reconcile`.) Details: BF-D93 "Deviations" and "Open".
+   The owner's steps: `docs/RECORD_ON_SERVER.md`.
 5. **Costs (review, 22 Nov 2026)**: fixed costs about **A$650 a year (6.5% of A$10k)**:
    server, price data, Claude-side tools; with IBKR tiered commissions about **A$1,360 a year
    (13.6%)**, more with an ASX market-data subscription. In the fund (A200) state the book
    pays these fixed costs just to hold an index fund. The EODHD price in these figures is
    **unverified** (check the current plan). The L14 cost statement and the app's "same money
    in A200" comparison include `costs.fixed_aud_per_year` (default A$600).
-6. **The research record moves to the server after 30 Nov 2026** (the coordinator does it);
-   the golden checks of each update need it there (BF-D71).
+6. **The research record moves to the server** (built: BF-D93; dates above); the golden
+   checks of each update need it there (BF-D71). `bigwins record cutover` sets `RECORD_DIR`.
 7. **Disaster-recovery set-up from the phone (GO_LIVE_GUIDE F0)**: passphrase, the
    owner-presence check with the second contact, Tailscale device approval and SSH limit
    (F10), break-glass root password tested (F3), `bigwins offsite2`, renewal dates in

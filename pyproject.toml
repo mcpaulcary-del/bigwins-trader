@@ -47,7 +47,9 @@ packages = ["trader"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["migrations/versions/__pycache__"]
+# record/code and record/data_foundation_code are a byte-identical copy of the research
+# record's code (BF-D93; hash-registered in its ledger): never reformatted or linted here.
+extend-exclude = ["migrations/versions/__pycache__", "record/code", "record/data_foundation_code"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "S", "DTZ", "RUF", "SIM", "PT", "C4", "PL"]
@@ -59,15 +61,18 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "PLR", "DTZ001", "N802", "PT018", "C408", "E501", "PT011"]  # test names carry requirement IDs (§20)
+"tests/**" = ["S", "PLR", "DTZ001", "N802", "PT018", "C408", "E501", "PT011", "N812"]  # test names carry requirement IDs (§20)
 "migrations/**" = ["E501", "N999", "S608"]  # role names validated by regex
 # Verbatim ports of report 85's T6 research code (golden references): keep its names.
 "tests/bf_support.py" = ["N806"]
 "trader/broker/mock_gateway.py" = ["N802", "N803"]  # mirrors ib_async method and argument names
 "trader/webui.py" = ["E501", "RUF001"]
 "deploy/backup.py" = ["S603", "S607"]  # runs the fixed tools age / rclone / pg_dump (BF-D64)  # the app's inline JavaScript and CSS (BF-D43)
-"trader/{app_pages,tax_screen,app_viz,share_pages,app_more,app_ops,ops_view,info_view,dashboard_demo}.py" = ["E501", "RUF001", "RUF002"]  # the app's HTML templates (BF-D43, BF-D44)
+"trader/{app_pages,tax_screen,app_viz,share_pages,app_more,app_ops,ops_view,info_view,dashboard_demo,record_view}.py" = ["E501", "RUF001", "RUF002"]  # the app's HTML templates (BF-D43, BF-D44)
 "scripts/golden/*" = ["N806", "N999", "E501"]
+# BF-D93 record tools: the ledger module is "L" as in the research code; fixed tools via
+# subprocess argument lists (never a shell); one branch per command in the CLI
+"record/tools/*" = ["N812", "S603", "E501"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -77,7 +82,8 @@ python_version = "3.12"
 strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
-files = ["trader", "tests", "scripts", "migrations"]
+files = ["trader", "tests", "scripts", "migrations", "record/tools"]
+exclude = ["^record/code/", "^record/data_foundation_code/"]
 explicit_package_bases = true
 
 # Decision core (§3/§20): strict, no relaxations ever.
@@ -96,7 +102,7 @@ module = ["tests.*", "migrations.*"]
 disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
-module = ["exchange_calendars", "exchange_calendars.*", "http_ece", "py_vapid", "py_vapid.*"]
+module = ["exchange_calendars", "exchange_calendars.*", "http_ece", "py_vapid", "py_vapid.*", "requests"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

@@ -4,7 +4,8 @@ name: ci
 
 on:
   push:
-    branches: [main, bigwins-fast]  # review F13: every push to the server's branch is checked
+    # review F13: every push to the server's branch is checked
+    branches: [main, bigwins-fast]
   pull_request:
 
 permissions:

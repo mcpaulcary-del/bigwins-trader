@@ -44,6 +44,9 @@ KNOWN_SECRETS: frozenset[str] = frozenset(
         "healthchecks_daily_url",  # BF-D77 (b): optional check pinged after each good daily cycle
         "healthchecks_presence_url",  # BF-D82: pinged daily while the owner is active
         "github_ci_token",  # BF-D90: optional read-only token for GitHub CI results (private repo)
+        # BF-D93: optional healthchecks.io project ping URL (https://hc-ping.com/<ping key>):
+        # the worker pings one check per paper-record job under it; never read by a container
+        "healthchecks_record_url",
     }
 )
 

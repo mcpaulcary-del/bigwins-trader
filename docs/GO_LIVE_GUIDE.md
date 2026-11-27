@@ -276,7 +276,7 @@ are kept).
 
 ### B6. The secret files
 
-Compose needs **twelve** files in `deploy/secrets/` (review F16: the eight you type below plus four that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key` and `app_passphrase`, which holds `none` until you set your passphrase, BF-D83; thirteen with Telegram on). Optional, read only by the server worker and never by a container: `healthchecks_backup_url` (C5), `healthchecks_daily_url` (C5), `healthchecks_presence_url` (F8) and `github_ci_token` (C7 step 9, only if the repository is private). Exactly these names
+Compose needs **twelve** files in `deploy/secrets/` (review F16: the eight you type below plus four that `bigwins update` makes itself: `vapid_private_key`, `app_proxy_key`, `worker_job_key` and `app_passphrase`, which holds `none` until you set your passphrase, BF-D83; thirteen with Telegram on). Optional, read only by the server worker and never by a container: `healthchecks_backup_url` (C5), `healthchecks_daily_url` (C5), `healthchecks_presence_url` (F8), `github_ci_token` (C7 step 9, only if the repository is private) and `healthchecks_record_url` (C10: one outside check per paper-record job, BF-D93). Exactly these names
 (`deploy/docker-compose.yml` `secrets:`; the closed list in `trader/secrets.py`). A
 missing file stops `docker compose up`.
 
@@ -333,7 +333,7 @@ mode, which the containers cannot see.
 | `telegram_bot_token` | trader, **only with Telegram on** (appendix T) | `trader/approval.py` `TelegramTransport` |
 | `totp_seed` | trader | `trader/approval.py` `TotpVerifier` |
 | `ibkr_flex_token`, `ibkr_flex_query_id` | trader | `trader/flex_pull.py` (read at each pull) |
-| `eodhd_api_token` | trader (price-store refresh, BF-D31) | `trader/store_refresh.py` (read at each refresh) |
+| `eodhd_api_token` | trader (price-store refresh, BF-D31); the paper record's download jobs (BF-D93: the file is mounted read-only into the record container, never passed on a command line or in the environment) | `trader/store_refresh.py` (read at each refresh); `record/tools/eodhd_shim.py` |
 | `app_proxy_key` | dashboard and trader (signed app actions, BF-D46) | made by `bigwins update` |
 | `worker_job_key` | trader and the root host worker (signed server jobs, BF-D48) | made by `bigwins update` |
 | `db_dashboard_password` | the dashboard's SELECT-only database role (BF-D52) | made by `bigwins update`; the `db-roles` service sets it |
@@ -342,6 +342,7 @@ mode, which the containers cannot see.
 | `healthchecks_backup_url` | server worker only: pinged after each good backup (C5) | `deploy/bigwins.sh` `hc_backup_ping` |
 | `healthchecks_daily_url` | server worker only: pinged after each good daily cycle (C5) | `deploy/bigwins.sh` `daily_ping` |
 | `healthchecks_presence_url` | server worker only: pinged once a day while you have used the app in the last 14 days; your second contact is on its alerts (F8) | `deploy/bigwins.sh` `presence_ping` |
+| `healthchecks_record_url` | server worker only, optional: your healthchecks.io **project ping URL** (`https://hc-ping.com/<ping key>`; healthchecks.io > Project > Settings > Ping key). The worker pings one check per paper-record job under it (`bigwins-daily`, `bigwins-archive`, ...; each is created by its first ping), with a start, a success or a failure signal (BF-D93) | `deploy/record.sh` `rec_ping` |
 | `github_ci_token` | server worker only, optional: a read-only GitHub token (Actions: read, this repository only) so the automatic app updates can read the CI result while the repository is private; not needed while it is public (BF-D90) | `deploy/autoupdate.py` `ci_status` |
 
 ### B7. Your settings in `config/bfast.local.yaml` (this server only)
@@ -702,28 +703,34 @@ files) and a computer with Termius.
 
 ---
 
-### C10. The private announcements archive (after 30 Nov 2026, BF-D78)
+### C10. The paper record and the announcements archive on this server (BF-D78, BF-D93)
 
-Owner decision 24 Nov 2026: the only automated access to asx.com.au is this private
-archive (the previous trading day's announcement list, and the director-interest and
-capital-raising notices), plus ASIC's daily short positions. It is for your own use
-only, is never shared, and feeds no strategy. It is **off** until the research record
-moves to this server (after 30 Nov; Claude does the move with you). Then:
+Owner decision 24 Nov 2026: the only automated access to asx.com.au is the private
+archive (the previous trading day's announcement list, the director-interest and
+capital-raising notices and, since 25 Nov, the price-sensitive announcements of band C
+companies and paper holdings: at most 60 a day, one request every 2 seconds, never in ASX
+hours), plus ASIC's daily short positions. It is for your own use only, is never shared,
+and feeds no strategy.
 
-1. Ask Claude on the server to copy the research archive's existing data
-   (`asx_notices/`, `asic_short/`) into `/var/lib/bigwins/info` (or your
-   `INFO_ARCHIVE_DIR`), so the history is not lost, and to stop the research copy.
-2. In `config/bfast.local.yaml` add:
-   ```yaml
-   info_archive:
-     archive_enabled: true
-   ```
-3. `bigwins` > 4) Restart the trader (this restarts the app too, which is needed: the app
-   reads the switch when it starts). From the next morning (07:40, Tuesday to Saturday)
-   the server collects the previous trading day; Server > Health shows the last day
-   stored and any missed trading days; each share's page shows its last 90 days of
-   headlines, director trades and the short position. Server > Run on the server >
-   **Collect announcements** runs it at once.
+Owner decision 27 Nov 2026 ("move as much as we can to server and automated"): the paper
+record and its daily jobs move from the research environment to this server, and the
+archive moves with them. **You do not edit any file for this.** The whole move is in
+`docs/RECORD_ON_SERVER.md` (one page, phone-friendly). In short:
+
+1. `sudo bigwins record view on`: the app shows the real paper record from a read-only
+   copy at once (no job runs here yet).
+2. Sat 12 Dec: `sudo bigwins record seed`, then `sudo bigwins record shadow on`: the
+   parallel week. The record's own job collects the announcements into the shadow's
+   folder (the older host job `bigwins info-archive` stands down, so the ASX site is
+   asked once a day from this server, never twice).
+3. Sat 19 Dec: `sudo bigwins record cutover` (12 characters to compare). That command
+   copies the archive's history into `/var/lib/bigwins/info`, sets `RECORD_DIR`, switches
+   `info_archive.archive_enabled` on in `config/bfast.local.yaml`, runs the record-data
+   checks, restarts the trader and the app, and makes a backup.
+
+From then on Server > Health shows "Paper record: written on this server", the last day
+stored and any missed trading days; each share's page shows its last 90 days of
+headlines, director trades and the short position.
 
 ## D. First messages, approving in the app, and the controls
 

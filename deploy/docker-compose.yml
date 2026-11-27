@@ -70,6 +70,10 @@ services:
       POSTGRES_DB: ledger_bf_paper
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets: [db_password]
+    # BF-D93 (review): memory kept for the database under pressure, and the kernel ends other
+    # things (the capped record jobs first: oom-score-adj 500) before it
+    mem_reservation: 256m
+    oom_score_adj: -500
     depends_on:
       secrets-check: {condition: service_completed_successfully}
     volumes: [pgdata:/var/lib/postgresql/data]
@@ -86,6 +90,10 @@ services:
       args: {BUILD_SHA: "${BUILD_SHA:-unknown}"}  # review F22
     image: asx-trader-bfast-trader:local
     restart: unless-stopped
+    # BF-D93 (review): the trader keeps its memory when the server is short (a reservation,
+    # not a cap) and is the last thing the kernel would end; record jobs are capped and first
+    mem_reservation: 768m
+    oom_score_adj: -500
     depends_on:
       secrets-check: {condition: service_completed_successfully}
       db: {condition: service_healthy}
@@ -112,6 +120,9 @@ services:
       - ${FLEX_INBOX:?directory of IBKR Activity Flex XML files}:/data/flex/inbox
       # BF-D78: the private info archive (written by the host job, read here for the digest)
       - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
+      # BF-D94: the paper record's display copy, read-only: only for the plain numbers of the
+      # "Paper record booked" Inbox message (never read by a decision)
+      - ${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro
       # BF-D81 (S3 b): the previous-version twins' own volume (written by the worker's
       # throwaway dry runs, never the live output), read here for the app
       - twins:/data/twins:ro
@@ -179,6 +190,11 @@ services:
       # announcements archive (share pages). Both read-only.
       - ${RECORD_DIR:?path of the record's 68_forward_record}:/data/forward/record:ro
       - ${INFO_ARCHIVE_DIR:-/var/lib/bigwins/info}:/data/info:ro
+      # BF-D94: the paper record's display copy (scorecards, holdings, movers; kept by the
+      # host worker) and the cloud's nightly report from the OneDrive relay (validated
+      # files only). Read-only; the dashboard has no other view of the record tree.
+      - ${RECORD_VIEW_DIR:-/var/lib/bigwins/recordview}:/data/recordview:ro
+      - ${RELAY_VIEW_DIR:-/var/lib/bigwins/relay/inbox/validated}:/data/relay:ro
     read_only: true
     mem_limit: 512m  # review F11
     tmpfs: [/tmp]

@@ -47,6 +47,11 @@ docker compose version
 echo "== 6/9 folders the trader uses (owned by the trader's user, uid 10001)"
 mkdir -p /srv/bigwins_forward/data/eodhd /srv/ref /srv/record/68_forward_record /srv/flex/inbox
 chown -R 10001:10001 /srv/flex/inbox /srv/bigwins_forward/data/eodhd
+# BF-D93: the paper record's own user (uid 10002: no log-in, not in the docker group) and
+# its folders; the record jobs run as this user in their own container, never as root
+id -u bwrecord >/dev/null 2>&1 || useradd --system --uid 10002 --no-create-home --shell /usr/sbin/nologin bwrecord
+mkdir -p /srv/bwrecord_shadow /var/lib/bigwins/recordview /var/lib/bigwins/relay/inbox/validated
+chown 10002:10002 /srv/bwrecord_shadow
 
 echo "== 7/9 read-only GitHub key for the private repository"
 [ -f ~/.ssh/bigwins_deploy ] || ssh-keygen -t ed25519 -f ~/.ssh/bigwins_deploy -N '' -C sydney-server

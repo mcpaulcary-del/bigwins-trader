@@ -2,6 +2,7 @@
 config/bfast.local.yaml (server only, not in git; laid over config/bfast.yaml).
 
 Usage: python3 set_login.py <path of bfast.local.yaml> <login> [<app host name>]
+       python3 set_login.py --info-archive <path of bfast.local.yaml> true|false   (BF-D93)
 Standard library only (runs with the host's python3). Other lines of the file are kept.
 """
 
@@ -55,7 +56,20 @@ def _set(text: str, key: str, value: str, section: str = "app") -> str:
     return "\n".join(lines) + "\n"
 
 
+def set_info_archive(text: str, on: str) -> str:
+    """BF-D93 (GO_LIVE_GUIDE C10): ``info_archive.archive_enabled`` (true | false only),
+    written by ``bigwins record cutover`` so nobody edits YAML on a phone."""
+    if on not in ("true", "false"):
+        raise ValueError("true or false only")
+    return _set(text, "archive_enabled", on, "info_archive")
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) > 3 and argv[1] == "--info-archive":
+        path = Path(argv[2])
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        path.write_text(set_info_archive(text, argv[3].strip()), encoding="utf-8")
+        return 0
     if len(argv) > 3 and argv[1] == "--account":
         path = Path(argv[2])
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
