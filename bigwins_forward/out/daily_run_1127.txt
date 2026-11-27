@@ -1,4 +1,3 @@
-timeout: failed to run command '/usr/bin/time': No such file or directory
-| H82_25k | 10 | 66.00 | -0.52% | -0.38% | -0.26% | -1.36% | +0.84% | +0.98% | +1.10% | -1.24% | +0.72% | +0.98% |
-| H82_100k | 30 | 198.00 | -0.70% | -0.59% | -0.50% | -1.36% | +0.67% | +0.77% | +0.86% | -1.24% | +0.54% | +0.74% |
-state.json sha256 unchanged: f8adec62a9af4853734c8d2d3496e8302bafedc6ea5b56921ef35be0ab9cf811
+2026-11-27T09:28:28Z 2026-11-27 bulk {'eod': 1822, 'div': 7, 'splits': 1}
+2026-11-27T09:28:28Z 2026-11-27 booked; ledger 117 697dd10860c5
+EXIT 0 MAXRSS_MB 105

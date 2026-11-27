@@ -1,4 +1,4 @@
-# Big Wins paper scorecard — 2026-11-26
+# Big Wins paper scorecard — 2026-11-27
 
 **PAPER - Big Wins. Not shown to beat the index. No real money; no broker orders; the AI never places trades.**
 
@@ -17,11 +17,11 @@ Start decision 2026-11-16, fills at the close of 2026-11-17. Rules v1.3 (SHA-256
 
 | Book | NAV A$ | Contributed | Return | A200 (A$0) | vs A200 | 40/60 (A$0) | vs 40/60 | After tax, kept: vs A200 kept | After tax, sold: vs A200 sold | Holdings | Cash | % of random |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| H82_lifecycle_5k (illustration only) | 4,952.52 | 0 | -0.95% | -1.36% | +0.41% | -1.24% | +0.29% | +0.41% | -0.18% | 4 | 63.53 |  |
-| H82_25k | 24,868.81 | 0 | -0.53% | -1.36% | +0.84% | -1.24% | +0.72% | +0.81% | +0.43% | 10 | 191.50 | 0.9 |
-| H82_100k | 99,304.64 | 0 | -0.69% | -1.36% | +0.66% | -1.24% | +0.55% | +0.59% | +0.26% | 30 | 654.85 | 0.96 |
-| MOM_25k | 23,662.70 | 0 | -5.35% | -1.36% | -3.99% | -1.24% | -4.11% | -3.99% | -4.44% | 10 | 64.80 |  |
-| MOM_100k | 94,806.86 | 0 | -5.19% | -1.36% | -3.83% | -1.24% | -3.95% | -3.83% | -4.11% | 10 | 41.02 |  |
+| H82_lifecycle_5k (illustration only) | 4,935.84 | 0 | -1.28% | -0.54% | -0.74% | -0.48% | -0.81% | -0.74% | -1.34% | 4 | 63.53 |  |
+| H82_25k | 24,727.74 | 0 | -1.09% | -0.54% | -0.55% | -0.48% | -0.61% | -0.57% | -0.95% | 10 | 191.50 | 0.6 |
+| H82_100k | 99,245.77 | 0 | -0.75% | -0.54% | -0.21% | -0.48% | -0.28% | -0.29% | -0.62% | 30 | 654.85 | 0.745 |
+| MOM_25k | 24,302.99 | 0 | -2.79% | -0.54% | -2.25% | -0.48% | -2.31% | -2.25% | -2.70% | 10 | 64.80 |  |
+| MOM_100k | 97,374.62 | 0 | -2.62% | -0.54% | -2.08% | -0.48% | -2.15% | -2.08% | -2.36% | 10 | 41.02 |  |
 
 After tax: 32% rate, 50% discount for parcels held 367+ days, cumulative from the start; "kept" = tax on income and on gains already realised; "sold" = as if every holding were sold at the day's close (sale costs included). Franking credits not yet counted on either side. The owner's real comparison is the engine "sold" against the fund "kept" (CSV column vs_a200_b0_engine_sold_fund_kept).
 
@@ -29,28 +29,28 @@ After tax: 32% rate, 50% discount for parcels held 367+ days, cumulative from th
 
 | Frozen J3 comparator (A$6.60 per fund purchase) | Book | vs A200 (J3) | vs 40/60 (J3) |
 |---|---|---|---|
-| A200 -1.49%; 40/60 -1.50% | H82_lifecycle_5k | +0.54% | +0.55% |
-| A200 -1.45%; 40/60 -1.33% | H82_25k | +0.92% | +0.80% |
-| A200 -1.45%; 40/60 -1.33% | H82_100k | +0.75% | +0.63% |
-| A200 -1.45%; 40/60 -1.33% | MOM_25k | -3.90% | -4.02% |
-| A200 -1.45%; 40/60 -1.33% | MOM_100k | -3.75% | -3.87% |
+| A200 -0.67%; 40/60 -0.74% | H82_lifecycle_5k | -0.61% | -0.54% |
+| A200 -0.63%; 40/60 -0.56% | H82_25k | -0.46% | -0.53% |
+| A200 -0.63%; 40/60 -0.56% | H82_100k | -0.13% | -0.19% |
+| A200 -0.63%; 40/60 -0.56% | MOM_25k | -2.16% | -2.22% |
+| A200 -0.63%; 40/60 -0.56% | MOM_100k | -2.00% | -2.06% |
 
 | Comparator / control | NAV A$ | Return | Note |
 |---|---|---|---|
-| CMP_A200_lifecycle_5k_b0 | 4,931.97 | -1.36% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_4060_lifecycle_5k_b0 | 4,937.99 | -1.24% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_A200_25k_b0 | 24,659.87 | -1.36% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_4060_25k_b0 | 24,689.93 | -1.24% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_A200_100k_b0 | 98,639.49 | -1.36% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_4060_100k_b0 | 98,759.73 | -1.24% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
-| CMP_A200_lifecycle_5k (J3 as frozen) | 4,925.46 | -1.49% | A$6.60 per fund purchase; EODHD proxy |
-| CMP_4060_lifecycle_5k (J3 as frozen) | 4,924.95 | -1.50% | A$6.60 per fund purchase; EODHD proxy |
-| CMP_A200_25k (J3 as frozen) | 24,638.17 | -1.45% | A$6.60 per fund purchase; EODHD proxy |
-| CMP_4060_25k (J3 as frozen) | 24,668.20 | -1.33% | A$6.60 per fund purchase; EODHD proxy |
-| CMP_A200_100k (J3 as frozen) | 98,552.69 | -1.45% | A$6.60 per fund purchase; EODHD proxy |
-| CMP_4060_100k (J3 as frozen) | 98,672.82 | -1.33% | A$6.60 per fund purchase; EODHD proxy |
-| RND_25k (200 seeds) | | -3.00% | median; 5th-95th pct -0.0601 to 0.0003 |
-| RND_100k (200 seeds) | | -3.02% | median; 5th-95th pct -0.0506 to -0.0120 |
+| CMP_A200_lifecycle_5k_b0 | 4,972.97 | -0.54% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_4060_lifecycle_5k_b0 | 4,976.18 | -0.48% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_A200_25k_b0 | 24,864.83 | -0.54% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_4060_25k_b0 | 24,880.89 | -0.48% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_A200_100k_b0 | 99,459.31 | -0.54% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_4060_100k_b0 | 99,523.56 | -0.48% | A$0 brokerage (primary); EODHD proxy (A200.AU/BGBL.AU close + distributions) |
+| CMP_A200_lifecycle_5k (J3 as frozen) | 4,966.40 | -0.67% | A$6.60 per fund purchase; EODHD proxy |
+| CMP_4060_lifecycle_5k (J3 as frozen) | 4,963.04 | -0.74% | A$6.60 per fund purchase; EODHD proxy |
+| CMP_A200_25k (J3 as frozen) | 24,842.95 | -0.63% | A$6.60 per fund purchase; EODHD proxy |
+| CMP_4060_25k (J3 as frozen) | 24,858.99 | -0.56% | A$6.60 per fund purchase; EODHD proxy |
+| CMP_A200_100k (J3 as frozen) | 99,371.78 | -0.63% | A$6.60 per fund purchase; EODHD proxy |
+| CMP_4060_100k (J3 as frozen) | 99,435.98 | -0.56% | A$6.60 per fund purchase; EODHD proxy |
+| RND_25k (200 seeds) | | -1.43% | median; 5th-95th pct -0.0454 to 0.0141 |
+| RND_100k (200 seeds) | | -1.52% | median; 5th-95th pct -0.0347 to 0.0003 |
 | SHADOW M3 (report 76 §6, R1-R11) | — | — | SHADOW: not adopted; tracked for information; own clock: first decision Mon 30 Nov 2026, fills at the close of Tue 1 Dec 2026 (AMENDMENT_shadow_M3_E3.md) |
 | SHADOW E3 (report 73 §6, T1-T11) | — | — | SHADOW: not adopted; tracked for information; own clock: first decision Mon 30 Nov 2026, fills at the close of Tue 1 Dec 2026 (AMENDMENT_shadow_M3_E3.md) |
 | SHADOW ACC (keep winners; AMENDMENT_shadow_ACC_keep_winners.md) | — | — | SHADOW ACC: not adopted; tracked for information; illustration only (A$5k); first decision Mon 30 Nov 2026, fills at the close of Tue 1 Dec 2026 |
@@ -76,50 +76,50 @@ Each paper book = EMG2_18_SIM_BT_C6 with one change; A$10,000; 100 twins paired 
 
 | Book | Code | Name | Shares | Cost A$ | Last | Value A$ | P&L A$ | P&L | Flags |
 |---|---|---|---|---|---|---|---|---|---|
-| H82_lifecycle_5k | CPU | Computershare Ltd | 27 | 1,234.44 | 47.54 (2026-11-26) | 1,283.58 | 49.14 | +3.98% |  |
-| H82_lifecycle_5k | QBE | QBE Insurance Group Limited | 46 | 1,233.27 | 26.5 (2026-11-26) | 1,219.00 | -14.27 | -1.16% |  |
-| H82_lifecycle_5k | RHC | Ramsay Health Care Ltd | 23 | 1,241.78 | 51.04 (2026-11-26) | 1,173.92 | -67.86 | -5.47% |  |
-| H82_lifecycle_5k | WOW | Woolworths Group Ltd | 29 | 1,226.98 | 41.81 (2026-11-26) | 1,212.49 | -14.49 | -1.18% |  |
-| H82_25k | ALL | Aristocrat Leisure Ltd | 38 | 2,495.05 | 65.3 (2026-11-26) | 2,481.40 | -13.65 | -0.55% |  |
-| H82_25k | ANN | Ansell Ltd | 53 | 2,476.73 | 46.31 (2026-11-26) | 2,454.43 | -22.30 | -0.90% |  |
-| H82_25k | APA | APA Group | 217 | 2,493.73 | 11.27 (2026-11-26) | 2,445.59 | -48.14 | -1.93% |  |
-| H82_25k | ASX | ASX Ltd | 37 | 2,488.82 | 67.46 (2026-11-26) | 2,496.02 | 7.20 | +0.29% |  |
-| H82_25k | CGF | Challenger Ltd | 206 | 2,497.17 | 11.8 (2026-11-26) | 2,430.80 | -66.37 | -2.66% |  |
-| H82_25k | CPU | Computershare Ltd | 54 | 2,462.27 | 47.54 (2026-11-26) | 2,567.16 | 104.89 | +4.26% |  |
-| H82_25k | FPH | Fisher & Paykel Healthcare C | 62 | 2,461.10 | 40.69 (2026-11-26) | 2,522.78 | 61.68 | +2.51% |  |
-| H82_25k | QBE | QBE Insurance Group Limited | 93 | 2,486.60 | 26.5 (2026-11-26) | 2,464.50 | -22.10 | -0.89% |  |
-| H82_25k | RHC | Ramsay Health Care Ltd | 46 | 2,476.97 | 51.04 (2026-11-26) | 2,347.84 | -129.13 | -5.21% |  |
-| H82_25k | WOW | Woolworths Group Ltd | 59 | 2,489.44 | 41.81 (2026-11-26) | 2,466.79 | -22.65 | -0.91% |  |
-| H82_100k | ALL | Aristocrat Leisure Ltd | 50 | 3,280.87 | 65.3 (2026-11-26) | 3,265.00 | -15.87 | -0.48% |  |
-| H82_100k | ANN | Ansell Ltd | 71 | 3,315.64 | 46.31 (2026-11-26) | 3,288.01 | -27.63 | -0.83% |  |
-| H82_100k | ANZ | ANZ Group Holdings Ltd | 84 | 3,327.08 | 38.81 (2026-11-26) | 3,260.04 | -67.04 | -2.01% |  |
-| H82_100k | APA | APA Group | 290 | 3,330.42 | 11.27 (2026-11-26) | 3,268.30 | -62.12 | -1.87% |  |
-| H82_100k | ARG | Argo Investments Ltd | 351 | 3,331.84 | 9.32 (2026-11-26) | 3,271.32 | -60.52 | -1.82% |  |
-| H82_100k | ASX | ASX Ltd | 49 | 3,293.86 | 67.46 (2026-11-26) | 3,305.54 | 11.68 | +0.35% |  |
-| H82_100k | BGA | Bega Cheese Ltd | 502 | 3,328.08 | 6.46 (2026-11-26) | 3,242.92 | -85.16 | -2.56% |  |
-| H82_100k | BOQ | Bank of Queensland Ltd | 470 | 3,328.38 | 7.08 (2026-11-26) | 3,327.60 | -0.78 | -0.02% |  |
-| H82_100k | CCP | Credit Corp Group Ltd | 211 | 3,323.35 | 15.52 (2026-11-26) | 3,274.72 | -48.63 | -1.46% |  |
-| H82_100k | CGF | Challenger Ltd | 275 | 3,331.39 | 11.8 (2026-11-26) | 3,245.00 | -86.39 | -2.59% |  |
-| H82_100k | CPU | Computershare Ltd | 73 | 3,326.31 | 47.54 (2026-11-26) | 3,470.42 | 144.11 | +4.33% |  |
-| H82_100k | CSL | CSL Ltd | 16 | 3,202.59 | 208.82 (2026-11-26) | 3,341.12 | 138.53 | +4.33% |  |
-| H82_100k | CWY | Cleanaway Waste Management L | 1,103 | 3,332.14 | 3.01 (2026-11-26) | 3,320.03 | -12.12 | -0.36% |  |
-| H82_100k | DDR | Dicker Data Ltd | 240 | 3,319.66 | 13.3 (2026-11-26) | 3,192.00 | -127.66 | -3.85% |  |
-| H82_100k | DTL | Data 3 Ltd | 230 | 3,326.88 | 14.25 (2026-11-26) | 3,277.50 | -49.38 | -1.48% |  |
-| H82_100k | EVT | EVT Ltd | 214 | 3,321.17 | 15.1 (2026-11-26) | 3,231.40 | -89.77 | -2.70% |  |
-| H82_100k | FPH | Fisher & Paykel Healthcare C | 84 | 3,332.05 | 40.69 (2026-11-26) | 3,417.96 | 85.91 | +2.58% |  |
-| H82_100k | IAG | Insurance Australia Group Lt | 367 | 3,327.60 | 9.13 (2026-11-26) | 3,350.71 | 23.11 | +0.69% |  |
-| H82_100k | MPL | Medibank Private Ltd | 620 | 3,333.12 | 5.3 (2026-11-26) | 3,286.00 | -47.12 | -1.41% |  |
+| H82_lifecycle_5k | CPU | Computershare Ltd | 27 | 1,234.44 | 46.94 (2026-11-27) | 1,267.38 | 32.94 | +2.67% |  |
+| H82_lifecycle_5k | QBE | QBE Insurance Group Limited | 46 | 1,233.27 | 26.64 (2026-11-27) | 1,225.44 | -7.83 | -0.63% |  |
+| H82_lifecycle_5k | RHC | Ramsay Health Care Ltd | 23 | 1,241.78 | 50.84 (2026-11-27) | 1,169.32 | -72.46 | -5.84% |  |
+| H82_lifecycle_5k | WOW | Woolworths Group Ltd | 29 | 1,226.98 | 41.73 (2026-11-27) | 1,210.17 | -16.81 | -1.37% |  |
+| H82_25k | ALL | Aristocrat Leisure Ltd | 38 | 2,495.05 | 65.34 (2026-11-27) | 2,482.92 | -12.13 | -0.49% |  |
+| H82_25k | ANN | Ansell Ltd | 53 | 2,476.73 | 46.22 (2026-11-27) | 2,449.66 | -27.07 | -1.09% |  |
+| H82_25k | APA | APA Group | 217 | 2,493.73 | 11.16 (2026-11-27) | 2,421.72 | -72.01 | -2.89% |  |
+| H82_25k | ASX | ASX Ltd | 37 | 2,488.82 | 67.01 (2026-11-27) | 2,479.37 | -9.45 | -0.38% |  |
+| H82_25k | CGF | Challenger Ltd | 206 | 2,497.17 | 11.7 (2026-11-27) | 2,410.20 | -86.97 | -3.48% |  |
+| H82_25k | CPU | Computershare Ltd | 54 | 2,462.27 | 46.94 (2026-11-27) | 2,534.76 | 72.49 | +2.94% |  |
+| H82_25k | FPH | Fisher & Paykel Healthcare C | 62 | 2,461.10 | 39.99 (2026-11-27) | 2,479.38 | 18.28 | +0.74% |  |
+| H82_25k | QBE | QBE Insurance Group Limited | 93 | 2,486.60 | 26.64 (2026-11-27) | 2,477.52 | -9.08 | -0.37% |  |
+| H82_25k | RHC | Ramsay Health Care Ltd | 46 | 2,476.97 | 50.84 (2026-11-27) | 2,338.64 | -138.33 | -5.58% |  |
+| H82_25k | WOW | Woolworths Group Ltd | 59 | 2,489.44 | 41.73 (2026-11-27) | 2,462.07 | -27.37 | -1.10% |  |
+| H82_100k | ALL | Aristocrat Leisure Ltd | 50 | 3,280.87 | 65.34 (2026-11-27) | 3,267.00 | -13.87 | -0.42% |  |
+| H82_100k | ANN | Ansell Ltd | 71 | 3,315.64 | 46.22 (2026-11-27) | 3,281.62 | -34.02 | -1.03% |  |
+| H82_100k | ANZ | ANZ Group Holdings Ltd | 84 | 3,327.08 | 38.98 (2026-11-27) | 3,274.32 | -52.76 | -1.59% |  |
+| H82_100k | APA | APA Group | 290 | 3,330.42 | 11.16 (2026-11-27) | 3,236.40 | -94.02 | -2.82% |  |
+| H82_100k | ARG | Argo Investments Ltd | 351 | 3,331.84 | 9.31 (2026-11-27) | 3,267.81 | -64.03 | -1.92% |  |
+| H82_100k | ASX | ASX Ltd | 49 | 3,293.86 | 67.01 (2026-11-27) | 3,283.49 | -10.37 | -0.31% |  |
+| H82_100k | BGA | Bega Cheese Ltd | 502 | 3,328.08 | 6.48 (2026-11-27) | 3,252.96 | -75.12 | -2.26% |  |
+| H82_100k | BOQ | Bank of Queensland Ltd | 470 | 3,328.38 | 7.07 (2026-11-27) | 3,322.90 | -5.48 | -0.16% |  |
+| H82_100k | CCP | Credit Corp Group Ltd | 211 | 3,323.35 | 15.85 (2026-11-27) | 3,344.35 | 21.00 | +0.63% |  |
+| H82_100k | CGF | Challenger Ltd | 275 | 3,331.39 | 11.7 (2026-11-27) | 3,217.50 | -113.89 | -3.42% |  |
+| H82_100k | CPU | Computershare Ltd | 73 | 3,326.31 | 46.94 (2026-11-27) | 3,426.62 | 100.31 | +3.02% |  |
+| H82_100k | CSL | CSL Ltd | 16 | 3,202.59 | 206.88 (2026-11-27) | 3,310.08 | 107.49 | +3.36% |  |
+| H82_100k | CWY | Cleanaway Waste Management L | 1,103 | 3,332.14 | 3.01 (2026-11-27) | 3,320.03 | -12.12 | -0.36% |  |
+| H82_100k | DDR | Dicker Data Ltd | 240 | 3,319.66 | 13.41 (2026-11-27) | 3,218.40 | -101.26 | -3.05% |  |
+| H82_100k | DTL | Data 3 Ltd | 230 | 3,326.88 | 14.21 (2026-11-27) | 3,268.30 | -58.58 | -1.76% |  |
+| H82_100k | EVT | EVT Ltd | 214 | 3,321.17 | 15.3 (2026-11-27) | 3,274.20 | -46.97 | -1.41% |  |
+| H82_100k | FPH | Fisher & Paykel Healthcare C | 84 | 3,332.05 | 39.99 (2026-11-27) | 3,359.16 | 27.11 | +0.81% |  |
+| H82_100k | IAG | Insurance Australia Group Lt | 367 | 3,327.60 | 9.07 (2026-11-27) | 3,328.69 | 1.09 | +0.03% |  |
+| H82_100k | MPL | Medibank Private Ltd | 620 | 3,333.12 | 5.28 (2026-11-27) | 3,273.60 | -59.52 | -1.79% |  |
 | H82_100k | OML | Ooh!Media Ltd | 1,987 | 3,333.19 | 1.67 (2026-11-19) | 3,318.29 | -14.90 | -0.45% |  |
-| H82_100k | ORG | Origin Energy Ltd | 264 | 3,325.76 | 12.41 (2026-11-26) | 3,276.24 | -49.52 | -1.49% |  |
-| H82_100k | QBE | QBE Insurance Group Limited | 124 | 3,313.26 | 26.5 (2026-11-26) | 3,286.00 | -27.26 | -0.82% |  |
-| H82_100k | REH | Reece Ltd | 175 | 3,315.35 | 19.14 (2026-11-26) | 3,349.50 | 34.15 | +1.03% |  |
-| H82_100k | RHC | Ramsay Health Care Ltd | 61 | 3,282.52 | 51.04 (2026-11-26) | 3,113.44 | -169.08 | -5.15% |  |
-| H82_100k | SDF | Steadfast Group Ltd | 574 | 3,332.61 | 5.79 (2026-11-26) | 3,323.46 | -9.15 | -0.27% |  |
-| H82_100k | SOL | Washington H Soul Pattinson  | 70 | 3,332.82 | 46.75 (2026-11-26) | 3,272.50 | -60.32 | -1.81% |  |
-| H82_100k | STO | Santos Ltd | 384 | 3,331.52 | 8.57 (2026-11-26) | 3,290.88 | -40.64 | -1.22% |  |
-| H82_100k | SUN | Suncorp Group Ltd | 162 | 3,326.06 | 20.65 (2026-11-26) | 3,345.30 | 19.24 | +0.58% |  |
-| H82_100k | TWE | Treasury Wine Estates Ltd | 520 | 3,332.72 | 6.03 (2026-11-26) | 3,135.60 | -197.12 | -5.91% |  |
-| H82_100k | WOW | Woolworths Group Ltd | 79 | 3,331.08 | 41.81 (2026-11-26) | 3,302.99 | -28.09 | -0.84% |  |
+| H82_100k | ORG | Origin Energy Ltd | 264 | 3,325.76 | 12.36 (2026-11-27) | 3,263.04 | -62.72 | -1.89% |  |
+| H82_100k | QBE | QBE Insurance Group Limited | 124 | 3,313.26 | 26.64 (2026-11-27) | 3,303.36 | -9.90 | -0.30% |  |
+| H82_100k | REH | Reece Ltd | 175 | 3,315.35 | 19.13 (2026-11-27) | 3,347.75 | 32.40 | +0.98% |  |
+| H82_100k | RHC | Ramsay Health Care Ltd | 61 | 3,282.52 | 50.84 (2026-11-27) | 3,101.24 | -181.28 | -5.52% |  |
+| H82_100k | SDF | Steadfast Group Ltd | 574 | 3,332.61 | 5.8 (2026-11-27) | 3,329.20 | -3.41 | -0.10% |  |
+| H82_100k | SOL | Washington H Soul Pattinson  | 70 | 3,332.82 | 46.57 (2026-11-27) | 3,259.90 | -72.92 | -2.19% |  |
+| H82_100k | STO | Santos Ltd | 384 | 3,331.52 | 8.72 (2026-11-27) | 3,348.48 | 16.96 | +0.51% |  |
+| H82_100k | SUN | Suncorp Group Ltd | 162 | 3,326.06 | 20.58 (2026-11-27) | 3,333.96 | 7.90 | +0.24% |  |
+| H82_100k | TWE | Treasury Wine Estates Ltd | 520 | 3,332.72 | 6.08 (2026-11-27) | 3,161.60 | -171.12 | -5.13% |  |
+| H82_100k | WOW | Woolworths Group Ltd | 79 | 3,331.08 | 41.73 (2026-11-27) | 3,296.67 | -34.41 | -1.03% |  |
 
 ## Data notes
 
